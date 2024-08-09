@@ -16,7 +16,14 @@ package gitspace
 
 import (
 	"github.com/harness/gitness/app/auth/authz"
+	gitspaceevents "github.com/harness/gitness/app/events/gitspace"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/orchestrator"
+	"github.com/harness/gitness/app/gitspace/scm"
+	"github.com/harness/gitness/app/services/gitspace"
+	"github.com/harness/gitness/app/services/infraprovider"
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/store/database/dbtx"
 
 	"github.com/google/wire"
 )
@@ -27,11 +34,33 @@ var WireSet = wire.NewSet(
 )
 
 func ProvideController(
+	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	resourceStore store.InfraProviderResourceStore,
+	infraProviderSvc *infraprovider.Service,
 	configStore store.GitspaceConfigStore,
 	instanceStore store.GitspaceInstanceStore,
 	spaceStore store.SpaceStore,
+	reporter *gitspaceevents.Reporter,
+	orchestrator orchestrator.Orchestrator,
+	eventStore store.GitspaceEventStore,
+	statefulLogger *logutil.StatefulLogger,
+	scm scm.SCM,
+	repoStore store.RepoStore,
+	gitspaceSvc *gitspace.Service,
 ) *Controller {
-	return NewController(authorizer, resourceStore, configStore, instanceStore, spaceStore)
+	return NewController(
+		tx,
+		authorizer,
+		infraProviderSvc,
+		configStore,
+		instanceStore,
+		spaceStore,
+		reporter,
+		orchestrator,
+		eventStore,
+		statefulLogger,
+		scm,
+		repoStore,
+		gitspaceSvc,
+	)
 }

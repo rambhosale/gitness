@@ -14,7 +14,8 @@ import (
 	"github.com/harness/gitness/app/api/controller/connector"
 	"github.com/harness/gitness/app/api/controller/execution"
 	githookCtrl "github.com/harness/gitness/app/api/controller/githook"
-	gitspacecontroller "github.com/harness/gitness/app/api/controller/gitspace"
+	gitspaceCtrl "github.com/harness/gitness/app/api/controller/gitspace"
+	infraproviderCtrl "github.com/harness/gitness/app/api/controller/infraprovider"
 	controllerkeywordsearch "github.com/harness/gitness/app/api/controller/keywordsearch"
 	"github.com/harness/gitness/app/api/controller/limiter"
 	controllerlogs "github.com/harness/gitness/app/api/controller/logs"
@@ -40,8 +41,16 @@ import (
 	"github.com/harness/gitness/app/auth/authz"
 	"github.com/harness/gitness/app/bootstrap"
 	gitevents "github.com/harness/gitness/app/events/git"
+	gitspaceevents "github.com/harness/gitness/app/events/gitspace"
+	gitspaceinfraevents "github.com/harness/gitness/app/events/gitspaceinfra"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	repoevents "github.com/harness/gitness/app/events/repo"
+	infrastructure "github.com/harness/gitness/app/gitspace/infrastructure"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/orchestrator"
+	containerorchestrator "github.com/harness/gitness/app/gitspace/orchestrator/container"
+	"github.com/harness/gitness/app/gitspace/orchestrator/ide"
+	"github.com/harness/gitness/app/gitspace/scm"
 	"github.com/harness/gitness/app/pipeline/canceler"
 	"github.com/harness/gitness/app/pipeline/commit"
 	"github.com/harness/gitness/app/pipeline/converter"
@@ -58,10 +67,14 @@ import (
 	"github.com/harness/gitness/app/services/codecomments"
 	"github.com/harness/gitness/app/services/codeowners"
 	"github.com/harness/gitness/app/services/exporter"
+	"github.com/harness/gitness/app/services/gitspaceevent"
+	"github.com/harness/gitness/app/services/gitspaceservice"
 	"github.com/harness/gitness/app/services/importer"
 	"github.com/harness/gitness/app/services/keywordsearch"
+	svclabel "github.com/harness/gitness/app/services/label"
 	locker "github.com/harness/gitness/app/services/locker"
 	"github.com/harness/gitness/app/services/metric"
+	migrateservice "github.com/harness/gitness/app/services/migrate"
 	"github.com/harness/gitness/app/services/notification"
 	"github.com/harness/gitness/app/services/notification/mailer"
 	"github.com/harness/gitness/app/services/protection"
@@ -87,6 +100,7 @@ import (
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/git/storage"
+	infraproviderpkg "github.com/harness/gitness/infraprovider"
 	"github.com/harness/gitness/job"
 	"github.com/harness/gitness/livelog"
 	"github.com/harness/gitness/lock"
@@ -115,6 +129,7 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		router.WireSet,
 		pullreqservice.WireSet,
 		services.WireSet,
+		services.ProvideGitspaceServices,
 		server.WireSet,
 		url.WireSet,
 		space.WireSet,
@@ -124,6 +139,7 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		reposettings.WireSet,
 		pullreq.WireSet,
 		controllerwebhook.WireSet,
+		svclabel.WireSet,
 		serviceaccount.WireSet,
 		user.WireSet,
 		upload.WireSet,
@@ -132,6 +148,11 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		system.WireSet,
 		authn.WireSet,
 		authz.WireSet,
+		infrastructure.WireSet,
+		infraproviderpkg.WireSet,
+		gitspaceevents.WireSet,
+		infraproviderCtrl.WireSet,
+		gitspaceCtrl.WireSet,
 		gitevents.WireSet,
 		pullreqevents.WireSet,
 		repoevents.WireSet,
@@ -183,12 +204,14 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		plugin.WireSet,
 		resolver.WireSet,
 		importer.WireSet,
+		migrateservice.WireSet,
 		canceler.WireSet,
 		exporter.WireSet,
 		metric.WireSet,
 		reposervice.WireSet,
 		cliserver.ProvideCodeOwnerConfig,
 		codeowners.WireSet,
+		gitspaceevent.WireSet,
 		cliserver.ProvideKeywordSearchConfig,
 		keywordsearch.WireSet,
 		controllerkeywordsearch.WireSet,
@@ -200,7 +223,19 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		ssh.WireSet,
 		publickey.WireSet,
 		migrate.WireSet,
-		gitspacecontroller.WireSet,
+		scm.WireSet,
+		orchestrator.WireSet,
+		containerorchestrator.WireSet,
+		cliserver.ProvideIDEVSCodeWebConfig,
+		cliserver.ProvideDockerConfig,
+		cliserver.ProvideGitspaceEventConfig,
+		logutil.WireSet,
+		cliserver.ProvideGitspaceOrchestratorConfig,
+		ide.WireSet,
+		gitspaceinfraevents.WireSet,
+		gitspaceservice.WireSet,
+		cliserver.ProvideGitspaceInfraProvisionerConfig,
+		cliserver.ProvideIDEVSCodeConfig,
 	)
 	return &cliserver.System{}, nil
 }

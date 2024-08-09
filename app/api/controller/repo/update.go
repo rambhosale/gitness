@@ -73,7 +73,7 @@ func (c *Controller) Update(ctx context.Context,
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
-		audit.NewResource(audit.ResourceTypeRepository, repo.Identifier),
+		audit.NewResource(audit.ResourceTypeRepositorySettings, repo.Identifier),
 		audit.ActionUpdated,
 		paths.Parent(repo.Path),
 		audit.WithOldObject(repoClone),
@@ -84,8 +84,8 @@ func (c *Controller) Update(ctx context.Context,
 	}
 
 	// backfill repo url
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
 	return GetRepoOutput(ctx, c.publicAccess, repo)
 }

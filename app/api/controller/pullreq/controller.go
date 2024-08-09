@@ -17,6 +17,7 @@ package pullreq
 import (
 	"context"
 	"fmt"
+	"unicode/utf8"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/usererror"
@@ -25,7 +26,9 @@ import (
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/app/services/codecomments"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/label"
 	locker "github.com/harness/gitness/app/services/locker"
+	"github.com/harness/gitness/app/services/migrate"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/app/services/pullreq"
 	"github.com/harness/gitness/app/sse"
@@ -34,6 +37,7 @@ import (
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
 	gitenum "github.com/harness/gitness/git/enum"
+	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
@@ -62,6 +66,8 @@ type Controller struct {
 	sseStreamer         sse.Streamer
 	codeOwners          *codeowners.Service
 	locker              *locker.Locker
+	importer            *migrate.PullReq
+	labelSvc            *label.Service
 }
 
 func NewController(
@@ -87,6 +93,8 @@ func NewController(
 	sseStreamer sse.Streamer,
 	codeowners *codeowners.Service,
 	locker *locker.Locker,
+	importer *migrate.PullReq,
+	labelSvc *label.Service,
 ) *Controller {
 	return &Controller{
 		tx:                  tx,
@@ -111,14 +119,16 @@ func NewController(
 		sseStreamer:         sseStreamer,
 		codeOwners:          codeowners,
 		locker:              locker,
+		importer:            importer,
+		labelSvc:            labelSvc,
 	}
 }
 
 func (c *Controller) verifyBranchExistence(ctx context.Context,
 	repo *types.Repository, branch string,
-) (string, error) {
+) (sha.SHA, error) {
 	if branch == "" {
-		return "", usererror.BadRequest("branch name can't be empty")
+		return sha.SHA{}, usererror.BadRequest("branch name can't be empty")
 	}
 
 	ref, err := c.git.GetRef(ctx,
@@ -128,21 +138,19 @@ func (c *Controller) verifyBranchExistence(ctx context.Context,
 			Type:       gitenum.RefTypeBranch,
 		})
 	if errors.AsStatus(err) == errors.StatusNotFound {
-		return "", usererror.BadRequest(
+		return sha.SHA{}, usererror.BadRequest(
 			fmt.Sprintf("branch %q does not exist in the repository %q", branch, repo.Identifier))
 	}
 	if err != nil {
-		return "", fmt.Errorf(
+		return sha.SHA{}, fmt.Errorf(
 			"failed to check existence of the branch %q in the repository %q: %w",
 			branch, repo.Identifier, err)
 	}
 
-	return ref.SHA.String(), nil
+	return ref.SHA, nil
 }
 
-func (c *Controller) getRepoCheckAccess(ctx context.Context,
-	session *auth.Session, repoRef string, reqPermission enum.Permission,
-) (*types.Repository, error) {
+func (c *Controller) getRepo(ctx context.Context, repoRef string) (*types.Repository, error) {
 	if repoRef == "" {
 		return nil, usererror.BadRequest("A valid repository reference must be provided.")
 	}
@@ -152,8 +160,19 @@ func (c *Controller) getRepoCheckAccess(ctx context.Context,
 		return nil, fmt.Errorf("failed to find repository: %w", err)
 	}
 
-	if repo.Importing {
-		return nil, usererror.BadRequest("Repository import is in progress.")
+	if repo.State != enum.RepoStateActive {
+		return nil, usererror.BadRequest("Repository is not ready to use.")
+	}
+
+	return repo, nil
+}
+
+func (c *Controller) getRepoCheckAccess(ctx context.Context,
+	session *auth.Session, repoRef string, reqPermission enum.Permission,
+) (*types.Repository, error) {
+	repo, err := c.getRepo(ctx, repoRef)
+	if err != nil {
+		return nil, err
 	}
 
 	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
@@ -264,4 +283,35 @@ func eventBase(pr *types.PullReq, principal *types.Principal) pullreqevents.Base
 		Number:       pr.Number,
 		PrincipalID:  principal.ID,
 	}
+}
+
+func validateTitle(title string) error {
+	if title == "" {
+		return usererror.BadRequest("pull request title can't be empty")
+	}
+
+	const maxLen = 256
+	if utf8.RuneCountInString(title) > maxLen {
+		return usererror.BadRequestf("pull request title is too long (maximum is %d characters)", maxLen)
+	}
+
+	return nil
+}
+
+func validateDescription(desc string) error {
+	const maxLen = 64 << 10 // 64K
+	if len(desc) > maxLen {
+		return usererror.BadRequest("pull request description is too long")
+	}
+
+	return nil
+}
+
+func validateComment(desc string) error {
+	const maxLen = 16 << 10 // 16K
+	if len(desc) > maxLen {
+		return usererror.BadRequest("pull request comment is too long")
+	}
+
+	return nil
 }

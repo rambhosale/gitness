@@ -47,6 +47,11 @@ func (c *Controller) PreReceive(
 		return hook.Output{}, err
 	}
 
+	if !in.Internal && repo.State != enum.RepoStateActive && repo.State != enum.RepoStateMigrateGitPush {
+		output.Error = ptr.String("Push not allowed in the current repository state")
+		return output, nil
+	}
+
 	if err := c.limiter.RepoSize(ctx, in.RepoID); err != nil {
 		return hook.Output{}, fmt.Errorf(
 			"resource limit exceeded: %w",
@@ -62,13 +67,13 @@ func (c *Controller) PreReceive(
 	}
 
 	// For external calls (git pushes) block modification of pullreq references.
-	if !in.Internal && c.blockPullReqRefUpdate(refUpdates) {
+	if !in.Internal && c.blockPullReqRefUpdate(refUpdates, repo.State) {
 		output.Error = ptr.String(usererror.ErrPullReqRefsCantBeModified.Error())
 		return output, nil
 	}
 
 	// For internal calls - through the application interface (API) - no need to verify protection rules.
-	if !in.Internal {
+	if !in.Internal && repo.State == enum.RepoStateActive {
 		// TODO: use store.PrincipalInfoCache once we abstracted principals.
 		principal, err := c.principalStore.Find(ctx, in.PrincipalID)
 		if err != nil {
@@ -104,7 +109,11 @@ func (c *Controller) PreReceive(
 	return output, nil
 }
 
-func (c *Controller) blockPullReqRefUpdate(refUpdates changedRefs) bool {
+func (c *Controller) blockPullReqRefUpdate(refUpdates changedRefs, state enum.RepoState) bool {
+	if state == enum.RepoStateMigrateGitPush {
+		return false
+	}
+
 	fn := func(ref string) bool {
 		return strings.HasPrefix(ref, gitReferenceNamePullReq)
 	}

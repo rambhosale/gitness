@@ -146,13 +146,10 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 	}
 
 	// backfil GitURL
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
-	repoOutput := &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   in.IsPublic,
-	}
+	repoOutput := GetRepoOutputWithAccess(ctx, in.IsPublic, repo)
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
@@ -211,7 +208,7 @@ func (c *Controller) sanitizeCreateInput(in *CreateInput) error {
 		in.Identifier = in.UID
 	}
 
-	if err := c.validateParentRef(in.ParentRef); err != nil {
+	if err := ValidateParentRef(in.ParentRef); err != nil {
 		return err
 	}
 
@@ -269,7 +266,7 @@ func (c *Controller) createGitRepository(ctx context.Context, session *auth.Sess
 	// generate envars (add everything githook CLI needs for execution)
 	envVars, err := githook.GenerateEnvironmentVariables(
 		ctx,
-		c.urlProvider.GetInternalAPIURL(),
+		c.urlProvider.GetInternalAPIURL(ctx),
 		0,
 		session.Principal.ID,
 		true,

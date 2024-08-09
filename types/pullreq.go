@@ -60,20 +60,28 @@ type PullReq struct {
 	Author PrincipalInfo  `json:"author"`
 	Merger *PrincipalInfo `json:"merger"`
 	Stats  PullReqStats   `json:"stats"`
+
+	Labels []*LabelPullReqAssignmentInfo `json:"labels,omitempty"`
 }
 
 // DiffStats shows total number of commits and modified files.
 type DiffStats struct {
 	Commits      *int64 `json:"commits,omitempty"`
 	FilesChanged *int64 `json:"files_changed,omitempty"`
+	Additions    *int64 `json:"additions"`
+	Deletions    *int64 `json:"deletions"`
 }
 
-func NewDiffStats(commitCount int, fileCount int) DiffStats {
+func NewDiffStats(commitCount, fileCount, additions, deletions int) DiffStats {
 	cc := int64(commitCount)
 	fc := int64(fileCount)
+	add := int64(additions)
+	del := int64(deletions)
 	return DiffStats{
 		Commits:      &cc,
 		FilesChanged: &fc,
+		Additions:    &add,
+		Deletions:    &del,
 	}
 }
 
@@ -98,6 +106,8 @@ type PullReqFilter struct {
 	States        []enum.PullReqState `json:"state"`
 	Sort          enum.PullReqSort    `json:"sort"`
 	Order         enum.Order          `json:"order"`
+	LabelID       []int64             `json:"label_id"`
+	ValueID       []int64             `json:"value_id"`
 	CreatedFilter
 }
 

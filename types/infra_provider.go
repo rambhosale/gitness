@@ -15,51 +15,51 @@
 package types
 
 import (
-	"github.com/harness/gitness/infraprovider/enum"
-
-	"github.com/guregu/null"
+	"github.com/harness/gitness/types/enum"
 )
 
 type InfraProviderConfig struct {
-	ID         int64                    `json:"-"`
-	Identifier string                   `json:"identifier"`
-	Name       string                   `json:"name"`
-	Type       enum.InfraProviderType   `json:"type"`
-	Metadata   map[string]string        `json:"metadata"`
-	Resources  []*InfraProviderResource `json:"resources"`
-	SpaceID    int64                    `json:"-"`
-	SpacePath  string                   `json:"space_path"`
-	Created    int64                    `json:"created"`
-	Updated    int64                    `json:"updated"`
+	ID         int64                   `json:"-"`
+	Identifier string                  `json:"identifier"`
+	Name       string                  `json:"name"`
+	Type       enum.InfraProviderType  `json:"type"`
+	Metadata   map[string]string       `json:"metadata"`
+	Resources  []InfraProviderResource `json:"resources"`
+	SpaceID    int64                   `json:"-"`
+	SpacePath  string                  `json:"space_path"`
+	Created    int64                   `json:"created"`
+	Updated    int64                   `json:"updated"`
 }
 
 type InfraProviderResource struct {
-	ID                            int64                  `json:"-"`
-	Identifier                    string                 `json:"identifier"`
-	Name                          string                 `json:"name"`
-	InfraProviderConfigID         int64                  `json:"-"`
-	InfraProviderConfigIdentifier string                 `json:"config_identifier"`
-	CPU                           null.String            `json:"cpu"`
-	Memory                        null.String            `json:"memory"`
-	Disk                          null.String            `json:"disk"`
-	Network                       null.String            `json:"network"`
-	Region                        string                 `json:"region"`
-	Metadata                      map[string]string      `json:"metadata"`
-	GatewayHost                   null.String            `json:"gateway_host"`
-	GatewayPort                   null.String            `json:"gateway_port"`
-	TemplateID                    null.Int               `json:"-"`
-	TemplateIdentifier            null.String            `json:"template_identifier"`
-	SpaceID                       int64                  `json:"-"`
-	SpacePath                     string                 `json:"space_path"`
-	InfraProviderType             enum.InfraProviderType `json:"infra_provider_type"`
-	Created                       int64                  `json:"created"`
-	Updated                       int64                  `json:"updated"`
+	ID                            int64             `json:"-"`
+	Identifier                    string            `json:"identifier"`
+	Name                          string            `json:"name"`
+	InfraProviderConfigID         int64             `json:"-"`
+	InfraProviderConfigIdentifier string            `json:"config_identifier"`
+	CPU                           *string           `json:"cpu"`
+	Memory                        *string           `json:"memory"`
+	Disk                          *string           `json:"disk"`
+	Network                       *string           `json:"network"`
+	Region                        string            `json:"region"`
+	Metadata                      map[string]string `json:"metadata"`
+	GatewayHost                   *string           `json:"gateway_host"`
+	GatewayPort                   *string           `json:"gateway_port"`
+	// Deprecated. Set template identifier in Metadata.
+	TemplateID *int64 `json:"-"`
+	// Deprecated. Set template identifier in Metadata.
+	TemplateIdentifier *string                `json:"template_identifier"`
+	SpaceID            int64                  `json:"-"`
+	SpacePath          string                 `json:"space_path"`
+	InfraProviderType  enum.InfraProviderType `json:"infra_provider_type"`
+	Created            int64                  `json:"created"`
+	Updated            int64                  `json:"updated"`
 }
 
 type InfraProviderTemplate struct {
 	ID                            int64  `json:"-"`
 	Identifier                    string `json:"identifier"`
-	InfraProviderConfigID         string `json:"-"`
+	InfraProviderConfigID         int64  `json:"-"`
 	InfraProviderConfigIdentifier string `json:"config_identifier"`
 	Description                   string `json:"description"`
 	Data                          string `json:"data"`

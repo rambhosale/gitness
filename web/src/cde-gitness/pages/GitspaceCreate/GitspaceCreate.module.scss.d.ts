@@ -24,3 +24,4 @@ export declare const formOuterContainer: string
 export declare const formTitleContainer: string
 export declare const main: string
 export declare const subContainers: string
+export declare const titleContainer: string

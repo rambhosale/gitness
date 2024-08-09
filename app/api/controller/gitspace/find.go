@@ -16,18 +16,33 @@ package gitspace
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 )
 
-// TODO Stubbed Impl
 func (c *Controller) Find(
-	_ context.Context,
-	_ *auth.Session,
-	_ string,
-	_ string,
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	identifier string,
 ) (*types.GitspaceConfig, error) {
-	return nil, errors.New("unimplemented")
+	space, err := c.spaceStore.FindByRef(ctx, spaceRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find space: %w", err)
+	}
+
+	err = apiauth.CheckGitspace(ctx, c.authorizer, session, space.Path, identifier, enum.PermissionGitspaceView)
+	if err != nil {
+		return nil, fmt.Errorf("failed to authorize: %w", err)
+	}
+
+	res, err := c.gitspaceSvc.Find(ctx, space.ID, space.Path, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find gitspace: %w", err)
+	}
+	return res, nil
 }

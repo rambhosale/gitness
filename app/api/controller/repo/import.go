@@ -97,8 +97,8 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		return nil, err
 	}
 
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
@@ -114,10 +114,7 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		log.Warn().Msgf("failed to insert audit log for import repository operation: %s", err)
 	}
 
-	return &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   false,
-	}, nil
+	return GetRepoOutputWithAccess(ctx, false, repo), nil
 }
 
 func (c *Controller) sanitizeImportInput(in *ImportInput) error {
@@ -126,7 +123,7 @@ func (c *Controller) sanitizeImportInput(in *ImportInput) error {
 		in.Identifier = in.UID
 	}
 
-	if err := c.validateParentRef(in.ParentRef); err != nil {
+	if err := ValidateParentRef(in.ParentRef); err != nil {
 		return err
 	}
 

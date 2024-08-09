@@ -64,7 +64,7 @@ func (c *Controller) PurgeNoAuth(
 	session *auth.Session,
 	repo *types.Repository,
 ) error {
-	if repo.Importing {
+	if repo.State == enum.RepoStateGitImport {
 		log.Ctx(ctx).Info().Msg("repository is importing. cancelling the import job.")
 		err := c.importer.Cancel(ctx, repo)
 		if err != nil {
@@ -97,7 +97,7 @@ func (c *Controller) DeleteGitRepository(
 	// create custom write params for delete as repo might or might not exist in db (similar to create).
 	envVars, err := githook.GenerateEnvironmentVariables(
 		ctx,
-		c.urlProvider.GetInternalAPIURL(),
+		c.urlProvider.GetInternalAPIURL(ctx),
 		0, // no repoID
 		session.Principal.ID,
 		true,

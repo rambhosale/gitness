@@ -29,13 +29,21 @@ var gitspaceEventTypes = []GitspaceEventType{
 	GitspaceEventTypeGitspaceActionStopCompleted,
 	GitspaceEventTypeGitspaceActionStopFailed,
 
+	GitspaceEventTypeFetchDevcontainerStart,
+	GitspaceEventTypeFetchDevcontainerCompleted,
+	GitspaceEventTypeFetchDevcontainerFailed,
+
 	GitspaceEventTypeInfraProvisioningStart,
 	GitspaceEventTypeInfraProvisioningCompleted,
 	GitspaceEventTypeInfraProvisioningFailed,
 
-	GitspaceEventTypeInfraUnprovisioningStart,
-	GitspaceEventTypeInfraUnprovisioningCompleted,
-	GitspaceEventTypeInfraUnprovisioningFailed,
+	GitspaceEventTypeInfraStopStart,
+	GitspaceEventTypeInfraStopCompleted,
+	GitspaceEventTypeInfraStopFailed,
+
+	GitspaceEventTypeInfraDeprovisioningStart,
+	GitspaceEventTypeInfraDeprovisioningCompleted,
+	GitspaceEventTypeInfraDeprovisioningFailed,
 
 	GitspaceEventTypeAgentConnectStart,
 	GitspaceEventTypeAgentConnectCompleted,
@@ -45,13 +53,19 @@ var gitspaceEventTypes = []GitspaceEventType{
 	GitspaceEventTypeAgentGitspaceCreationCompleted,
 	GitspaceEventTypeAgentGitspaceCreationFailed,
 
+	GitspaceEventTypeAgentGitspaceStopStart,
+	GitspaceEventTypeAgentGitspaceStopCompleted,
+	GitspaceEventTypeAgentGitspaceStopFailed,
+
+	GitspaceEventTypeAgentGitspaceDeletionStart,
+	GitspaceEventTypeAgentGitspaceDeletionCompleted,
+	GitspaceEventTypeAgentGitspaceDeletionFailed,
+
 	GitspaceEventTypeAgentGitspaceStateReportRunning,
 	GitspaceEventTypeAgentGitspaceStateReportError,
 	GitspaceEventTypeAgentGitspaceStateReportStopped,
 	GitspaceEventTypeAgentGitspaceStateReportUnknown,
 }
-
-var eventsMessageMap = eventsMessageMapping()
 
 const (
 	// Start action events.
@@ -64,15 +78,25 @@ const (
 	GitspaceEventTypeGitspaceActionStopCompleted GitspaceEventType = "gitspace_action_stop_completed"
 	GitspaceEventTypeGitspaceActionStopFailed    GitspaceEventType = "gitspace_action_stop_failed"
 
+	// Fetch devcontainer config events.
+	GitspaceEventTypeFetchDevcontainerStart     GitspaceEventType = "fetch_devcontainer_start"
+	GitspaceEventTypeFetchDevcontainerCompleted GitspaceEventType = "fetch_devcontainer_completed"
+	GitspaceEventTypeFetchDevcontainerFailed    GitspaceEventType = "fetch_devcontainer_failed"
+
 	// Infra provisioning events.
 	GitspaceEventTypeInfraProvisioningStart     GitspaceEventType = "infra_provisioning_start"
 	GitspaceEventTypeInfraProvisioningCompleted GitspaceEventType = "infra_provisioning_completed"
 	GitspaceEventTypeInfraProvisioningFailed    GitspaceEventType = "infra_provisioning_failed"
 
-	// Infra unprovisioning events.
-	GitspaceEventTypeInfraUnprovisioningStart     GitspaceEventType = "infra_unprovisioning_start"
-	GitspaceEventTypeInfraUnprovisioningCompleted GitspaceEventType = "infra_unprovisioning_completed"
-	GitspaceEventTypeInfraUnprovisioningFailed    GitspaceEventType = "infra_unprovisioning_failed"
+	// Infra stop events.
+	GitspaceEventTypeInfraStopStart     GitspaceEventType = "infra_stop_start"
+	GitspaceEventTypeInfraStopCompleted GitspaceEventType = "infra_stop_completed"
+	GitspaceEventTypeInfraStopFailed    GitspaceEventType = "infra_stop_failed"
+
+	// Infra deprovisioning events.
+	GitspaceEventTypeInfraDeprovisioningStart     GitspaceEventType = "infra_deprovisioning_start"
+	GitspaceEventTypeInfraDeprovisioningCompleted GitspaceEventType = "infra_deprovisioning_completed"
+	GitspaceEventTypeInfraDeprovisioningFailed    GitspaceEventType = "infra_deprovisioning_failed"
 
 	// Agent connection events.
 	GitspaceEventTypeAgentConnectStart     GitspaceEventType = "agent_connect_start"
@@ -84,50 +108,19 @@ const (
 	GitspaceEventTypeAgentGitspaceCreationCompleted GitspaceEventType = "agent_gitspace_creation_completed"
 	GitspaceEventTypeAgentGitspaceCreationFailed    GitspaceEventType = "agent_gitspace_creation_failed"
 
+	// Gitspace stop events.
+	GitspaceEventTypeAgentGitspaceStopStart     GitspaceEventType = "agent_gitspace_stop_start"
+	GitspaceEventTypeAgentGitspaceStopCompleted GitspaceEventType = "agent_gitspace_stop_completed"
+	GitspaceEventTypeAgentGitspaceStopFailed    GitspaceEventType = "agent_gitspace_stop_failed"
+
+	// Gitspace deletion events.
+	GitspaceEventTypeAgentGitspaceDeletionStart     GitspaceEventType = "agent_gitspace_deletion_start"
+	GitspaceEventTypeAgentGitspaceDeletionCompleted GitspaceEventType = "agent_gitspace_deletion_completed"
+	GitspaceEventTypeAgentGitspaceDeletionFailed    GitspaceEventType = "agent_gitspace_deletion_failed"
+
 	// Gitspace state events.
 	GitspaceEventTypeAgentGitspaceStateReportRunning GitspaceEventType = "agent_gitspace_state_report_running"
 	GitspaceEventTypeAgentGitspaceStateReportError   GitspaceEventType = "agent_gitspace_state_report_error"
 	GitspaceEventTypeAgentGitspaceStateReportStopped GitspaceEventType = "agent_gitspace_state_report_stopped"
 	GitspaceEventTypeAgentGitspaceStateReportUnknown GitspaceEventType = "agent_gitspace_state_report_unknown"
 )
-
-func (e GitspaceEventType) GetValue() string {
-	return eventsMessageMap[e]
-}
-
-// TODO: Move eventsMessageMapping() to controller.
-
-func eventsMessageMapping() map[GitspaceEventType]string {
-	var gitspaceConfigsMap = make(map[GitspaceEventType]string)
-
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStart] = "Starting Gitspace..."
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStartCompleted] = "Started Gitspace"
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStartFailed] = "Starting Gitspace Failed"
-
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStop] = "Stopping Gitspace"
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStopCompleted] = "Stopped Gitspace"
-	gitspaceConfigsMap[GitspaceEventTypeGitspaceActionStopFailed] = "Stopping Gitspace Failed"
-
-	gitspaceConfigsMap[GitspaceEventTypeInfraProvisioningStart] = "Provisioning Infrastructure..."
-	gitspaceConfigsMap[GitspaceEventTypeInfraProvisioningCompleted] = "Provisioning Infrastructure Completed"
-	gitspaceConfigsMap[GitspaceEventTypeInfraProvisioningFailed] = "Provisioning Infrastructure Failed"
-
-	gitspaceConfigsMap[GitspaceEventTypeInfraUnprovisioningStart] = "Unprovisioning Infrastructure..."
-	gitspaceConfigsMap[GitspaceEventTypeInfraUnprovisioningCompleted] = "Unprovisioning Infrastructure Completed"
-	gitspaceConfigsMap[GitspaceEventTypeInfraUnprovisioningFailed] = "Unprovisioning Infrastructure Failed"
-
-	gitspaceConfigsMap[GitspaceEventTypeAgentConnectStart] = "Connecting to the gitspace agent..."
-	gitspaceConfigsMap[GitspaceEventTypeAgentConnectCompleted] = "Connected to the gitspace agent"
-	gitspaceConfigsMap[GitspaceEventTypeAgentConnectFailed] = "Failed connecting to the gitspace agent"
-
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceCreationStart] = "Setting up the gitspace..."
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceCreationCompleted] = "Successfully setup the gitspace"
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceCreationFailed] = "Failed to setup the gitspace"
-
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceStateReportRunning] = "Gitspace is running"
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceStateReportStopped] = "Gitspace is stopped"
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceStateReportUnknown] = "Gitspace is in unknown state"
-	gitspaceConfigsMap[GitspaceEventTypeAgentGitspaceStateReportError] = "Gitspace has an error"
-
-	return gitspaceConfigsMap
-}

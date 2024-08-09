@@ -17,12 +17,13 @@ package types
 import "github.com/harness/gitness/types/enum"
 
 type GitspaceEvent struct {
-	ID               int64                   `json:"-"`
-	Event            enum.GitspaceEventType  `json:"event,omitempty"`
-	EntityID         int64                   `json:"-"`
-	EntityIdentifier string                  `json:"entity_identifier,omitempty"`
-	EntityType       enum.GitspaceEntityType `json:"entity_type,omitempty"`
-	Created          int64                   `json:"timestamp,omitempty"`
+	ID         int64                   `json:"-"`
+	Event      enum.GitspaceEventType  `json:"event,omitempty"`
+	EntityID   int64                   `json:"-"`
+	QueryKey   string                  `json:"query_key,omitempty"`
+	EntityType enum.GitspaceEntityType `json:"entity_type,omitempty"`
+	Timestamp  int64                   `json:"timestamp,omitempty"`
+	Created    int64                   `json:"created,omitempty"`
 }
 
 type GitspaceEventResponse struct {
@@ -32,6 +33,8 @@ type GitspaceEventResponse struct {
 }
 
 type GitspaceEventFilter struct {
+	Pagination
+	QueryKey   string
 	EntityID   int64
 	EntityType enum.GitspaceEntityType
 }

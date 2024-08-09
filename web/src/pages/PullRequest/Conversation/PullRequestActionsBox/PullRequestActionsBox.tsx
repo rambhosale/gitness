@@ -209,7 +209,11 @@ export const PullRequestActionsBox: React.FC<PullRequestActionsBoxProps> = ({
     if (allowedStrats) {
       const matchingMethods = mergeOptions.filter(option => allowedStrats.includes(option.method))
       if (matchingMethods.length > 0) {
-        setMergeOption(mergeOption ? mergeOption : matchingMethods[0])
+        if (!matchingMethods.includes(mergeOption)) {
+          setMergeOption(matchingMethods[0])
+        } else if (mergeOption) {
+          setMergeOption(mergeOption)
+        }
       }
     } else {
       setMergeOption(mergeOptions[3])
@@ -235,15 +239,15 @@ export const PullRequestActionsBox: React.FC<PullRequestActionsBoxProps> = ({
         messageString += `* ${commit.message}\n`
         messageTitle =
           mergeOption.method === MergeStrategy.SQUASH
-            ? `${commit.title} (#${pullReqMetadata?.number})`
+            ? `${pullReqMetadata?.title} (#${pullReqMetadata?.number})`
             : `Merge branch ${pullReqMetadata?.source_branch} of ${repoMetadata?.path} (#${pullReqMetadata?.number})`
       })
     }
     return {
       commitTitle: messageTitle,
       commitMessage: mergeOption.method === MergeStrategy.SQUASH ? messageString : ''
-    }
-  }, [pullReqCommits, mergeOption])
+    } // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pullReqCommits, mergeOption, pullReqMetadata])
 
   if (pullReqMetadata.state === PullRequestFilterOption.MERGED) {
     return <MergeInfo pullRequestMetadata={pullReqMetadata} />

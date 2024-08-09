@@ -21,7 +21,7 @@ import (
 
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller/limiter"
-	repoCtrl "github.com/harness/gitness/app/api/controller/repo"
+	repoctrl "github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
@@ -39,16 +39,16 @@ type ImportRepositoriesInput struct {
 }
 
 type ImportRepositoriesOutput struct {
-	ImportingRepos []*repoCtrl.RepositoryOutput `json:"importing_repos"`
-	DuplicateRepos []*repoCtrl.RepositoryOutput `json:"duplicate_repos"` // repos which already exist in the space.
+	ImportingRepos []*repoctrl.RepositoryOutput `json:"importing_repos"`
+	DuplicateRepos []*repoctrl.RepositoryOutput `json:"duplicate_repos"` // repos which already exist in the space.
 }
 
-// getSpaceCheckAuthRepoCreation checks whether the user has permissions to create repos
-// in the given space.
-func (c *Controller) getSpaceCheckAuthRepoCreation(
+// getSpaceCheckAuth checks whether the user has repo permissions permission.
+func (c *Controller) getSpaceCheckAuth(
 	ctx context.Context,
 	session *auth.Session,
 	spaceRef string,
+	permission enum.Permission,
 ) (*types.Space, error) {
 	space, err := c.spaceStore.FindByRef(ctx, spaceRef)
 	if err != nil {
@@ -62,7 +62,7 @@ func (c *Controller) getSpaceCheckAuthRepoCreation(
 		Identifier: "",
 	}
 
-	err = apiauth.Check(ctx, c.authorizer, session, scope, resource, enum.PermissionRepoEdit)
+	err = apiauth.Check(ctx, c.authorizer, session, scope, resource, permission)
 	if err != nil {
 		return nil, fmt.Errorf("auth check failed: %w", err)
 	}
@@ -80,7 +80,7 @@ func (c *Controller) ImportRepositories(
 	spaceRef string,
 	in *ImportRepositoriesInput,
 ) (ImportRepositoriesOutput, error) {
-	space, err := c.getSpaceCheckAuthRepoCreation(ctx, session, spaceRef)
+	space, err := c.getSpaceCheckAuth(ctx, session, spaceRef, enum.PermissionRepoEdit)
 	if err != nil {
 		return ImportRepositoriesOutput{}, err
 	}
@@ -165,12 +165,9 @@ func (c *Controller) ImportRepositories(
 		return ImportRepositoriesOutput{}, err
 	}
 
-	reposOut := make([]*repoCtrl.RepositoryOutput, len(repos))
+	reposOut := make([]*repoctrl.RepositoryOutput, len(repos))
 	for i, repo := range repos {
-		reposOut[i] = &repoCtrl.RepositoryOutput{
-			Repository: *repo,
-			IsPublic:   false,
-		}
+		reposOut[i] = repoctrl.GetRepoOutputWithAccess(ctx, false, repo)
 
 		err = c.auditService.Log(ctx,
 			session.Principal,
@@ -187,12 +184,9 @@ func (c *Controller) ImportRepositories(
 		}
 	}
 
-	duplicateReposOut := make([]*repoCtrl.RepositoryOutput, len(duplicateRepos))
+	duplicateReposOut := make([]*repoctrl.RepositoryOutput, len(duplicateRepos))
 	for i, dupRepo := range duplicateRepos {
-		duplicateReposOut[i] = &repoCtrl.RepositoryOutput{
-			Repository: *dupRepo,
-			IsPublic:   false,
-		}
+		duplicateReposOut[i] = repoctrl.GetRepoOutputWithAccess(ctx, false, dupRepo)
 	}
 
 	return ImportRepositoriesOutput{ImportingRepos: reposOut, DuplicateRepos: duplicateReposOut}, nil

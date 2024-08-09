@@ -22,7 +22,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/harness/gitness/app/gitspace/orchestrator/container"
+	"github.com/harness/gitness/app/gitspace/infrastructure"
+	"github.com/harness/gitness/app/gitspace/orchestrator"
+	"github.com/harness/gitness/app/gitspace/orchestrator/ide"
 	"github.com/harness/gitness/app/services/cleanup"
 	"github.com/harness/gitness/app/services/codeowners"
 	"github.com/harness/gitness/app/services/gitspaceevent"
@@ -51,7 +53,6 @@ const (
 	schemeHTTPS    = "https"
 	gitnessHomeDir = ".gitness"
 	blobDir        = "blob"
-	gitspacesDir   = "gitspaces"
 )
 
 // LoadConfig returns the system configuration from the
@@ -159,6 +160,9 @@ func backfillURLs(config *types.Config) error {
 	}
 
 	// backfill all external URLs that weren't explicitly overwritten
+	if config.URL.Base == "" {
+		config.URL.Base = baseURL.String()
+	}
 	if config.URL.API == "" {
 		config.URL.API = baseURL.JoinPath("api").String()
 	}
@@ -377,49 +381,55 @@ func ProvideJobsConfig(config *types.Config) job.Config {
 }
 
 // ProvideDockerConfig loads config for Docker.
-func ProvideDockerConfig(config *types.Config) *infraprovider.DockerConfig {
-	return &infraprovider.DockerConfig{
-		DockerHost:       config.Docker.Host,
-		DockerAPIVersion: config.Docker.APIVersion,
-		DockerCertPath:   config.Docker.CertPath,
-		DockerTLSVerify:  config.Docker.TLSVerify,
+func ProvideDockerConfig(config *types.Config) (*infraprovider.DockerConfig, error) {
+	if config.Docker.MachineHostName == "" {
+		gitnessBaseURL, err := url.Parse(config.URL.Base)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse Gitness base URL %s: %w", gitnessBaseURL, err)
+		}
+		config.Docker.MachineHostName = gitnessBaseURL.Hostname()
 	}
+
+	return &infraprovider.DockerConfig{
+		DockerHost:            config.Docker.Host,
+		DockerAPIVersion:      config.Docker.APIVersion,
+		DockerCertPath:        config.Docker.CertPath,
+		DockerTLSVerify:       config.Docker.TLSVerify,
+		DockerMachineHostName: config.Docker.MachineHostName,
+	}, nil
 }
 
 // ProvideIDEVSCodeWebConfig loads the VSCode Web IDE config from the main config.
-func ProvideIDEVSCodeWebConfig(config *types.Config) *container.VSCodeWebConfig {
-	return &container.VSCodeWebConfig{
+func ProvideIDEVSCodeWebConfig(config *types.Config) *ide.VSCodeWebConfig {
+	return &ide.VSCodeWebConfig{
 		Port: config.IDE.VSCodeWeb.Port,
 	}
 }
 
-// ProvideGitspaceContainerOrchestratorConfig loads the Gitspace container orchestrator config from the main config.
-func ProvideGitspaceContainerOrchestratorConfig(config *types.Config) (*container.Config, error) {
-	var bindMountSourceBasePath string
-
-	if config.Gitspace.DefaultBindMountSourceBasePath == "" {
-		var homedir string
-
-		homedir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("unable to determine home directory: %w", err)
-		}
-
-		bindMountSourceBasePath = filepath.Join(homedir, gitnessHomeDir, gitspacesDir)
-	} else {
-		bindMountSourceBasePath = filepath.Join(config.Gitspace.DefaultBindMountSourceBasePath, gitspacesDir)
+// ProvideIDEVSCodeConfig loads the VSCode IDE config from the main config.
+func ProvideIDEVSCodeConfig(config *types.Config) *ide.VSCodeConfig {
+	return &ide.VSCodeConfig{
+		Port: config.IDE.VSCode.Port,
 	}
+}
 
-	return &container.Config{
-		DefaultBaseImage:               config.Gitspace.DefaultBaseImage,
-		DefaultBindMountTargetPath:     config.Gitspace.DefaultBindMountTargetPath,
-		DefaultBindMountSourceBasePath: bindMountSourceBasePath,
-	}, nil
+// ProvideGitspaceOrchestratorConfig loads the Gitspace orchestrator config from the main config.
+func ProvideGitspaceOrchestratorConfig(config *types.Config) *orchestrator.Config {
+	return &orchestrator.Config{
+		DefaultBaseImage: config.Gitspace.DefaultBaseImage,
+	}
+}
+
+// ProvideGitspaceInfraProvisionerConfig loads the Gitspace infra provisioner config from the main config.
+func ProvideGitspaceInfraProvisionerConfig(config *types.Config) *infrastructure.Config {
+	return &infrastructure.Config{
+		AgentPort: config.Gitspace.AgentPort,
+	}
 }
 
 // ProvideGitspaceEventConfig loads the gitspace event service config from the main config.
-func ProvideGitspaceEventConfig(config *types.Config) gitspaceevent.Config {
-	return gitspaceevent.Config{
+func ProvideGitspaceEventConfig(config *types.Config) *gitspaceevent.Config {
+	return &gitspaceevent.Config{
 		EventReaderName: config.InstanceID,
 		Concurrency:     config.Gitspace.Events.Concurrency,
 		MaxRetries:      config.Gitspace.Events.MaxRetries,

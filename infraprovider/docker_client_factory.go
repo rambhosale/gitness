@@ -20,18 +20,12 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"github.com/harness/gitness/infraprovider/enum"
+	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/tlsconfig"
 )
-
-type DockerConfig struct {
-	DockerHost       string
-	DockerAPIVersion string
-	DockerCertPath   string
-	DockerTLSVerify  string
-}
 
 type DockerClientFactory struct {
 	config *DockerConfig
@@ -44,19 +38,19 @@ func NewDockerClientFactory(config *DockerConfig) *DockerClientFactory {
 // NewDockerClient returns a new docker client created using the docker config and infra.
 func (d *DockerClientFactory) NewDockerClient(
 	_ context.Context,
-	infra *Infrastructure,
+	infra types.Infrastructure,
 ) (*client.Client, error) {
 	if infra.ProviderType != enum.InfraProviderTypeDocker {
 		return nil, fmt.Errorf("infra provider type %s not supported", infra.ProviderType)
 	}
-	dockerClient, err := d.getClient(infra.Parameters)
+	dockerClient, err := d.getClient(infra.InputParameters)
 	if err != nil {
 		return nil, fmt.Errorf("error creating docker client using infra %+v: %w", infra, err)
 	}
 	return dockerClient, nil
 }
 
-func (d *DockerClientFactory) getClient(_ []Parameter) (*client.Client, error) {
+func (d *DockerClientFactory) getClient(_ []types.InfraProviderParameter) (*client.Client, error) {
 	var opts []client.Opt
 
 	opts = append(opts, client.WithHost(d.config.DockerHost))

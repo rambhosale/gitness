@@ -22,7 +22,9 @@ import (
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth/authz"
 	"github.com/harness/gitness/app/services/exporter"
+	"github.com/harness/gitness/app/services/gitspace"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/publicaccess"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
@@ -81,7 +83,8 @@ type Controller struct {
 	resourceLimiter limiter.ResourceLimiter
 	publicAccess    publicaccess.Service
 	auditService    audit.Service
-	gitspaceStore   store.GitspaceConfigStore
+	gitspaceSvc     *gitspace.Service
+	labelSvc        *label.Service
 }
 
 func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Provider,
@@ -91,7 +94,7 @@ func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Pro
 	repoStore store.RepoStore, principalStore store.PrincipalStore, repoCtrl *repo.Controller,
 	membershipStore store.MembershipStore, importer *importer.Repository, exporter *exporter.Repository,
 	limiter limiter.ResourceLimiter, publicAccess publicaccess.Service, auditService audit.Service,
-	gitspaceStore store.GitspaceConfigStore,
+	gitspaceSvc *gitspace.Service, labelSvc *label.Service,
 ) *Controller {
 	return &Controller{
 		nestedSpacesEnabled: config.NestedSpacesEnabled,
@@ -115,6 +118,7 @@ func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Pro
 		resourceLimiter:     limiter,
 		publicAccess:        publicAccess,
 		auditService:        auditService,
-		gitspaceStore:       gitspaceStore,
+		gitspaceSvc:         gitspaceSvc,
+		labelSvc:            labelSvc,
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 
 	"github.com/drone/go-scm/scm"
 	"github.com/drone/go-scm/scm/driver/azure"
@@ -100,7 +101,7 @@ func (r *RepositoryInfo) ToRepo(
 		Updated:       now,
 		ForkID:        0,
 		DefaultBranch: r.DefaultBranch,
-		Importing:     true,
+		State:         enum.RepoStateGitImport,
 		Path:          paths.Concatenate(spacePath, identifier),
 	}, r.IsPublic
 }
@@ -285,7 +286,7 @@ func LoadRepositoryFromProvider(
 		Space:         scmRepo.Namespace,
 		Identifier:    scmRepo.Name,
 		CloneURL:      scmRepo.Clone,
-		IsPublic:      provider.Type != ProviderTypeAzure && !scmRepo.Private,
+		IsPublic:      !scmRepo.Private,
 		DefaultBranch: scmRepo.Branch,
 	}, provider, nil
 }
@@ -366,7 +367,7 @@ func LoadRepositoriesFromProviderSpace(
 				Space:         scmRepo.Namespace,
 				Identifier:    scmRepo.Name,
 				CloneURL:      scmRepo.Clone,
-				IsPublic:      provider.Type != ProviderTypeAzure && !scmRepo.Private,
+				IsPublic:      !scmRepo.Private,
 				DefaultBranch: scmRepo.Branch,
 			})
 		}

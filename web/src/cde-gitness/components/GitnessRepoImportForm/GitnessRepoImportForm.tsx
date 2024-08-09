@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useGet } from 'restful-react'
-import { Container, ExpandingSearchInput, Layout, Text } from '@harnessio/uicore'
+import { Button, ButtonVariation, Container, ExpandingSearchInput, Layout, Text } from '@harnessio/uicore'
 import { Menu, MenuItem } from '@blueprintjs/core'
 import { Color } from '@harnessio/design-system'
 import { Icon } from '@harnessio/icons'
@@ -10,8 +10,11 @@ import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import { String, useStrings } from 'framework/strings'
 import { LIST_FETCHING_LIMIT } from 'utils/Utils'
 import NewRepoModalButton from 'components/NewRepoModalButton/NewRepoModalButton'
+import noRepo from 'cde-gitness/assests/noRepo.svg?url'
+import { RepoCreationType } from 'utils/GitUtils'
+import gitnessRepoLogo from 'cde-gitness/assests/gitness.svg?url'
+import { EnumGitspaceCodeRepoType } from 'cde-gitness/constants'
 import { GitspaceSelect } from '../../../cde/components/GitspaceSelect/GitspaceSelect'
-import gitnessRepoLogo from './gitness.svg?url'
 import css from './GitnessRepoImportForm.module.scss'
 
 const RepositoryText = ({ repoList, value }: { repoList: TypesRepository[] | null; value?: string }) => {
@@ -64,6 +67,7 @@ export const GitnessRepoImportForm = () => {
   const space = useGetSpaceParam()
   const [branchSearch, setBranchSearch] = useState('')
   const [repoSearch, setRepoSearch] = useState('')
+  const [hadReops, setHadRepos] = useState(false)
   const [repoRef, setReporef] = useState('')
 
   const {
@@ -75,6 +79,12 @@ export const GitnessRepoImportForm = () => {
     queryParams: { query: repoSearch },
     debounce: 500
   })
+
+  useEffect(() => {
+    if (!hadReops && repositories?.length) {
+      setHadRepos(true)
+    }
+  }, [repositories])
 
   const {
     data: branches,
@@ -100,6 +110,7 @@ export const GitnessRepoImportForm = () => {
   }, [repoRef, branchSearch])
 
   const repoListOptions = repositories || []
+  const hideInitialMenu = Boolean(repoSearch) || Boolean(repositories)
 
   const formik = useFormikContext<any>()
 
@@ -124,15 +135,17 @@ export const GitnessRepoImportForm = () => {
           }}
           renderMenu={
             <Menu>
-              <Container margin={'small'}>
-                <ExpandingSearchInput
-                  placeholder={getString('cde.create.searchRepositoryPlaceholder')}
-                  alwaysExpanded
-                  autoFocus={false}
-                  defaultValue={repoSearch}
-                  onChange={setRepoSearch}
-                />
-              </Container>
+              {hideInitialMenu && (
+                <Container margin={'small'}>
+                  <ExpandingSearchInput
+                    placeholder={getString('cde.create.searchRepositoryPlaceholder')}
+                    alwaysExpanded
+                    autoFocus={false}
+                    defaultValue={repoSearch}
+                    onChange={setRepoSearch}
+                  />
+                </Container>
+              )}
               {loading ? (
                 <MenuItem disabled text={getString('loading')} />
               ) : repoListOptions?.length ? (
@@ -147,30 +160,85 @@ export const GitnessRepoImportForm = () => {
                     }
                     active={repo.git_url === values.code_repo_url}
                     onClick={() => {
+                      const repoParams = repo?.path?.split('/') || []
                       formik.setValues((prvValues: any) => {
                         return {
                           ...prvValues,
                           code_repo_url: repo.git_url,
-                          id: repo.path,
-                          name: repo.path
+                          branch: repo.default_branch,
+                          identifier: repoParams?.[repoParams.length - 1],
+                          name: repo.path,
+                          code_repo_ref: repo.path,
+                          code_repo_type: EnumGitspaceCodeRepoType.GITNESS
                         }
                       })
                       formik.setFieldValue('code_repo_url', repo.git_url)
                     }}
                   />
                 ))
-              ) : (
+              ) : hideInitialMenu ? (
                 <Container>
                   <NewRepoModalButton
                     space={space}
-                    newRepoModalOnly
-                    notFoundRepoName={repoSearch}
+                    repoCreationType={RepoCreationType.CREATE}
+                    customRenderer={fn => (
+                      <MenuItem
+                        icon="plus"
+                        text={<String stringID="cde.create.repoNotFound" vars={{ repo: repoSearch }} useRichText />}
+                        onClick={fn}
+                      />
+                    )}
                     modalTitle={getString('createRepo')}
                     onSubmit={() => {
                       refetchRepos()
                     }}
                   />
                 </Container>
+              ) : !hadReops ? (
+                <Container>
+                  <Layout.Vertical
+                    spacing="medium"
+                    className={css.noReposContainer}
+                    flex={{ justifyContent: 'center' }}>
+                    <img src={noRepo} height={90} width={90} />
+                    <Layout.Vertical spacing="small" flex={{ alignItems: 'center' }}>
+                      <Text color={Color.PRIMARY_10} font={{ size: 'normal', weight: 'bold' }}>
+                        {getString('cde.getStarted')}
+                      </Text>
+                      <Text color={Color.PRIMARY_10} font={{ size: 'normal', weight: 'bold' }}>
+                        {getString('cde.createImport')}
+                      </Text>
+                    </Layout.Vertical>
+                    <NewRepoModalButton
+                      space={space}
+                      repoCreationType={RepoCreationType.CREATE}
+                      customRenderer={fn => (
+                        <Button width={'80%'} variation={ButtonVariation.PRIMARY} onClick={fn}>
+                          {getString('createNewRepo')}
+                        </Button>
+                      )}
+                      modalTitle={getString('newRepo')}
+                      onSubmit={() => {
+                        refetchRepos()
+                      }}
+                    />
+                    <NewRepoModalButton
+                      space={space}
+                      repoCreationType={RepoCreationType.IMPORT}
+                      customRenderer={fn => (
+                        <Button width={'80%'} variation={ButtonVariation.SECONDARY} onClick={fn}>
+                          {getString('cde.importInto')}
+                        </Button>
+                      )}
+                      modalTitle={getString('importGitRepo')}
+                      onSubmit={() => {
+                        refetchRepos()
+                      }}
+                    />
+                  </Layout.Vertical>
+                </Container>
+              ) : (
+                <MenuItem disabled text={getString('loading')} />
               )}
             </Menu>
           }

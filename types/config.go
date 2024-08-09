@@ -253,6 +253,14 @@ type Config struct {
 			DisplayName string `envconfig:"GITNESS_PRINCIPAL_PIPELINE_DISPLAY_NAME" default:"Gitness Pipeline"`
 			Email       string `envconfig:"GITNESS_PRINCIPAL_PIPELINE_EMAIL"        default:"pipeline@gitness.io"`
 		}
+
+		// Gitspace defines the principal information used to create the gitspace service.
+		Gitspace struct {
+			UID         string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_UID"          default:"gitspace"`
+			DisplayName string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_DISPLAY_NAME" default:"Gitness Gitspace"`
+			Email       string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_EMAIL"        default:"gitspace@gitness.io"`
+		}
+
 		// Admin defines the principal information used to create the admin user.
 		// NOTE: The admin user is only auto-created in case a password and an email is provided.
 		Admin struct {
@@ -385,24 +393,30 @@ type Config struct {
 		CertPath string `envconfig:"GITNESS_DOCKER_CERT_PATH"`
 		// TLSVerify enables or disables TLS verification, off by default.
 		TLSVerify string `envconfig:"GITNESS_DOCKER_TLS_VERIFY"`
+		// MachineHostName is the public host name of the machine on which the Docker.Host is running.
+		// If not set, it parses the host from the URL.Base (e.g. localhost from http://localhost:3000).
+		MachineHostName string `envconfig:"GITNESS_DOCKER_MACHINE_HOST_NAME"`
 	}
 
 	IDE struct {
 		VSCodeWeb struct {
-			// PortAndProtocol is the port on which the VS Code Web will be accessible.
-			Port string `envconfig:"GITNESS_IDE_VSCODEWEB_PORT" default:"8089"`
+			// Port is the port on which the VSCode Web will be accessible.
+			Port int `envconfig:"GITNESS_IDE_VSCODEWEB_PORT" default:"8089"`
+		}
+
+		VSCode struct {
+			// Port is the port on which the SSH server for VSCode will be accessible.
+			Port int `envconfig:"GITNESS_IDE_VSCODE_PORT" default:"8088"`
 		}
 	}
 
 	Gitspace struct {
 		// DefaultBaseImage is used to create the Gitspace when no devcontainer.json is absent or doesn't have image.
 		DefaultBaseImage string `envconfig:"GITNESS_GITSPACE_DEFAULT_BASE_IMAGE" default:"mcr.microsoft.com/devcontainers/base:dev-ubuntu-24.04"` //nolint:lll
-		// DefaultBindMountTargetPath is the target for bind mount in the Gitspace container.
-		DefaultBindMountTargetPath string `envconfig:"GITNESS_GITSPACE_DEFAULT_BIND_MOUNT_TARGET_PATH" default:"/gitspace"` //nolint:lll
-		// DefaultBindMountTargetPath is the source for bind mount in the Gitspace container.
-		// Sub-directories will be created from this eg <DefaultBindMountSourceBasePath>/gitspace/space1/space2/config1
-		// If left blank, it will be set to $HOME/.gitness
-		DefaultBindMountSourceBasePath string `envconfig:"GITNESS_GITSPACE_DEFAULT_BIND_MOUNT_SOURCE_BASE_PATH"`
+
+		Enable bool `envconfig:"GITNESS_GITSPACE_ENABLE" default:"false"`
+
+		AgentPort int `envconfig:"GITNESS_GITSPACE_AGENT_PORT" default:"8083"`
 
 		Events struct {
 			Concurrency int `envconfig:"GITNESS_GITSPACE_EVENTS_CONCURRENCY" default:"4"`

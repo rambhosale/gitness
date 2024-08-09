@@ -22,6 +22,8 @@ import (
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
 // List returns a list of pull requests from the provided repository.
@@ -58,6 +60,11 @@ func (c *Controller) List(
 			return fmt.Errorf("failed to list pull requests: %w", err)
 		}
 
+		err := c.labelSvc.BackfillMany(ctx, list)
+		if err != nil {
+			return fmt.Errorf("failed to backfill labels assigned to pull requests: %w", err)
+		}
+
 		if filter.Page == 1 && len(list) < filter.Size {
 			count = int64(len(list))
 			return nil
@@ -72,6 +79,12 @@ func (c *Controller) List(
 	}, dbtx.TxDefaultReadOnly)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	for _, pr := range list {
+		if err := c.backfillStats(ctx, repo, pr); err != nil {
+			log.Ctx(ctx).Warn().Err(err).Msg("failed to backfill PR stats")
+		}
 	}
 
 	return list, count, nil

@@ -14,6 +14,8 @@
 
 package enum
 
+import "fmt"
+
 type GitspaceStateType string
 
 func (GitspaceStateType) Enum() []interface{} {
@@ -21,12 +23,41 @@ func (GitspaceStateType) Enum() []interface{} {
 }
 
 var gitspaceStateTypes = []GitspaceStateType{
-	GitspaceStateRunning, GitspaceStateStopped, GitspaceStateError, GitspaceStateUninitialized,
+	GitspaceStateRunning,
+	GitspaceStateStopped,
+	GitspaceStateError,
+	GitspaceStateUninitialized,
+	GitspaceStateStarting,
+	GitspaceStateStopping,
 }
 
 const (
 	GitspaceStateRunning       GitspaceStateType = "running"
 	GitspaceStateStopped       GitspaceStateType = "stopped"
+	GitspaceStateStarting      GitspaceStateType = "starting"
+	GitspaceStateStopping      GitspaceStateType = "stopping"
 	GitspaceStateError         GitspaceStateType = "error"
 	GitspaceStateUninitialized GitspaceStateType = "uninitialized"
 )
+
+func GetGitspaceStateFromInstance(
+	instanceState GitspaceInstanceStateType,
+) (GitspaceStateType, error) {
+	switch instanceState {
+	case GitspaceInstanceStateRunning:
+		return GitspaceStateRunning, nil
+	case GitspaceInstanceStateDeleted:
+		return GitspaceStateStopped, nil
+	case GitspaceInstanceStateStarting:
+		return GitspaceStateStarting, nil
+	case GitspaceInstanceStateStopping:
+		return GitspaceStateStopping, nil
+	case GitspaceInstanceStateUninitialized:
+		return GitspaceStateUninitialized, nil
+	case GitspaceInstanceStateError,
+		GitspaceInstanceStateUnknown:
+		return GitspaceStateError, nil
+	default:
+		return GitspaceStateError, fmt.Errorf("unsupported gitspace instance state %s", string(instanceState))
+	}
+}

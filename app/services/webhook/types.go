@@ -15,6 +15,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -79,6 +80,16 @@ type PullReqCommentSegment struct {
 	CommentInfo CommentInfo `json:"comment"`
 }
 
+// PullReqUpdateSegment contains details what has been updated in the pull request.
+type PullReqUpdateSegment struct {
+	TitleChanged       bool   `json:"title_changed"`
+	TitleOld           string `json:"title_old"`
+	TitleNew           string `json:"title_new"`
+	DescriptionChanged bool   `json:"description_changed"`
+	DescriptionOld     string `json:"description_old"`
+	DescriptionNew     string `json:"description_new"`
+}
+
 // RepositoryInfo describes the repo related info for a webhook payload.
 // NOTE: don't use types package as we want webhook payload to be independent from API calls.
 type RepositoryInfo struct {
@@ -104,14 +115,14 @@ func (r RepositoryInfo) MarshalJSON() ([]byte, error) {
 }
 
 // repositoryInfoFrom gets the RespositoryInfo from a types.Repository.
-func repositoryInfoFrom(repo *types.Repository, urlProvider url.Provider) RepositoryInfo {
+func repositoryInfoFrom(ctx context.Context, repo *types.Repository, urlProvider url.Provider) RepositoryInfo {
 	return RepositoryInfo{
 		ID:            repo.ID,
 		Path:          repo.Path,
 		Identifier:    repo.Identifier,
 		DefaultBranch: repo.DefaultBranch,
-		GitURL:        urlProvider.GenerateGITCloneURL(repo.Path),
-		GitSSHURL:     urlProvider.GenerateGITCloneSSHURL(repo.Path),
+		GitURL:        urlProvider.GenerateGITCloneURL(ctx, repo.Path),
+		GitSSHURL:     urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path),
 	}
 }
 
@@ -133,7 +144,12 @@ type PullReqInfo struct {
 }
 
 // pullReqInfoFrom gets the PullReqInfo from a types.PullReq.
-func pullReqInfoFrom(pr *types.PullReq, repo *types.Repository, urlProvider url.Provider) PullReqInfo {
+func pullReqInfoFrom(
+	ctx context.Context,
+	pr *types.PullReq,
+	repo *types.Repository,
+	urlProvider url.Provider,
+) PullReqInfo {
 	return PullReqInfo{
 		Number:        pr.Number,
 		State:         pr.State,
@@ -146,7 +162,7 @@ func pullReqInfoFrom(pr *types.PullReq, repo *types.Repository, urlProvider url.
 		TargetBranch:  pr.TargetBranch,
 		MergeStrategy: pr.MergeMethod,
 		Author:        principalInfoFrom(&pr.Author),
-		PrURL:         urlProvider.GenerateUIPRURL(repo.Path, pr.Number),
+		PrURL:         urlProvider.GenerateUIPRURL(ctx, repo.Path, pr.Number),
 	}
 }
 

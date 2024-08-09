@@ -16,30 +16,60 @@ package gitspace
 
 import (
 	"github.com/harness/gitness/app/auth/authz"
+	gitspaceevents "github.com/harness/gitness/app/events/gitspace"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/orchestrator"
+	"github.com/harness/gitness/app/gitspace/scm"
+	"github.com/harness/gitness/app/services/gitspace"
+	"github.com/harness/gitness/app/services/infraprovider"
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/store/database/dbtx"
 )
 
 type Controller struct {
-	authorizer                 authz.Authorizer
-	infraProviderResourceStore store.InfraProviderResourceStore
-	gitspaceConfigStore        store.GitspaceConfigStore
-	gitspaceInstanceStore      store.GitspaceInstanceStore
-	spaceStore                 store.SpaceStore
+	authorizer            authz.Authorizer
+	infraProviderSvc      *infraprovider.Service
+	gitspaceConfigStore   store.GitspaceConfigStore
+	gitspaceInstanceStore store.GitspaceInstanceStore
+	spaceStore            store.SpaceStore
+	eventReporter         *gitspaceevents.Reporter
+	orchestrator          orchestrator.Orchestrator
+	gitspaceEventStore    store.GitspaceEventStore
+	tx                    dbtx.Transactor
+	statefulLogger        *logutil.StatefulLogger
+	scm                   scm.SCM
+	repoStore             store.RepoStore
+	gitspaceSvc           *gitspace.Service
 }
 
-// TODO Stubbed Impl
 func NewController(
+	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	infraProviderResourceStore store.InfraProviderResourceStore,
+	infraProviderSvc *infraprovider.Service,
 	gitspaceConfigStore store.GitspaceConfigStore,
 	gitspaceInstanceStore store.GitspaceInstanceStore,
 	spaceStore store.SpaceStore,
+	eventReporter *gitspaceevents.Reporter,
+	orchestrator orchestrator.Orchestrator,
+	gitspaceEventStore store.GitspaceEventStore,
+	statefulLogger *logutil.StatefulLogger,
+	scm scm.SCM,
+	repoStore store.RepoStore,
+	gitspaceSvc *gitspace.Service,
 ) *Controller {
 	return &Controller{
-		authorizer:                 authorizer,
-		infraProviderResourceStore: infraProviderResourceStore,
-		gitspaceConfigStore:        gitspaceConfigStore,
-		gitspaceInstanceStore:      gitspaceInstanceStore,
-		spaceStore:                 spaceStore,
+		tx:                    tx,
+		authorizer:            authorizer,
+		infraProviderSvc:      infraProviderSvc,
+		gitspaceConfigStore:   gitspaceConfigStore,
+		gitspaceInstanceStore: gitspaceInstanceStore,
+		spaceStore:            spaceStore,
+		eventReporter:         eventReporter,
+		orchestrator:          orchestrator,
+		gitspaceEventStore:    gitspaceEventStore,
+		statefulLogger:        statefulLogger,
+		scm:                   scm,
+		repoStore:             repoStore,
+		gitspaceSvc:           gitspaceSvc,
 	}
 }

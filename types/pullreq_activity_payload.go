@@ -130,6 +130,16 @@ func (a *PullRequestActivityPayloadReviewSubmit) ActivityType() enum.PullReqActi
 	return enum.PullReqActivityTypeReviewSubmit
 }
 
+type PullRequestActivityPayloadReviewerDelete struct {
+	CommitSHA   string                     `json:"commit_sha"`
+	Decision    enum.PullReqReviewDecision `json:"decision"`
+	PrincipalID int64                      `json:"principal_id"`
+}
+
+func (a *PullRequestActivityPayloadReviewerDelete) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeReviewerDelete
+}
+
 type PullRequestActivityPayloadBranchUpdate struct {
 	Old string `json:"old"`
 	New string `json:"new"`
@@ -145,4 +155,18 @@ type PullRequestActivityPayloadBranchDelete struct {
 
 func (a *PullRequestActivityPayloadBranchDelete) ActivityType() enum.PullReqActivityType {
 	return enum.PullReqActivityTypeBranchDelete
+}
+
+type PullRequestActivityLabel struct {
+	Label         string                        `json:"label"`
+	LabelColor    enum.LabelColor               `json:"label_color"`
+	Value         *string                       `json:"value,omitempty"`
+	ValueColor    *enum.LabelColor              `json:"value_color,omitempty"`
+	OldValue      *string                       `json:"old_value,omitempty"`
+	OldValueColor *enum.LabelColor              `json:"old_value_color,omitempty"`
+	Type          enum.PullReqLabelActivityType `json:"type"`
+}
+
+func (a *PullRequestActivityLabel) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeLabelModify
 }

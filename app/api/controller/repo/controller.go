@@ -30,6 +30,7 @@ import (
 	"github.com/harness/gitness/app/services/codeowners"
 	"github.com/harness/gitness/app/services/importer"
 	"github.com/harness/gitness/app/services/keywordsearch"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/locker"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/app/services/publicaccess"
@@ -49,7 +50,8 @@ var errPublicRepoCreationDisabled = usererror.BadRequestf("Public repository cre
 
 type RepositoryOutput struct {
 	types.Repository
-	IsPublic bool `json:"is_public" yaml:"is_public"`
+	IsPublic  bool `json:"is_public" yaml:"is_public"`
+	Importing bool `json:"importing" yaml:"-"`
 }
 
 // TODO [CODE-1363]: remove after identifier migration.
@@ -91,6 +93,7 @@ type Controller struct {
 	identifierCheck    check.RepoIdentifier
 	repoCheck          Check
 	publicAccess       publicaccess.Service
+	labelSvc           *label.Service
 }
 
 func NewController(
@@ -118,6 +121,7 @@ func NewController(
 	identifierCheck check.RepoIdentifier,
 	repoCheck Check,
 	publicAccess publicaccess.Service,
+	labelSvc *label.Service,
 ) *Controller {
 	return &Controller{
 		defaultBranch:      config.Git.DefaultBranch,
@@ -144,6 +148,7 @@ func NewController(
 		identifierCheck:    identifierCheck,
 		repoCheck:          repoCheck,
 		publicAccess:       publicAccess,
+		labelSvc:           labelSvc,
 	}
 }
 
@@ -156,6 +161,7 @@ func (c *Controller) getRepo(
 		ctx,
 		c.repoStore,
 		repoRef,
+		ActiveRepoStates,
 	)
 }
 
@@ -174,10 +180,30 @@ func (c *Controller) getRepoCheckAccess(
 		session,
 		repoRef,
 		reqPermission,
+		ActiveRepoStates,
 	)
 }
 
-func (c *Controller) validateParentRef(parentRef string) error {
+// getRepoCheckAccessForGit fetches a repo
+// and checks if the current user has permission to access it.
+func (c *Controller) getRepoCheckAccessForGit(
+	ctx context.Context,
+	session *auth.Session,
+	repoRef string,
+	reqPermission enum.Permission,
+) (*types.Repository, error) {
+	return GetRepoCheckAccess(
+		ctx,
+		c.repoStore,
+		c.authorizer,
+		session,
+		repoRef,
+		reqPermission,
+		nil, // Any state allowed - we'll block in the pre-receive hook.
+	)
+}
+
+func ValidateParentRef(parentRef string) error {
 	parentRefAsID, err := strconv.ParseInt(parentRef, 10, 64)
 	if (err == nil && parentRefAsID <= 0) || (len(strings.TrimSpace(parentRef)) == 0) {
 		return errRepositoryRequiresParent

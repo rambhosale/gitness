@@ -16,30 +16,24 @@ package infraprovider
 
 import (
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/infraprovider"
 	"github.com/harness/gitness/app/store"
-	"github.com/harness/gitness/infraprovider"
 )
 
 type Controller struct {
-	authorizer                 authz.Authorizer
-	infraProviderResourceStore store.InfraProviderResourceStore
-	infraProviderConfigStore   store.InfraProviderConfigStore
-	infraProviderFactory       infraprovider.Factory
-	spaceStore                 store.SpaceStore
+	authorizer       authz.Authorizer
+	spaceStore       store.SpaceStore
+	infraproviderSvc *infraprovider.Service
 }
 
 func NewController(
 	authorizer authz.Authorizer,
-	infraProviderResourceStore store.InfraProviderResourceStore,
-	infraProviderConfigStore store.InfraProviderConfigStore,
-	factory infraprovider.Factory,
 	spaceStore store.SpaceStore,
+	infraproviderSvc *infraprovider.Service,
 ) *Controller {
 	return &Controller{
-		authorizer:                 authorizer,
-		infraProviderResourceStore: infraProviderResourceStore,
-		infraProviderConfigStore:   infraProviderConfigStore,
-		infraProviderFactory:       factory,
-		spaceStore:                 spaceStore,
+		authorizer:       authorizer,
+		spaceStore:       spaceStore,
+		infraproviderSvc: infraproviderSvc,
 	}
 }

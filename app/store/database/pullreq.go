@@ -93,6 +93,8 @@ type pullReq struct {
 
 	CommitCount null.Int `db:"pullreq_commit_count"`
 	FileCount   null.Int `db:"pullreq_file_count"`
+	Additions   null.Int `db:"pullreq_additions"`
+	Deletions   null.Int `db:"pullreq_deletions"`
 }
 
 const (
@@ -126,7 +128,9 @@ const (
 		,pullreq_merge_sha
 		,pullreq_merge_conflicts
 		,pullreq_commit_count
-		,pullreq_file_count`
+		,pullreq_file_count
+		,pullreq_additions
+		,pullreq_deletions`
 
 	pullReqSelectBase = `
 	SELECT` + pullReqColumns + `
@@ -219,6 +223,8 @@ func (s *PullReqStore) Create(ctx context.Context, pr *types.PullReq) error {
 		,pullreq_merge_conflicts
 		,pullreq_commit_count
 		,pullreq_file_count
+		,pullreq_additions
+		,pullreq_deletions
 	) values (
 		 :pullreq_version
 		,:pullreq_number
@@ -249,6 +255,8 @@ func (s *PullReqStore) Create(ctx context.Context, pr *types.PullReq) error {
 		,:pullreq_merge_conflicts
 		,:pullreq_commit_count
 		,:pullreq_file_count
+		,:pullreq_additions
+		,:pullreq_deletions
 	) RETURNING pullreq_id`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -292,6 +300,8 @@ func (s *PullReqStore) Update(ctx context.Context, pr *types.PullReq) error {
 		,pullreq_merge_conflicts = :pullreq_merge_conflicts
 		,pullreq_commit_count = :pullreq_commit_count
 		,pullreq_file_count = :pullreq_file_count
+		,pullreq_additions = :pullreq_additions
+		,pullreq_deletions = :pullreq_deletions
 	WHERE pullreq_id = :pullreq_id AND pullreq_version = :pullreq_version - 1`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -380,6 +390,8 @@ func (s *PullReqStore) ResetMergeCheckStatus(
 		,pullreq_merge_conflicts = NULL
 		,pullreq_commit_count = NULL
 		,pullreq_file_count = NULL
+		,pullreq_additions = NULL
+		,pullreq_deletions = NULL
 	WHERE pullreq_target_repo_id = $3 AND
 		pullreq_target_branch = $4 AND
 		pullreq_state not in ($5, $6)`
@@ -412,61 +424,14 @@ func (s *PullReqStore) Delete(ctx context.Context, id int64) error {
 
 // Count of pull requests for a repo.
 func (s *PullReqStore) Count(ctx context.Context, opts *types.PullReqFilter) (int64, error) {
-	stmt := database.Builder.
-		Select("count(*)").
-		From("pullreqs")
+	var stmt squirrel.SelectBuilder
 
-	if len(opts.States) == 1 {
-		stmt = stmt.Where("pullreq_state = ?", opts.States[0])
-	} else if len(opts.States) > 1 {
-		stmt = stmt.Where(squirrel.Eq{"pullreq_state": opts.States})
+	if len(opts.LabelID) > 0 || len(opts.ValueID) > 0 {
+		stmt = database.Builder.Select("count(DISTINCT pullreq_id)")
+	} else {
+		stmt = database.Builder.Select("count(*)")
 	}
-
-	if opts.SourceRepoID != 0 {
-		stmt = stmt.Where("pullreq_source_repo_id = ?", opts.SourceRepoID)
-	}
-
-	if opts.SourceBranch != "" {
-		stmt = stmt.Where("pullreq_source_branch = ?", opts.SourceBranch)
-	}
-
-	if opts.TargetRepoID != 0 {
-		stmt = stmt.Where("pullreq_target_repo_id = ?", opts.TargetRepoID)
-	}
-
-	if opts.TargetBranch != "" {
-		stmt = stmt.Where("pullreq_target_branch = ?", opts.TargetBranch)
-	}
-
-	if opts.Query != "" {
-		stmt = stmt.Where("LOWER(pullreq_title) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
-	}
-
-	if len(opts.CreatedBy) > 0 {
-		stmt = stmt.Where(squirrel.Eq{"pullreq_created_by": opts.CreatedBy})
-	}
-
-	sql, args, err := stmt.ToSql()
-	if err != nil {
-		return 0, errors.Wrap(err, "Failed to convert query to sql")
-	}
-
-	db := dbtx.GetAccessor(ctx, s.db)
-
-	var count int64
-	err = db.QueryRowContext(ctx, sql, args...).Scan(&count)
-	if err != nil {
-		return 0, database.ProcessSQLErrorf(ctx, err, "Failed executing count query")
-	}
-
-	return count, nil
-}
-
-// List returns a list of pull requests for a repo.
-func (s *PullReqStore) List(ctx context.Context, opts *types.PullReqFilter) ([]*types.PullReq, error) {
-	stmt := database.Builder.
-		Select(pullReqColumns).
-		From("pullreqs")
+	stmt = stmt.From("pullreqs")
 
 	if len(opts.States) == 1 {
 		stmt = stmt.Where("pullreq_state = ?", opts.States[0])
@@ -506,6 +471,75 @@ func (s *PullReqStore) List(ctx context.Context, opts *types.PullReqFilter) ([]*
 		stmt = stmt.Where("pullreq_created > ?", opts.CreatedGt)
 	}
 
+	setLabelKeyQuery(&stmt, opts)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var count int64
+	err = db.QueryRowContext(ctx, sql, args...).Scan(&count)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "Failed executing count query")
+	}
+
+	return count, nil
+}
+
+// List returns a list of pull requests for a repo.
+func (s *PullReqStore) List(ctx context.Context, opts *types.PullReqFilter) ([]*types.PullReq, error) {
+	var stmt squirrel.SelectBuilder
+
+	if len(opts.LabelID) > 0 || len(opts.ValueID) > 0 {
+		stmt = database.Builder.Select("DISTINCT " + pullReqColumns)
+	} else {
+		stmt = database.Builder.Select(pullReqColumns)
+	}
+	stmt = stmt.From("pullreqs")
+
+	if len(opts.States) == 1 {
+		stmt = stmt.Where("pullreq_state = ?", opts.States[0])
+	} else if len(opts.States) > 1 {
+		stmt = stmt.Where(squirrel.Eq{"pullreq_state": opts.States})
+	}
+
+	if opts.SourceRepoID != 0 {
+		stmt = stmt.Where("pullreq_source_repo_id = ?", opts.SourceRepoID)
+	}
+
+	if opts.SourceBranch != "" {
+		stmt = stmt.Where("pullreq_source_branch = ?", opts.SourceBranch)
+	}
+
+	if opts.TargetRepoID != 0 {
+		stmt = stmt.Where("pullreq_target_repo_id = ?", opts.TargetRepoID)
+	}
+
+	if opts.TargetBranch != "" {
+		stmt = stmt.Where("pullreq_target_branch = ?", opts.TargetBranch)
+	}
+
+	if opts.Query != "" {
+		stmt = stmt.Where("LOWER(pullreq_title) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
+	}
+
+	if len(opts.CreatedBy) > 0 {
+		stmt = stmt.Where(squirrel.Eq{"pullreq_created_by": opts.CreatedBy})
+	}
+
+	if opts.CreatedLt > 0 {
+		stmt = stmt.Where("pullreq_created < ?", opts.CreatedLt)
+	}
+
+	if opts.CreatedGt > 0 {
+		stmt = stmt.Where("pullreq_created > ?", opts.CreatedGt)
+	}
+
+	setLabelKeyQuery(&stmt, opts)
+
 	stmt = stmt.Limit(database.Limit(opts.Size))
 	stmt = stmt.Offset(database.Offset(opts.Page, opts.Size))
 
@@ -534,6 +568,33 @@ func (s *PullReqStore) List(ctx context.Context, opts *types.PullReqFilter) ([]*
 	}
 
 	return result, nil
+}
+
+func setLabelKeyQuery(stmt *squirrel.SelectBuilder, opts *types.PullReqFilter) {
+	if len(opts.LabelID) == 0 && len(opts.ValueID) == 0 {
+		return
+	}
+
+	*stmt = stmt.InnerJoin("pullreq_labels ON pullreq_label_pullreq_id = pullreq_id")
+
+	if len(opts.LabelID) > 0 && len(opts.ValueID) == 0 {
+		*stmt = stmt.Where(
+			squirrel.Eq{"pullreq_label_label_id": opts.LabelID},
+		)
+		return
+	}
+
+	if len(opts.LabelID) == 0 && len(opts.ValueID) > 0 {
+		*stmt = stmt.Where(
+			squirrel.Eq{"pullreq_label_label_value_id": opts.ValueID},
+		)
+		return
+	}
+
+	*stmt = stmt.Where(squirrel.Or{
+		squirrel.Eq{"pullreq_label_label_id": opts.LabelID},
+		squirrel.Eq{"pullreq_label_label_value_id": opts.ValueID},
+	})
 }
 
 func mapPullReq(pr *pullReq) *types.PullReq {
@@ -579,6 +640,8 @@ func mapPullReq(pr *pullReq) *types.PullReq {
 			DiffStats: types.DiffStats{
 				Commits:      pr.CommitCount.Ptr(),
 				FilesChanged: pr.FileCount.Ptr(),
+				Additions:    pr.Additions.Ptr(),
+				Deletions:    pr.Deletions.Ptr(),
 			},
 		},
 	}
@@ -617,6 +680,8 @@ func mapInternalPullReq(pr *types.PullReq) *pullReq {
 		MergeConflicts:   null.NewString(mergeConflicts, mergeConflicts != ""),
 		CommitCount:      null.IntFromPtr(pr.Stats.Commits),
 		FileCount:        null.IntFromPtr(pr.Stats.FilesChanged),
+		Additions:        null.IntFromPtr(pr.Stats.Additions),
+		Deletions:        null.IntFromPtr(pr.Stats.Deletions),
 	}
 
 	return m

@@ -166,6 +166,14 @@ type (
 		// GetRootSpace returns a space where space_parent_id is NULL.
 		GetRootSpace(ctx context.Context, spaceID int64) (*types.Space, error)
 
+		// GetAncestorIDs returns a list of all space IDs along the recursive path to the root space.
+		GetAncestorIDs(ctx context.Context, spaceID int64) ([]int64, error)
+
+		GetHierarchy(
+			ctx context.Context,
+			spaceID int64,
+		) ([]*types.Space, error)
+
 		// Create creates a new space
 		Create(ctx context.Context, space *types.Space) error
 
@@ -372,7 +380,11 @@ type (
 
 		// CreateWithPayload create a new system activity from the provided payload.
 		CreateWithPayload(ctx context.Context,
-			pr *types.PullReq, principalID int64, payload types.PullReqActivityPayload) (*types.PullReqActivity, error)
+			pr *types.PullReq,
+			principalID int64,
+			payload types.PullReqActivityPayload,
+			metadata *types.PullReqActivityMetadata,
+		) (*types.PullReqActivity, error)
 
 		// Update the pull request activity. It will set new values to the Version and Updated fields.
 		Update(ctx context.Context, act *types.PullReqActivity) error
@@ -572,7 +584,7 @@ type (
 		Create(ctx context.Context, gitspaceConfig *types.GitspaceConfig) error
 
 		// Update tries to update a gitspace config in the datastore with optimistic locking.
-		Update(ctx context.Context, gitspaceConfig *types.GitspaceConfig) (*types.GitspaceConfig, error)
+		Update(ctx context.Context, gitspaceConfig *types.GitspaceConfig) error
 
 		// List lists the gitspace configs present in a parent space ID in the datastore.
 		List(ctx context.Context, filter *types.GitspaceFilter) ([]*types.GitspaceConfig, error)
@@ -580,11 +592,8 @@ type (
 		// Count the number of gitspace configs in a space matching the given filter.
 		Count(ctx context.Context, filter *types.GitspaceFilter) (int64, error)
 
-		// Delete deletes a pipeline ID from the datastore.
-		Delete(ctx context.Context, id int64) error
-
-		// DeleteByIdentifier deletes the gitspaceConfig with the given identifier for the given space.
-		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
+		// ListAll lists all the gitspace configs present for a user in the given spaces in the datastore.
+		ListAll(ctx context.Context, userUID string) ([]*types.GitspaceConfig, error)
 	}
 
 	GitspaceInstanceStore interface {
@@ -602,13 +611,13 @@ type (
 		Create(ctx context.Context, gitspaceInstance *types.GitspaceInstance) error
 
 		// Update tries to update a gitspace instance in the datastore with optimistic locking.
-		Update(ctx context.Context, gitspaceInstance *types.GitspaceInstance) (*types.GitspaceInstance, error)
+		Update(ctx context.Context, gitspaceInstance *types.GitspaceInstance) error
 
 		// List lists the gitspace instance present in a parent space ID in the datastore.
 		List(ctx context.Context, filter *types.GitspaceFilter) ([]*types.GitspaceInstance, error)
 
-		// Delete deletes a gitspace instance ID from the datastore.
-		Delete(ctx context.Context, id int64) error
+		// List lists the latest gitspace instance present for the gitspace configs in the datastore.
+		FindAllLatestByGitspaceConfigID(ctx context.Context, gitspaceConfigIDs []int64) ([]*types.GitspaceInstance, error)
 	}
 
 	InfraProviderConfigStore interface {
@@ -620,9 +629,6 @@ type (
 
 		// Create creates a new infra provider config in the datastore.
 		Create(ctx context.Context, infraProviderConfig *types.InfraProviderConfig) error
-
-		// DeleteByIdentifier deletes the infra provider config with the given identifier for the given space.
-		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
 	}
 
 	InfraProviderResourceStore interface {
@@ -633,16 +639,13 @@ type (
 		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.InfraProviderResource, error)
 
 		// Create creates a new infra provider resource in the datastore.
-		Create(ctx context.Context, infraProviderConfigID int64, infraProviderResource *types.InfraProviderResource) error
+		Create(ctx context.Context, infraProviderResource *types.InfraProviderResource) error
 
 		// List lists the infra provider resource present for the gitspace config in a parent space ID in the datastore.
 		List(ctx context.Context,
 			infraProviderConfigID int64,
 			filter types.ListQueryFilter,
 		) ([]*types.InfraProviderResource, error)
-
-		// ListAll lists all the infra provider resource in a given space.
-		ListAll(ctx context.Context, parentID int64, filter types.ListQueryFilter) ([]*types.InfraProviderResource, error)
 
 		// DeleteByIdentifier deletes the Infra provider resource with the given identifier for the given space.
 		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
@@ -924,8 +927,8 @@ type (
 		// Create creates a new record for the given gitspace event.
 		Create(ctx context.Context, gitspaceEvent *types.GitspaceEvent) error
 
-		// List returns all events for the given query filter.
-		List(ctx context.Context, filter *types.GitspaceEventFilter) ([]*types.GitspaceEvent, error)
+		// List returns all events and count for the given query filter.
+		List(ctx context.Context, filter *types.GitspaceEventFilter) ([]*types.GitspaceEvent, int, error)
 
 		// FindLatestByTypeAndGitspaceConfigID returns the latest gitspace event for the given config ID and event type
 		// where the entity type is gitspace config.
@@ -934,5 +937,157 @@ type (
 			eventType enum.GitspaceEventType,
 			gitspaceConfigID int64,
 		) (*types.GitspaceEvent, error)
+	}
+
+	LabelStore interface {
+		// Define defines a label.
+		Define(ctx context.Context, lbl *types.Label) error
+
+		// Update updates a label.
+		Update(ctx context.Context, lbl *types.Label) error
+
+		// Find finds a label defined in a specified space/repo with a specified key.
+		Find(
+			ctx context.Context,
+			spaceID, repoID *int64,
+			key string,
+		) (*types.Label, error)
+
+		// Delete deletes a label defined in a specified space/repo with a specified key.
+		Delete(ctx context.Context, spaceID, repoID *int64, key string) error
+
+		// List list labels defined in a specified space/repo.
+		List(
+			ctx context.Context,
+			spaceID, repoID *int64,
+			filter *types.LabelFilter,
+		) ([]*types.Label, error)
+
+		// FindByID finds label with a specified id.
+		FindByID(ctx context.Context, id int64) (*types.Label, error)
+
+		// ListInScopes lists labels defined in specified repo/spaces.
+		ListInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.LabelFilter,
+		) ([]*types.Label, error)
+
+		// ListInfosInScopes lists label infos defined in specified repo/spaces.
+		ListInfosInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.AssignableLabelFilter,
+		) ([]*types.LabelInfo, error)
+
+		// IncrementValueCount increments count of values defined for a specified label.
+		IncrementValueCount(ctx context.Context, labelID int64, increment int) (int64, error)
+
+		// CountInSpace counts the number of labels defined in a specified space.
+		CountInSpace(ctx context.Context, spaceID int64, filter *types.LabelFilter) (int64, error)
+
+		// CountInRepo counts the number of labels defined in a specified repository.
+		CountInRepo(ctx context.Context, repoID int64, filter *types.LabelFilter) (int64, error)
+
+		// CountInScopes counts the number of labels defined in specified repo/spaces.
+		CountInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.LabelFilter,
+		) (int64, error)
+	}
+
+	LabelValueStore interface {
+		// Define defines a label value.
+		Define(ctx context.Context, lbl *types.LabelValue) error
+
+		// Update updates a label value.
+		Update(ctx context.Context, lblVal *types.LabelValue) error
+
+		// Delete deletes a label value associated with a specified label.
+		Delete(ctx context.Context, labelID int64, value string) error
+
+		// Delete deletes specified label values associated with a specified label.
+		DeleteMany(ctx context.Context, labelID int64, values []string) error
+
+		// FindByLabelID finds a label value defined for a specified label.
+		FindByLabelID(
+			ctx context.Context,
+			labelID int64,
+			value string,
+		) (*types.LabelValue, error)
+
+		// List lists label values defined for a specified label.
+		List(
+			ctx context.Context,
+			labelID int64,
+			opts *types.ListQueryFilter,
+		) ([]*types.LabelValue, error)
+
+		// FindByID finds label value with a specified id.
+		FindByID(ctx context.Context, id int64) (*types.LabelValue, error)
+
+		// ListInfosByLabelIDs list label infos by a specified label id.
+		ListInfosByLabelIDs(
+			ctx context.Context,
+			labelIDs []int64,
+		) (map[int64][]*types.LabelValueInfo, error)
+	}
+
+	PullReqLabelAssignmentStore interface {
+		// Assign assigns a label to a pullreq.
+		Assign(ctx context.Context, label *types.PullReqLabel) error
+
+		// Unassign removes a label from a pullreq with a specified id.
+		Unassign(ctx context.Context, pullreqID int64, labelID int64) error
+
+		// ListAssigned list labels assigned to a specified pullreq.
+		ListAssigned(
+			ctx context.Context,
+			pullreqID int64,
+		) (map[int64]*types.LabelAssignment, error)
+
+		// Find finds a label assigned to a pullreq with a specified id.
+		FindByLabelID(
+			ctx context.Context,
+			pullreqID int64,
+			labelID int64,
+		) (*types.PullReqLabel, error)
+
+		// FindValueByLabelID finds a value assigned to a pullreq label.
+		FindValueByLabelID(ctx context.Context, labelID int64) (*types.LabelValue, error)
+
+		// ListAssignedByPullreqIDs list labels assigned to specified pullreqs.
+		ListAssignedByPullreqIDs(
+			ctx context.Context,
+			pullreqIDs []int64,
+		) (map[int64][]*types.LabelPullReqAssignmentInfo, error)
+	}
+
+	InfraProviderTemplateStore interface {
+		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.InfraProviderTemplate, error)
+		Find(ctx context.Context, id int64) (*types.InfraProviderTemplate, error)
+		Create(ctx context.Context, infraProviderTemplate *types.InfraProviderTemplate) error
+		Delete(ctx context.Context, id int64) error
+	}
+
+	InfraProvisionedStore interface {
+		Find(ctx context.Context, id int64) (*types.InfraProvisioned, error)
+		FindAllLatestByGateway(ctx context.Context, gatewayHost string) ([]*types.InfraProvisionedGatewayView, error)
+		FindLatestByGitspaceInstanceID(
+			ctx context.Context,
+			spaceID int64,
+			gitspaceInstanceID int64,
+		) (*types.InfraProvisioned, error)
+		FindLatestByGitspaceInstanceIdentifier(ctx context.Context,
+			spaceID int64,
+			gitspaceInstanceIdentifier string,
+		) (*types.InfraProvisioned, error)
+		Create(ctx context.Context, infraProvisioned *types.InfraProvisioned) error
+		Delete(ctx context.Context, id int64) error
+		Update(ctx context.Context, infraProvisioned *types.InfraProvisioned) error
 	}
 )

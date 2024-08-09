@@ -78,14 +78,16 @@ func GetAllPullReqActivityTypes() ([]PullReqActivityType, PullReqActivityType) {
 
 // PullReqActivityType enumeration.
 const (
-	PullReqActivityTypeComment      PullReqActivityType = "comment"
-	PullReqActivityTypeCodeComment  PullReqActivityType = "code-comment"
-	PullReqActivityTypeTitleChange  PullReqActivityType = "title-change"
-	PullReqActivityTypeStateChange  PullReqActivityType = "state-change"
-	PullReqActivityTypeReviewSubmit PullReqActivityType = "review-submit"
-	PullReqActivityTypeBranchUpdate PullReqActivityType = "branch-update"
-	PullReqActivityTypeBranchDelete PullReqActivityType = "branch-delete"
-	PullReqActivityTypeMerge        PullReqActivityType = "merge"
+	PullReqActivityTypeComment        PullReqActivityType = "comment"
+	PullReqActivityTypeCodeComment    PullReqActivityType = "code-comment"
+	PullReqActivityTypeTitleChange    PullReqActivityType = "title-change"
+	PullReqActivityTypeStateChange    PullReqActivityType = "state-change"
+	PullReqActivityTypeReviewSubmit   PullReqActivityType = "review-submit"
+	PullReqActivityTypeReviewerDelete PullReqActivityType = "reviewer-delete"
+	PullReqActivityTypeBranchUpdate   PullReqActivityType = "branch-update"
+	PullReqActivityTypeBranchDelete   PullReqActivityType = "branch-delete"
+	PullReqActivityTypeMerge          PullReqActivityType = "merge"
+	PullReqActivityTypeLabelModify    PullReqActivityType = "label-modify"
 )
 
 var pullReqActivityTypes = sortEnum([]PullReqActivityType{
@@ -94,9 +96,11 @@ var pullReqActivityTypes = sortEnum([]PullReqActivityType{
 	PullReqActivityTypeTitleChange,
 	PullReqActivityTypeStateChange,
 	PullReqActivityTypeReviewSubmit,
+	PullReqActivityTypeReviewerDelete,
 	PullReqActivityTypeBranchUpdate,
 	PullReqActivityTypeBranchDelete,
 	PullReqActivityTypeMerge,
+	PullReqActivityTypeLabelModify,
 })
 
 // PullReqActivityKind defines kind of pull request activity system message.
@@ -238,3 +242,27 @@ const (
 	// MergeCheckStatusMergeable branch can merged cleanly into the target branch.
 	MergeCheckStatusMergeable MergeCheckStatus = "mergeable"
 )
+
+type PullReqLabelActivityType string
+
+func (PullReqLabelActivityType) Enum() []interface{} { return toInterfaceSlice(LabelActivityTypes) }
+func (t PullReqLabelActivityType) Sanitize() (PullReqLabelActivityType, bool) {
+	return Sanitize(t, GetAllLabelActivityTypes)
+}
+func GetAllLabelActivityTypes() ([]PullReqLabelActivityType, PullReqLabelActivityType) {
+	return LabelActivityTypes, LabelActivityNoop
+}
+
+const (
+	LabelActivityAssign   PullReqLabelActivityType = "assign"
+	LabelActivityUnassign PullReqLabelActivityType = "unassign"
+	LabelActivityReassign PullReqLabelActivityType = "reassign"
+	LabelActivityNoop     PullReqLabelActivityType = "noop"
+)
+
+var LabelActivityTypes = sortEnum([]PullReqLabelActivityType{
+	LabelActivityAssign,
+	LabelActivityUnassign,
+	LabelActivityReassign,
+	LabelActivityNoop,
+})

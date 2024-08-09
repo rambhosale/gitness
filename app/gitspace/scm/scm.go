@@ -18,114 +18,107 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"os"
+	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/harness/gitness/git/command"
 	"github.com/harness/gitness/types"
-
-	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
+	"github.com/harness/gitness/types/enum"
 )
+
+var (
+	ErrNoDefaultBranch = errors.New("no default branch")
+)
+
+const devcontainerDefaultPath = ".devcontainer/devcontainer.json"
 
 var _ SCM = (*scm)(nil)
 
 type SCM interface {
-	// DevcontainerConfig fetches devcontainer config file from the given repo and branch.
-	DevcontainerConfig(ctx context.Context, gitspaceConfig *types.GitspaceConfig) (*types.DevcontainerConfig, error)
+	// GetSCMRepoDetails fetches repository name, credentials & devcontainer config file from the given repo and branch.
+	GetSCMRepoDetails(
+		ctx context.Context,
+		gitspaceConfig types.GitspaceConfig,
+	) (*ResolvedDetails, error)
+
+	// CheckValidCodeRepo checks if the current URL is a valid and accessible code repo,
+	// input can be connector info, user token etc.
+	CheckValidCodeRepo(ctx context.Context, request CodeRepositoryRequest) (*CodeRepositoryResponse, error)
 }
 
-type scm struct{}
-
-func NewSCM() SCM {
-	return &scm{}
+type scm struct {
+	scmProviderFactory Factory
 }
 
-func (s scm) DevcontainerConfig(
+func NewSCM(factory Factory) SCM {
+	return &scm{scmProviderFactory: factory}
+}
+
+func (s scm) CheckValidCodeRepo(
 	ctx context.Context,
-	gitspaceConfig *types.GitspaceConfig,
-) (*types.DevcontainerConfig, error) {
-	gitWorkingDirectory := "/tmp/git/"
-	cloneDir := gitWorkingDirectory + uuid.New().String()
-	err := os.MkdirAll(cloneDir, os.ModePerm)
+	request CodeRepositoryRequest,
+) (*CodeRepositoryResponse, error) {
+	err := validateURL(request)
 	if err != nil {
-		return nil, fmt.Errorf("error creating directory %s: %w", cloneDir, err)
+		return nil, fmt.Errorf("invalid URL, %w", err)
 	}
-	defer func() {
-		err = os.RemoveAll(cloneDir)
-		if err != nil {
-			log.Ctx(ctx).Warn().Err(err).Msg("Unable to remove working directory")
+	codeRepositoryResponse := &CodeRepositoryResponse{
+		URL:               request.URL,
+		CodeRepoIsPrivate: true,
+	}
+	defaultBranch, err := detectDefaultGitBranch(ctx, request.URL)
+	if err == nil {
+		branch := "main"
+		if defaultBranch != "" {
+			branch = defaultBranch
 		}
-	}()
-	filePath := ".devcontainer/devcontainer.json"
-	err = validateArgs(gitspaceConfig)
+		codeRepositoryResponse = &CodeRepositoryResponse{
+			URL:               request.URL,
+			Branch:            branch,
+			CodeRepoIsPrivate: false,
+		}
+	}
+	return codeRepositoryResponse, nil
+}
+
+func (s scm) GetSCMRepoDetails(
+	ctx context.Context,
+	gitspaceConfig types.GitspaceConfig,
+) (*ResolvedDetails, error) {
+	filePath := devcontainerDefaultPath
+	if gitspaceConfig.CodeRepoType == "" {
+		gitspaceConfig.CodeRepoType = enum.CodeRepoTypeUnknown
+	}
+	scmProvider, err := s.scmProviderFactory.GetSCMProvider(gitspaceConfig.CodeRepoType)
 	if err != nil {
-		return nil, fmt.Errorf("invalid branch or url: %w", err)
+		return nil, fmt.Errorf("failed to resolve scm provider: %w", err)
 	}
-
-	log.Info().Msg("Cloning the repository...")
-	cmd := command.New("clone",
-		command.WithFlag("--branch", gitspaceConfig.Branch),
-		command.WithFlag("--no-checkout"),
-		command.WithFlag("--depth", "1"),
-		command.WithArg(gitspaceConfig.CodeRepoURL),
-		command.WithArg(cloneDir),
-	)
-	err = cmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-	)
+	resolvedCredentials, err := scmProvider.ResolveCredentials(ctx, gitspaceConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to clone repository %s: %w", gitspaceConfig.CodeRepoURL, err)
+		return nil, fmt.Errorf("failed to resolve repo credentials and url: %w", err)
+	}
+	var resolvedDetails = &ResolvedDetails{
+		ResolvedCredentials: resolvedCredentials,
 	}
 
-	var lsTreeOutput bytes.Buffer
-	lsTreeCmd := command.New("ls-tree",
-		command.WithArg("HEAD"),
-		command.WithArg(filePath),
-	)
-	err = lsTreeCmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-		command.WithStdout(&lsTreeOutput),
-	)
+	catFileOutputBytes, err := scmProvider.GetFileContent(ctx, gitspaceConfig, filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list files in repository %s: %w", cloneDir, err)
+		return nil, fmt.Errorf("failed to read devcontainer file : %w", err)
 	}
-
-	if lsTreeOutput.Len() == 0 {
-		log.Info().Msg("File not found, returning empty devcontainerConfig")
-		emptyConfig := &types.DevcontainerConfig{}
-		return emptyConfig, nil
+	if len(catFileOutputBytes) == 0 {
+		resolvedDetails.DevcontainerConfig = &types.DevcontainerConfig{}
+	} else {
+		sanitizedJSON := removeComments(catFileOutputBytes)
+		var config *types.DevcontainerConfig
+		if err = json.Unmarshal(sanitizedJSON, &config); err != nil {
+			return nil, fmt.Errorf("failed to parse devcontainer json: %w", err)
+		}
+		resolvedDetails.DevcontainerConfig = config
 	}
-
-	fields := strings.Fields(lsTreeOutput.String())
-	blobSHA := fields[2]
-
-	var catFileOutput bytes.Buffer
-	catFileCmd := command.New("cat-file", command.WithFlag("-p"), command.WithArg(blobSHA))
-	err = catFileCmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-		command.WithStderr(io.Discard),
-		command.WithStdout(&catFileOutput),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to checkout devcontainer file from path %s: %w", filePath, err)
-	}
-
-	sanitizedJSON := removeComments(catFileOutput.Bytes())
-
-	var config types.DevcontainerConfig
-	err = json.Unmarshal(sanitizedJSON, &config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse devcontainer json: %w", err)
-	}
-
-	return &config, nil
+	return resolvedDetails, nil
 }
 
 func removeComments(input []byte) []byte {
@@ -135,7 +128,28 @@ func removeComments(input []byte) []byte {
 	return lineCommentRegex.ReplaceAll(input, nil)
 }
 
-func validateArgs(_ *types.GitspaceConfig) error {
-	// TODO Validate the args
+func detectDefaultGitBranch(ctx context.Context, gitRepoDir string) (string, error) {
+	cmd := command.New("ls-remote",
+		command.WithFlag("--symref"),
+		command.WithFlag("-q"),
+		command.WithArg(gitRepoDir),
+		command.WithArg("HEAD"),
+	)
+	output := &bytes.Buffer{}
+	if err := cmd.Run(ctx, command.WithStdout(output)); err != nil {
+		return "", fmt.Errorf("failed to ls remote repo")
+	}
+	var lsRemoteHeadRegexp = regexp.MustCompile(`ref: refs/heads/([^\s]+)\s+HEAD`)
+	match := lsRemoteHeadRegexp.FindStringSubmatch(strings.TrimSpace(output.String()))
+	if match == nil {
+		return "", ErrNoDefaultBranch
+	}
+	return match[1], nil
+}
+
+func validateURL(request CodeRepositoryRequest) error {
+	if _, err := url.ParseRequestURI(request.URL); err != nil {
+		return err
+	}
 	return nil
 }

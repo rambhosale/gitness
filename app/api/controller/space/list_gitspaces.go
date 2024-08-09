@@ -16,16 +16,27 @@ package space
 
 import (
 	"context"
+	"fmt"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 )
 
 func (c *Controller) ListGitspaces(
-	_ context.Context,
-	_ *auth.Session,
-	_ string,
-	_ types.ListQueryFilter,
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	filter types.ListQueryFilter,
 ) ([]*types.GitspaceConfig, int64, error) {
-	return nil, 0, nil
+	space, err := c.spaceStore.FindByRef(ctx, spaceRef)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to find space: %w", err)
+	}
+	err = apiauth.CheckGitspace(ctx, c.authorizer, session, space.Path, "", enum.PermissionGitspaceView)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to authorize gitspace: %w", err)
+	}
+	return c.gitspaceSvc.ListGitspacesForSpace(ctx, space, session.Principal.UID, filter)
 }

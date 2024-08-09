@@ -8,6 +8,7 @@ export interface StringsMap {
   accessControl: string
   accountEmail: string
   accountSetting: string
+  accounts: string
   active: string
   activeBranches: string
   add: string
@@ -147,24 +148,30 @@ export interface StringsMap {
   'cde.create.gitnessRepositories': string
   'cde.create.gitspaceCreateFailed': string
   'cde.create.gitspaceCreateSuccess': string
+  'cde.create.importWarning': string
   'cde.create.repoNotFound': string
   'cde.create.repositoryDetails': string
   'cde.create.searchBranchPlaceholder': string
   'cde.create.searchRepositoryPlaceholder': string
   'cde.create.selectBranchPlaceholder': string
+  'cde.create.subtext': string
   'cde.create.thirdPartyGitRepositories': string
   'cde.create.unsaved.message': string
   'cde.create.unsaved.title': string
   'cde.createGitspace': string
+  'cde.createImport': string
   'cde.createRepo': string
   'cde.deleteGitspace': string
   'cde.deleteGitspaceText': string
   'cde.deleteGitspaceTitle': string
   'cde.deleteSuccess': string
   'cde.details.actions': string
+  'cde.details.containerLogs': string
+  'cde.details.containerLogsSubText': string
   'cde.details.fetchingDetails': string
   'cde.details.fetchingGitspace': string
   'cde.details.fetchingLogs': string
+  'cde.details.gitspaceActivity': string
   'cde.details.gitspaceRunning': string
   'cde.details.gitspaceStopped': string
   'cde.details.goToDashboard': string
@@ -181,9 +188,16 @@ export interface StringsMap {
   'cde.disk': string
   'cde.editGitspace': string
   'cde.eventTimeline': string
+  'cde.getStarted': string
   'cde.gitspaceDetail': string
   'cde.gitspaceUpdateSuccess': string
   'cde.gitspaces': string
+  'cde.homePage.getStartedNow': string
+  'cde.homePage.learnMoreAboutGitspaces': string
+  'cde.homePage.noSetupRequired': string
+  'cde.homePage.noteOne': string
+  'cde.homePage.noteTwo': string
+  'cde.homePage.start': string
   'cde.hours': string
   'cde.ide.browser': string
   'cde.ide.desktop': string
@@ -192,12 +206,17 @@ export interface StringsMap {
   'cde.ide.selectIDE': string
   'cde.ide.title': string
   'cde.ide.vsCode': string
+  'cde.importInto': string
   'cde.introText1': string
   'cde.introText2': string
   'cde.introText3': string
+  'cde.lastActivated': string
+  'cde.lastUsed': string
   'cde.listing.error': string
   'cde.listing.offline': string
   'cde.listing.online': string
+  'cde.listing.starting': string
+  'cde.listing.stopping': string
   'cde.logs': string
   'cde.machine': string
   'cde.machineValidationMessage': string
@@ -886,7 +905,15 @@ export interface StringsMap {
   readMe: string
   reader: string
   rebaseMerge: string
+  recursiveSearchLabel: string
+  recursiveSearchTooltip: string
   refresh: string
+  'regex.disable': string
+  'regex.disabled': string
+  'regex.enable': string
+  'regex.enabled': string
+  'regex.string': string
+  'regex.tooltip': string
   reject: string
   rejected: string
   remove: string
@@ -944,6 +971,12 @@ export interface StringsMap {
   searchExamples: string
   searchHeader: string
   searchResult: string
+  'searchScope.accOnly': string
+  'searchScope.allScopes': string
+  'searchScope.base': string
+  'searchScope.orgAndProj': string
+  'searchScope.orgOnly': string
+  'searchScope.title': string
   secret: string
   'secrets.create': string
   'secrets.createSecret': string
@@ -1153,6 +1186,7 @@ export interface StringsMap {
   webhookPRCreated: string
   webhookPRMerged: string
   webhookPRReopened: string
+  webhookPRUpdated: string
   webhookSelectAllEvents: string
   webhookSelectIndividualEvents: string
   webhookSelectPushEvents: string
