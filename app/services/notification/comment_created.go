@@ -17,10 +17,15 @@ package notification
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/types"
+	gitnessenum "github.com/harness/gitness/types/enum"
+
+	"golang.org/x/exp/maps"
 )
 
 type CommentPayload struct {
@@ -106,6 +111,10 @@ func (s *Service) processCommentCreatedEvent(
 		return nil, nil, nil, nil, fmt.Errorf("failed to fetch activity from pullReqActivityStore: %w", err)
 	}
 
+	if activity.Type != gitnessenum.PullReqActivityTypeComment {
+		return nil, nil, nil, nil, fmt.Errorf("code-comments are not supported currently")
+	}
+
 	commenter, err := s.principalInfoView.Find(ctx, activity.CreatedBy)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed to fetch commenter from principalInfoView: %w", err)
@@ -120,10 +129,15 @@ func (s *Service) processCommentCreatedEvent(
 	seen := make(map[int64]bool)
 	seen[commenter.ID] = true
 
-	// process mentions
-	mentions, err = s.processMentions(ctx, activity.Metadata, seen)
+	// process mentions (users only — service accounts cannot receive email notifications)
+	mentionsMap, err := s.processMentions(ctx, activity.Metadata, seen)
 	if err != nil {
 		return nil, nil, nil, nil, err
+	}
+	for i, mention := range mentionsMap {
+		payload.Text = strings.ReplaceAll(
+			payload.Text, "@["+strconv.FormatInt(i, 10)+"]", mention.DisplayName,
+		)
 	}
 
 	// process participants
@@ -133,21 +147,21 @@ func (s *Service) processCommentCreatedEvent(
 		return nil, nil, nil, nil, err
 	}
 
-	// process author
-	if !seen[base.Author.ID] {
+	// process author (skip service accounts — they cannot receive email notifications)
+	if !seen[base.Author.ID] && base.Author.Type == gitnessenum.PrincipalTypeUser {
 		author = base.Author
 	}
 
-	return payload, mentions, participants, author, nil
+	return payload, maps.Values(mentionsMap), participants, author, nil
 }
 
 func (s *Service) processMentions(
 	ctx context.Context,
 	metadata *types.PullReqActivityMetadata,
 	seen map[int64]bool,
-) ([]*types.PrincipalInfo, error) {
+) (map[int64]*types.PrincipalInfo, error) {
 	if metadata == nil || metadata.Mentions == nil {
-		return []*types.PrincipalInfo{}, nil
+		return map[int64]*types.PrincipalInfo{}, nil
 	}
 
 	var ids []int64
@@ -158,13 +172,15 @@ func (s *Service) processMentions(
 		}
 	}
 	if len(ids) == 0 {
-		return []*types.PrincipalInfo{}, nil
+		return map[int64]*types.PrincipalInfo{}, nil
 	}
 
-	mentions, err := s.principalInfoView.FindMany(ctx, ids)
+	mentions, err := s.principalInfoCache.Map(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch thread mentions from principalInfoView: %w", err)
 	}
+
+	deleteNonUserPrincipals(mentions)
 
 	return mentions, nil
 }
@@ -203,7 +219,28 @@ func (s *Service) processParticipants(
 		if err != nil {
 			return participants, fmt.Errorf("failed to fetch thread participants from principalInfoView: %w", err)
 		}
+		participants = filterUserPrincipals(participants)
 	}
 
 	return participants, nil
+}
+
+// filterUserPrincipals returns only principals of type user, excluding service accounts and services.
+func filterUserPrincipals(principals []*types.PrincipalInfo) []*types.PrincipalInfo {
+	var filtered []*types.PrincipalInfo
+	for _, p := range principals {
+		if p.Type == gitnessenum.PrincipalTypeUser {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+// deleteNonUserPrincipals removes non-user principals from the map in-place.
+func deleteNonUserPrincipals(principals map[int64]*types.PrincipalInfo) {
+	for id, p := range principals {
+		if p.Type != gitnessenum.PrincipalTypeUser {
+			delete(principals, id)
+		}
+	}
 }

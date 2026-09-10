@@ -41,17 +41,21 @@ func (c *Controller) Restore(
 	deletedAt int64,
 	in *RestoreInput,
 ) (*RepositoryOutput, error) {
-	repo, err := c.repoStore.FindByRefAndDeletedAt(ctx, repoRef, deletedAt)
+	repo, err := c.repoFinder.FindDeletedByRef(ctx, repoRef, deletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repository: %w", err)
 	}
 
-	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, enum.PermissionRepoEdit); err != nil {
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo.Core(), enum.PermissionRepoCreate); err != nil {
 		return nil, fmt.Errorf("access check failed: %w", err)
 	}
 
+	if err = c.repoCheck.LifecycleRestriction(ctx, session, repo.Core()); err != nil {
+		return nil, err
+	}
+
 	if repo.Deleted == nil {
-		return nil, usererror.BadRequest("cannot restore a repo that hasn't been deleted")
+		return nil, usererror.BadRequest("Cannot restore a repo that hasn't been deleted")
 	}
 
 	parentID := repo.ParentID
@@ -82,6 +86,12 @@ func (c *Controller) RestoreNoAuth(
 			return fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
 		}
 
+		// A restore brings the repository's storage back, so a space that is over an
+		// enforced storage limit takes no restore either.
+		if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, newParentID); err != nil {
+			return err
+		}
+
 		repo, err = c.repoStore.Restore(ctx, repo, newIdentifier, &newParentID)
 		if err != nil {
 			return fmt.Errorf("failed to restore the repo: %w", err)
@@ -94,8 +104,10 @@ func (c *Controller) RestoreNoAuth(
 	}
 
 	// Repos restored as private since public access data has been deleted upon deletion.
-	return &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   false,
-	}, nil
+	repoOutput, err := GetRepoOutputWithAccess(ctx, c.repoFinder, false, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo output: %w", err)
+	}
+
+	return repoOutput, nil
 }

@@ -22,12 +22,14 @@ import (
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/exp/slices"
 )
 
 type SoftDeleteResponse struct {
@@ -41,17 +43,26 @@ func (c *Controller) SoftDelete(
 	repoRef string,
 ) (*SoftDeleteResponse, error) {
 	// note: can't use c.getRepoCheckAccess because import job for repositories being imported must be cancelled.
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repoCore, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find the repo for soft delete: %w", err)
 	}
 
-	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, enum.PermissionRepoDelete); err != nil {
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repoCore, enum.PermissionRepoDelete); err != nil {
 		return nil, fmt.Errorf("access check failed: %w", err)
 	}
 
+	if err = c.repoCheck.LifecycleRestriction(ctx, session, repoCore); err != nil {
+		return nil, err
+	}
+
+	repo, err := c.repoStore.Find(ctx, repoCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find the repo by ID: %w", err)
+	}
+
 	if repo.Deleted != nil {
-		return nil, usererror.BadRequest("repository has been already deleted")
+		return nil, usererror.BadRequest("Repository has already been deleted")
 	}
 
 	isPublic, err := c.publicAccess.Get(ctx, enum.PublicResourceTypeRepo, repo.Path)
@@ -97,12 +108,23 @@ func (c *Controller) SoftDeleteNoAuth(
 		return fmt.Errorf("failed to delete public access for repo: %w", err)
 	}
 
-	if repo.Importing {
+	if slices.Contains(transientStates, repo.State) {
+		c.repoFinder.MarkChanged(ctx, repo.Core())
 		return c.PurgeNoAuth(ctx, session, repo)
 	}
 
 	if err := c.repoStore.SoftDelete(ctx, repo, deletedAt); err != nil {
 		return fmt.Errorf("failed to soft delete repo from db: %w", err)
+	}
+
+	c.repoFinder.MarkChanged(ctx, repo.Core())
+
+	if repo.Deleted != nil {
+		c.eventReporter.SoftDeleted(ctx, &repoevents.SoftDeletedPayload{
+			Base:     eventBase(repo.Core(), &session.Principal),
+			RepoPath: repo.Path,
+			Deleted:  *repo.Deleted,
+		})
 	}
 
 	return nil

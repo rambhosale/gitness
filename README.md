@@ -1,42 +1,44 @@
-# Gitness
-Gitness is an open source development platform packed with the power of code hosting and automated DevOps pipelines.
+# Harness
+Harness Open Source is an open source development platform packed with the power of code hosting, automated DevOps pipelines, hosted development environments (Gitspaces), and artifact registries.
 
 ## Overview
-Gitness is an open source development platform packed with the power of code hosting and automated continuous integration pipelines.
+Harness Open source is an open source development platform packed with the power of code hosting, automated DevOps pipelines, Gitspaces, and artifact registries.
 
-## Running Gitness locally
-> The latest publicly released docker image can be found on [harness/gitness](https://hub.docker.com/r/harness/gitness).
 
-To install Gitness yourself, simply run the command below. Once the container is up, you can visit http://localhost:3000 in your browser.
+## Running Harness locally
+> The latest publicly released docker image can be found on [harness/harness](https://hub.docker.com/r/harness/harness).
+
+To install Harness yourself, simply run the command below. Once the container is up, you can visit http://localhost:3000 in your browser.
 
 ```bash
 docker run -d \
   -p 3000:3000 \
+  -p 3022:3022 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /tmp/gitness:/data \
-  --name gitness \
+  -v /tmp/harness:/data \
+  --name harness \
   --restart always \
-  harness/gitness
+  harness/harness
 ```
-> The Gitness image uses a volume to store the database and repositories. It is highly recommended to use a bind mount or named volume as otherwise all data will be lost once the container is stopped.
+> The Harness image uses a volume to store the database and repositories. It is highly recommended to use a bind mount or named volume as otherwise all data will be lost once the container is stopped.
 
-See [docs.gitness.com](https://docs.gitness.com) to learn how to get the most out of Gitness.
+See [developer.harness.io](https://developer.harness.io/docs/open-source) to learn how to get the most out of Harness.
 
 ## Where is Drone?
 
-Gitness represents a massive investment in the next generation of Drone. Where Drone focused on continuous integration, Gitness adds source code hosting, bringing code management and pipelines closer together.
+Harness Open Source represents a massive investment in the next generation of Drone. Where Drone focused solely on continuous integration, Harness adds source code hosting, developer environments (gitspaces), and artifact registries; providing teams with an end-to-end, open source DevOps platform.
 
-The goal is for Gitness to eventually be at full parity with Drone in terms of pipeline capabilities, allowing users to seemlessly migrate from Drone to Gitness.
+The goal is for Harness to eventually be at full parity with Drone in terms of pipeline capabilities, allowing users to seamlessly migrate from Drone to Harness.
 
-But, we expect this to take some time, which is why we took a snapshot of Drone as a feature branch [drone](https://github.com/harness/gitness/tree/drone) ([README](https://github.com/harness/gitness/blob/drone/.github/readme.md)) so it can continue development.
+But, we expect this to take some time, which is why we took a snapshot of Drone as a feature branch [drone](https://github.com/harness/harness/tree/drone) ([README](https://github.com/harness/harness/blob/drone/.github/readme.md)) so it can continue development.
 
-As for Gitness, the development is taking place on the [main](https://github.com/harness/gitness/tree/main) branch.
+As for Harness, the development is taking place on the [main](https://github.com/harness/harness/tree/main) branch.
 
-For more information on Gitness, please visit [gitness.com](https://gitness.com/).
+For more information on Harness, please visit [developer.harness.io](https://developer.harness.io/).
 
 For more information on Drone, please visit [drone.io](https://www.drone.io/).
 
-## Gitness Development
+## Harness Open Source Development
 ### Pre-Requisites
 
 Install the latest stable version of Node and Go version 1.20 or higher, and then install the below Go programs. Ensure the GOPATH [bin directory](https://go.dev/doc/gopath_code#GOPATH) is added to your PATH.
@@ -71,7 +73,7 @@ $ yarn build
 $ popd
 ```
 
-After that, you can build the gitness binary:
+After that, you can build the Harness binary:
 
 ```bash
 $ make build
@@ -87,15 +89,65 @@ To start the server at `localhost:3000`, simply run the following command:
 ./gitness server .local.env
 ```
 
-### Auto-Generate Gitness API Client used by UI using Swagger
+### Docker Configuration for Pipelines
+
+Harness pipelines run inside Docker containers. The application automatically negotiates the Docker API version with your Docker daemon, so it works with various Docker versions including Docker Desktop, Rancher Desktop, Colima, and native Docker on Linux.
+
+**Docker Socket Location**
+
+By default, Harness expects the Docker socket at `/var/run/docker.sock`. If you're using an alternative Docker runtime, you may need to configure the socket location:
+
+| Runtime | Socket Location | Configuration |
+|---------|-----------------|---------------|
+| Docker Desktop | `/var/run/docker.sock` | Works by default |
+| Rancher Desktop | `~/.rd/docker.sock` | Create symlink or set `GITNESS_DOCKER_HOST` |
+| Colima | `~/.colima/default/docker.sock` | Create symlink or set `GITNESS_DOCKER_HOST` |
+| Linux (native) | `/var/run/docker.sock` | Works by default |
+
+**Option 1: Create a symlink (recommended)**
+```bash
+# For Rancher Desktop
+sudo ln -sf ~/.rd/docker.sock /var/run/docker.sock
+
+# For Colima
+sudo ln -sf ~/.colima/default/docker.sock /var/run/docker.sock
+```
+
+**Option 2: Set environment variable**
+
+Add to your `.local.env`:
+```bash
+# For Rancher Desktop
+GITNESS_DOCKER_HOST=unix:///Users/<username>/.rd/docker.sock
+
+# For Colima
+GITNESS_DOCKER_HOST=unix:///Users/<username>/.colima/default/docker.sock
+```
+
+**Pinning Docker API Version**
+
+The application automatically negotiates the API version with your Docker daemon. If you need to pin a specific version (e.g., for compatibility testing), you can set:
+```bash
+GITNESS_DOCKER_API_VERSION=1.45
+```
+
+### Auto-Generate Harness API Client used by UI using Swagger
 Please make sure to update the autogenerated client code used by the UI when adding new rest APIs.
 
 To regenerate the code, please execute the following steps:
-- Regenerate swagger with latest gitness binary `./gitness swagger > web/src/services/code/swagger.yaml`
+- Regenerate swagger with latest Harness binary `./gitness swagger > web/src/services/code/swagger.yaml`
 - navigate to the `web` folder and run `yarn services`
 
 The latest API changes should now be reflected in `web/src/services/code/index.tsx`
 
+# Run Registry Conformance Tests
+```
+make conformance-test
+```
+For running conformance tests with existing running service, use:
+```
+make hot-conformance-test
+```
 
 ## User Interface
 
@@ -104,9 +156,10 @@ This project includes a full user interface for interacting with the system. Whe
 ## REST API
 
 This project includes a swagger specification. When you run the application, you can access the swagger specification by navigating to `http://localhost:3000/swagger` in your browser (for raw yaml see `http://localhost:3000/openapi.yaml`).
+For registry endpoints, currently swagger is located on different endpoint `http://localhost:3000/registry/swagger/` (for raw json see `http://localhost:3000/registry/swagger.json`). These will be later moved to the main swagger endpoint. 
 
 
-For testing, it's simplest to just use the cli to create a token (this requires gitness server to run):
+For testing, it's simplest to just use the cli to create a token (this requires Harness server to run):
 ```bash
 # LOGIN (user: admin, pw: changeit)
 $ ./gitness login
@@ -116,7 +169,7 @@ $ ./gitness user pat "my-pat-uid" 2592000
 ```
 
 The command outputs a valid PAT that has been granted full access as the user.
-The token can then be send as part of the `Authorization` header with Postman or curl:
+The token can then be sent as part of the `Authorization` header with Postman or curl:
 
 ```bash
 $ curl http://localhost:3000/api/v1/user \
@@ -134,8 +187,8 @@ $ ./gitness --help
 
 ## Contributing
 
-Refer to [CONTRIBUTING.md](https://github.com/harness/gitness/blob/main/CONTRIBUTING.md)
+Refer to [CONTRIBUTING.md](https://github.com/harness/harness/blob/main/CONTRIBUTING.md)
 
 ## License
 
-Apache License 2.0, see [LICENSE](https://github.com/harness/gitness/blob/main/LICENSE).
+Apache License 2.0, see [LICENSE](https://github.com/harness/harness/blob/main/LICENSE).

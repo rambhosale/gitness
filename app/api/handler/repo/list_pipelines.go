@@ -32,15 +32,18 @@ func HandleListPipelines(repoCtrl *repo.Controller) http.HandlerFunc {
 			return
 		}
 
-		filter := request.ParseListQueryFilterFromRequest(r)
-		latest := request.GetLatestFromPath(r)
-		repos, totalCount, err := repoCtrl.ListPipelines(ctx, session, repoRef, latest, filter)
+		filter, err := request.ParseListPipelinesFilterFromRequest(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+		}
+
+		pipelines, totalCount, err := repoCtrl.ListPipelines(ctx, session, repoRef, &filter)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
 
 		render.Pagination(r, w, filter.Page, filter.Size, int(totalCount))
-		render.JSON(w, http.StatusOK, repos)
+		render.JSON(w, http.StatusOK, pipelines)
 	}
 }

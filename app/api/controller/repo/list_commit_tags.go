@@ -25,48 +25,57 @@ import (
 	"github.com/harness/gitness/types/enum"
 )
 
-type CommitTag struct {
-	Name        string           `json:"name"`
-	SHA         string           `json:"sha"`
-	IsAnnotated bool             `json:"is_annotated"`
-	Title       string           `json:"title,omitempty"`
-	Message     string           `json:"message,omitempty"`
-	Tagger      *types.Signature `json:"tagger,omitempty"`
-	Commit      *types.Commit    `json:"commit,omitempty"`
-}
-
 // ListCommitTags lists the commit tags of a repo.
 func (c *Controller) ListCommitTags(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	includeCommit bool,
 	filter *types.TagFilter,
-) ([]CommitTag, error) {
+) ([]*types.CommitTag, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
 	if err != nil {
 		return nil, err
 	}
 
-	rpcOut, err := c.git.ListCommitTags(ctx, &git.ListCommitTagsParams{
+	result, err := c.git.ListCommitTags(ctx, &git.ListCommitTagsParams{
 		ReadParams:    git.CreateReadParams(repo),
 		IncludeCommit: includeCommit,
 		Query:         filter.Query,
 		Sort:          mapToRPCTagSortOption(filter.Sort),
 		Order:         mapToRPCSortOrder(filter.Order),
-		Page:          int32(filter.Page),
-		PageSize:      int32(filter.Size),
+		Page:          int32(filter.Page), //nolint:gosec
+		PageSize:      int32(filter.Size), //nolint:gosec
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	tags := make([]CommitTag, len(rpcOut.Tags))
-	for i := range rpcOut.Tags {
-		tags[i], err = mapCommitTag(rpcOut.Tags[i])
-		if err != nil {
-			return nil, fmt.Errorf("failed to map CommitTag: %w", err)
+	tags := make([]*types.CommitTag, len(result.Tags))
+	for i := range result.Tags {
+		t := controller.MapCommitTag(result.Tags[i])
+		tags[i] = &t
+	}
+
+	verifySession := c.signatureVerifyService.NewVerifySession(repo.ID)
+
+	err = verifySession.VerifyCommitTags(ctx, tags)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify tags: %w", err)
+	}
+
+	commits := make([]*types.Commit, 0, len(tags))
+	for _, tag := range tags {
+		if tag.Commit != nil {
+			commits = append(commits, tag.Commit)
 		}
 	}
+
+	err = verifySession.VerifyCommits(ctx, commits)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify signature of tags' commits: %w", err)
+	}
+
+	verifySession.StoreSignatures(ctx)
 
 	return tags, nil
 }
@@ -83,34 +92,4 @@ func mapToRPCTagSortOption(o enum.TagSortOption) git.TagSortOption {
 		// no need to error out - just use default for sorting
 		return git.TagSortOptionDefault
 	}
-}
-
-func mapCommitTag(t git.CommitTag) (CommitTag, error) {
-	var commit *types.Commit
-	if t.Commit != nil {
-		var err error
-		commit, err = controller.MapCommit(t.Commit)
-		if err != nil {
-			return CommitTag{}, err
-		}
-	}
-
-	var tagger *types.Signature
-	if t.Tagger != nil {
-		var err error
-		tagger, err = controller.MapSignature(t.Tagger)
-		if err != nil {
-			return CommitTag{}, err
-		}
-	}
-
-	return CommitTag{
-		Name:        t.Name,
-		SHA:         t.SHA.String(),
-		IsAnnotated: t.IsAnnotated,
-		Title:       t.Title,
-		Message:     t.Message,
-		Tagger:      tagger,
-		Commit:      commit,
-	}, nil
 }

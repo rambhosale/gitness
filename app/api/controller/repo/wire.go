@@ -15,16 +15,27 @@
 package repo
 
 import (
+	"github.com/harness/gitness/app/api/controller/lfs"
 	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/auth/authz"
 	repoevents "github.com/harness/gitness/app/events/repo"
+	"github.com/harness/gitness/app/services/autolink"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/dotrange"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/app/services/keywordsearch"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/locker"
+	"github.com/harness/gitness/app/services/mergequeue"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/app/services/publicaccess"
+	"github.com/harness/gitness/app/services/publickey"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/rules"
 	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/app/services/usergroup"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
 	"github.com/harness/gitness/audit"
@@ -48,17 +59,26 @@ func ProvideController(
 	urlProvider url.Provider,
 	authorizer authz.Authorizer,
 	repoStore store.RepoStore,
+	repoActivityStore store.RepoActivityStore,
+	linkedRepoStore store.LinkedRepoStore,
 	spaceStore store.SpaceStore,
 	pipelineStore store.PipelineStore,
 	principalStore store.PrincipalStore,
+	executionStore store.ExecutionStore,
 	ruleStore store.RuleStore,
+	checkStore store.CheckStore,
+	pullReqStore store.PullReqStore,
 	settings *settings.Service,
 	principalInfoCache store.PrincipalInfoCache,
 	protectionManager *protection.Manager,
 	rpcClient git.Interface,
-	importer *importer.Repository,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	importer *importer.JobRepository,
+	referenceSync *importer.JobReferenceSync,
+	importLinked *importer.JobRepositoryLink,
 	codeOwners *codeowners.Service,
-	reporeporter *repoevents.Reporter,
+	repoReporter *repoevents.Reporter,
 	indexer keywordsearch.Indexer,
 	limiter limiter.ResourceLimiter,
 	locker *locker.Locker,
@@ -67,13 +87,34 @@ func ProvideController(
 	identifierCheck check.RepoIdentifier,
 	repoChecks Check,
 	publicAccess publicaccess.Service,
+	labelSvc *label.Service,
+	instrumentation instrument.Service,
+	userGroupStore store.UserGroupStore,
+	userGroupService usergroup.Service,
+	rulesSvc *rules.Service,
+	sseStreamer sse.Streamer,
+	lfsCtrl *lfs.Controller,
+	favoriteStore store.FavoriteStore,
+	signatureVerifyService publickey.SignatureVerifyService,
+	autolinkSvc *autolink.Service,
+	dotRangeService *dotrange.Service,
+	connectorService importer.ConnectorService,
+	webhookService importer.WebhookService,
+	repoLangStore store.RepoLangStore,
+	mergeQueueService *mergequeue.Service,
 ) *Controller {
 	return NewController(config, tx, urlProvider,
 		authorizer,
-		repoStore, spaceStore, pipelineStore,
-		principalStore, ruleStore, settings, principalInfoCache, protectionManager, rpcClient, importer,
-		codeOwners, reporeporter, indexer, limiter, locker, auditService, mtxManager, identifierCheck,
-		repoChecks, publicAccess)
+		repoStore, repoActivityStore, linkedRepoStore, spaceStore, pipelineStore, executionStore,
+		principalStore, ruleStore, checkStore, pullReqStore, settings,
+		principalInfoCache, protectionManager, rpcClient, spaceFinder, repoFinder,
+		importer, referenceSync, importLinked,
+		codeOwners, repoReporter, indexer, limiter, locker, auditService, mtxManager, identifierCheck,
+		repoChecks, publicAccess, labelSvc, instrumentation, userGroupStore, userGroupService,
+		rulesSvc, sseStreamer, lfsCtrl, favoriteStore, signatureVerifyService,
+		autolinkSvc, dotRangeService, connectorService, webhookService,
+		repoLangStore, mergeQueueService,
+	)
 }
 
 func ProvideRepoCheck() Check {

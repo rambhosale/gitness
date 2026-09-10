@@ -43,7 +43,7 @@ func (c *Controller) Purge(
 
 	// authz will check the permission within the first existing parent since space was deleted.
 	// purge top level space is limited to admin only.
-	err = apiauth.CheckSpace(ctx, c.authorizer, session, space, enum.PermissionSpaceDelete)
+	err = apiauth.CheckSpace(ctx, c.authorizer, session, space.Core(), enum.PermissionSpaceDelete)
 	if err != nil {
 		return fmt.Errorf("failed to authorize on space purge: %w", err)
 	}
@@ -61,10 +61,7 @@ func (c *Controller) PurgeNoAuth(
 	// the max time we give a purge space to succeed
 	const timeout = 15 * time.Minute
 	// create new, time-restricted context to guarantee space purge completion, even if request is canceled.
-	ctx, cancel := context.WithTimeout(
-		contextutil.WithNewValues(context.Background(), ctx),
-		timeout,
-	)
+	ctx, cancel := contextutil.WithNewTimeout(ctx, timeout)
 	defer cancel()
 
 	var toBeDeletedRepos []*types.Repository

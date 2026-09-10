@@ -43,19 +43,29 @@ func Forbidden(ctx context.Context, w http.ResponseWriter) {
 	UserError(ctx, w, usererror.ErrForbidden)
 }
 
+// Forbiddenf writes the json-encoded message with a forbidden error.
+func Forbiddenf(ctx context.Context, w http.ResponseWriter, format string, args ...any) {
+	UserError(ctx, w, usererror.Newf(http.StatusForbidden, format, args...))
+}
+
 // BadRequest writes the json-encoded message for a bad request error.
 func BadRequest(ctx context.Context, w http.ResponseWriter) {
 	UserError(ctx, w, usererror.ErrBadRequest)
 }
 
 // BadRequestf writes the json-encoded message with a bad request status code.
-func BadRequestf(ctx context.Context, w http.ResponseWriter, format string, args ...interface{}) {
+func BadRequestf(ctx context.Context, w http.ResponseWriter, format string, args ...any) {
 	UserError(ctx, w, usererror.Newf(http.StatusBadRequest, format, args...))
 }
 
 // InternalError writes the json-encoded message for an internal error.
 func InternalError(ctx context.Context, w http.ResponseWriter) {
 	UserError(ctx, w, usererror.ErrInternal)
+}
+
+// InternalErrorf writes the json-encoded message with internal server error status code.
+func InternalErrorf(ctx context.Context, w http.ResponseWriter, format string, args ...any) {
+	UserError(ctx, w, usererror.Newf(http.StatusInternalServerError, format, args...))
 }
 
 // UserError writes the json-encoded user error.

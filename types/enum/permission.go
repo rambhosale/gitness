@@ -14,22 +14,6 @@
 
 package enum
 
-// ResourceType represents the different types of resources that can be guarded with permissions.
-type ResourceType string
-
-const (
-	ResourceTypeSpace          ResourceType = "SPACE"
-	ResourceTypeRepo           ResourceType = "REPOSITORY"
-	ResourceTypeUser           ResourceType = "USER"
-	ResourceTypeServiceAccount ResourceType = "SERVICEACCOUNT"
-	ResourceTypeService        ResourceType = "SERVICE"
-	ResourceTypePipeline       ResourceType = "PIPELINE"
-	ResourceTypeSecret         ResourceType = "SECRET"
-	ResourceTypeConnector      ResourceType = "CONNECTOR"
-	ResourceTypeTemplate       ResourceType = "TEMPLATE"
-	ResourceTypeGitspace       ResourceType = "GITSPACE"
-)
-
 // Permission represents the different types of permissions a principal can have.
 type Permission string
 
@@ -47,6 +31,7 @@ const (
 		----- REPOSITORY -----
 	*/
 	PermissionRepoView              Permission = "repo_view"
+	PermissionRepoCreate            Permission = "repo_create"
 	PermissionRepoEdit              Permission = "repo_edit"
 	PermissionRepoDelete            Permission = "repo_delete"
 	PermissionRepoPush              Permission = "repo_push"
@@ -128,7 +113,46 @@ const (
 		----- GITSPACE -----
 	*/
 	PermissionGitspaceView   Permission = "gitspace_view"
+	PermissionGitspaceCreate Permission = "gitspace_create"
 	PermissionGitspaceEdit   Permission = "gitspace_edit"
 	PermissionGitspaceDelete Permission = "gitspace_delete"
-	PermissionGitspaceAccess Permission = "gitspace_access"
+	PermissionGitspaceUse    Permission = "gitspace_use"
+)
+
+const (
+	/*
+		----- INFRAPROVIDER -----
+	*/
+	PermissionInfraProviderView   Permission = "infraprovider_view"
+	PermissionInfraProviderEdit   Permission = "infraprovider_edit"
+	PermissionInfraProviderDelete Permission = "infraprovider_delete"
+)
+
+const (
+	/*
+		----- ARTIFACTS -----
+	*/
+	PermissionArtifactsDownload   Permission = "artifacts_download"
+	PermissionArtifactsUpload     Permission = "artifacts_upload"
+	PermissionArtifactsDelete     Permission = "artifacts_delete"
+	PermissionArtifactsQuarantine Permission = "artifacts_quarantine"
+)
+
+const (
+	/*
+		----- REGISTRY -----
+	*/
+	PermissionRegistryView   Permission = "registry_view"
+	PermissionRegistryEdit   Permission = "registry_edit"
+	PermissionRegistryDelete Permission = "registry_delete"
+)
+
+const (
+	/*
+		----- IDP INTEGRATION -----
+	*/
+	PermissionIDPIntegrationView   Permission = "integration_view"
+	PermissionIDPIntegrationCreate Permission = "integration_create"
+	PermissionIDPIntegrationEdit   Permission = "integration_edit"
+	PermissionIDPIntegrationDelete Permission = "integration_delete"
 )

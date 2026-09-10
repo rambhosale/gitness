@@ -20,6 +20,7 @@ import (
 	"github.com/harness/gitness/app/api/controller/pullreq"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
+	"github.com/harness/gitness/types"
 )
 
 // HandleMetadata returns a http.HandlerFunc that returns PR metadata.
@@ -40,7 +41,11 @@ func HandleMetadata(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
 			return
 		}
 
-		pr, err := pullreqCtrl.Find(ctx, session, repoRef, pullreqNumber)
+		options := types.PullReqMetadataOptions{
+			IncludeGitStats: true,
+		}
+
+		pr, err := pullreqCtrl.Find(ctx, session, repoRef, pullreqNumber, options)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return

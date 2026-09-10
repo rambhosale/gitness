@@ -15,7 +15,6 @@
 package repo
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/harness/gitness/app/api/controller/repo"
@@ -34,13 +33,13 @@ func HandleCreateCommitTag(repoCtrl *repo.Controller) http.HandlerFunc {
 		}
 
 		in := new(repo.CreateCommitTagInput)
-		err = json.NewDecoder(r.Body).Decode(in)
+		err = request.DecodeBody(r, in)
 		if err != nil {
 			render.BadRequestf(ctx, w, "Invalid request body: %s.", err)
 			return
 		}
 
-		tag, violations, err := repoCtrl.CreateCommitTag(ctx, session, repoRef, in)
+		out, violations, err := repoCtrl.CreateCommitTag(ctx, session, repoRef, in)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
@@ -49,7 +48,11 @@ func HandleCreateCommitTag(repoCtrl *repo.Controller) http.HandlerFunc {
 			render.Violations(w, violations)
 			return
 		}
+		if in.DryRunRules {
+			render.JSON(w, http.StatusOK, out)
+			return
+		}
 
-		render.JSON(w, http.StatusCreated, tag)
+		render.JSON(w, http.StatusCreated, out)
 	}
 }

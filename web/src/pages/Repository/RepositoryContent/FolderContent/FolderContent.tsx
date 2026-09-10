@@ -25,18 +25,18 @@ import {
   TextProps,
   useIsMounted
 } from '@harnessio/uicore'
-import { Color } from '@harnessio/design-system'
+import { Color, FontVariation } from '@harnessio/design-system'
 import cx from 'classnames'
 import type { CellProps, Column } from 'react-table'
 import { Page } from 'iconoir-react'
-
 import { Render } from 'react-jsx-match'
-import { chunk, sortBy, throttle } from 'lodash-es'
+import { chunk, defaultTo, sortBy, throttle } from 'lodash-es'
 import { useGet, useMutate } from 'restful-react'
 import { Link, useHistory } from 'react-router-dom'
 import { useAppContext } from 'AppContext'
 import type { OpenapiContentInfo, OpenapiDirContent, TypesCommit } from 'services/code'
-import { formatDate, isInViewport, LIST_FETCHING_LIMIT, PAGE_CONTAINER_WIDTH } from 'utils/Utils'
+import { useStrings } from 'framework/strings'
+import { isInViewport, LIST_FETCHING_LIMIT, PAGE_CONTAINER_WIDTH } from 'utils/Utils'
 import {
   findReadmeInfo,
   GitInfoProps,
@@ -50,6 +50,7 @@ import { LatestCommitForFolder } from 'components/LatestCommit/LatestCommit'
 import { CommitActions } from 'components/CommitActions/CommitActions'
 import { useEventListener } from 'hooks/useEventListener'
 import { useShowRequestError } from 'hooks/useShowRequestError'
+import { TimePopoverWithLocal } from 'utils/timePopoverLocal/TimePopoverWithLocal'
 import RepositorySummary from './RepositorySummary/RepositorySummary'
 import { Readme } from './Readme'
 import CodeFolder from '../../../../icons/CodeFileFill.svg?url'
@@ -73,11 +74,13 @@ const checkIcon = (row: OpenapiContentInfo): React.ReactElement => {
 }
 export function FolderContent({ repoMetadata, resourceContent, gitRef, resourcePath }: FolderContentProps) {
   const history = useHistory()
+  const { getString } = useStrings()
   const { routes, standalone } = useAppContext()
+
   const columns: Column<OpenapiContentInfo>[] = useMemo(
     () => [
       {
-        Header: 'Files',
+        Header: getString('name'),
         id: 'name',
         width: '30%',
         Cell: ({ row }: CellProps<OpenapiContentInfo>) => {
@@ -101,21 +104,26 @@ export function FolderContent({ repoMetadata, resourceContent, gitRef, resourceP
         }
       },
       {
-        Header: 'Date',
+        Header: getString('lastCommitDate'),
         id: 'when',
-        width: '150px',
+        width: '200px',
         Cell: ({ row }: CellProps<OpenapiContentInfo>) => {
           return (
-            <Text lineClamp={1} color={Color.GREY_500} className={css.rowText}>
-              {formatDate(row.original.latest_commit?.author?.when as string)}
+            <Text lineClamp={1}>
+              <TimePopoverWithLocal
+                time={defaultTo(row.original.latest_commit?.author?.when, 0) as number}
+                inline={false}
+                font={{ variation: FontVariation.FORM_INPUT_TEXT }}
+                color={Color.GREY_500}
+              />
             </Text>
           )
         }
       },
       {
-        Header: 'Commits',
+        Header: getString('lastCommit'),
         id: 'message',
-        width: 'calc(70% - 150px)',
+        width: 'calc(70% - 200px)',
         Cell: ({ row }: CellProps<OpenapiContentInfo>) => (
           <Container className={css.commitContainer}>
             <CommitMessageLinks repoMetadata={repoMetadata} rowData={row.original} />
@@ -335,7 +343,7 @@ const CommitMessageLinks: React.FC<CommitMessageLinksProps> = ({ repoMetadata, r
                 pullRequestId
               })}
               text={`#${pullRequestId}`}
-              className={css.hightlight}
+              className={css.highlight}
               wrapperClassName={css.noShrink}
             />
           )

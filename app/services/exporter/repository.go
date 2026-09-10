@@ -197,12 +197,9 @@ func (r *Repository) Handle(ctx context.Context, data string, _ job.ProgressRepo
 		DefaultBranch: repository.DefaultBranch,
 		Description:   repository.Description,
 		IsPublic:      false, // TODO: replace with publicaccess service response once deployed on HC.
-		Readme:        false,
-		License:       "",
-		GitIgnore:     "",
 	})
 	if err != nil {
-		r.publishSSE(ctx, repository)
+		r.sseStreamer.Publish(ctx, repository.ParentID, enum.SSETypeRepositoryExportCompleted, repository)
 		return "", err
 	}
 
@@ -220,22 +217,15 @@ func (r *Repository) Handle(ctx context.Context, data string, _ job.ProgressRepo
 		if errDelete != nil {
 			log.Ctx(ctx).Err(errDelete).Msgf("failed to delete repo '%s' on harness", remoteRepo.Identifier)
 		}
-		r.publishSSE(ctx, repository)
+		r.sseStreamer.Publish(ctx, repository.ParentID, enum.SSETypeRepositoryExportCompleted, repository)
 		return "", err
 	}
 
 	log.Ctx(ctx).Info().Msgf("completed exporting repository '%s' to harness", repository.Identifier)
 
-	r.publishSSE(ctx, repository)
+	r.sseStreamer.Publish(ctx, repository.ParentID, enum.SSETypeRepositoryExportCompleted, repository)
 
 	return "", nil
-}
-
-func (r *Repository) publishSSE(ctx context.Context, repository *types.Repository) {
-	err := r.sseStreamer.Publish(ctx, repository.ParentID, enum.SSETypeRepositoryExportCompleted, repository)
-	if err != nil {
-		log.Ctx(ctx).Warn().Err(err).Msg("failed to publish export completion SSE")
-	}
 }
 
 func (r *Repository) getJobInput(data string) (Input, error) {

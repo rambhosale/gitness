@@ -17,108 +17,197 @@ package pullreq
 import (
 	"context"
 	"fmt"
+	"unicode/utf8"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
+	"github.com/harness/gitness/app/services/automerge"
 	"github.com/harness/gitness/app/services/codecomments"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/dotrange"
+	"github.com/harness/gitness/app/services/instrument"
+	"github.com/harness/gitness/app/services/label"
 	locker "github.com/harness/gitness/app/services/locker"
+	"github.com/harness/gitness/app/services/merge"
+	mergequeuesvc "github.com/harness/gitness/app/services/mergequeue"
+	"github.com/harness/gitness/app/services/migrate"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/app/services/publickey"
 	"github.com/harness/gitness/app/services/pullreq"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/app/services/usergroup"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
 	gitenum "github.com/harness/gitness/git/enum"
+	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
 
 type Controller struct {
-	tx                  dbtx.Transactor
-	urlProvider         url.Provider
-	authorizer          authz.Authorizer
-	pullreqStore        store.PullReqStore
-	activityStore       store.PullReqActivityStore
-	codeCommentView     store.CodeCommentView
-	reviewStore         store.PullReqReviewStore
-	reviewerStore       store.PullReqReviewerStore
-	repoStore           store.RepoStore
-	principalStore      store.PrincipalStore
-	principalInfoCache  store.PrincipalInfoCache
-	fileViewStore       store.PullReqFileViewStore
-	membershipStore     store.MembershipStore
-	checkStore          store.CheckStore
-	git                 git.Interface
-	eventReporter       *pullreqevents.Reporter
-	codeCommentMigrator *codecomments.Migrator
-	pullreqService      *pullreq.Service
-	protectionManager   *protection.Manager
-	sseStreamer         sse.Streamer
-	codeOwners          *codeowners.Service
-	locker              *locker.Locker
+	tx                      dbtx.Transactor
+	urlProvider             url.Provider
+	authorizer              authz.Authorizer
+	auditService            audit.Service
+	pullreqStore            store.PullReqStore
+	activityStore           store.PullReqActivityStore
+	codeCommentView         store.CodeCommentView
+	reviewStore             store.PullReqReviewStore
+	reviewerStore           store.PullReqReviewerStore
+	reviewerSuggestionStore store.PullReqReviewerSuggestionStore
+	userGroupReviewerStore  store.UserGroupReviewerStore
+	repoStore               store.RepoStore
+	principalStore          store.PrincipalStore
+	userGroupStore          store.UserGroupStore
+	principalInfoCache      store.PrincipalInfoCache
+	fileViewStore           store.PullReqFileViewStore
+	fileGroupStore          store.PullReqFileGroupStore
+	membershipStore         store.MembershipStore
+	checkStore              store.CheckStore
+	autoMergeStore          store.AutoMergeStore
+	mergeQueueStore         store.MergeQueueStore
+	mergeQueueEntryStore    store.MergeQueueEntryStore
+	mergeQueueService       *mergequeuesvc.Service
+	git                     git.Interface
+	repoFinder              refcache.RepoFinder
+	eventReporter           *pullreqevents.Reporter
+	codeCommentMigrator     *codecomments.Migrator
+	pullreqService          *pullreq.Service
+	pullreqListService      *pullreq.ListService
+	mergeService            *merge.Service
+	autoMergeService        *automerge.Service
+	protectionManager       *protection.Manager
+	sseStreamer             sse.Streamer
+	dotRangeService         *dotrange.Service
+	codeOwners              *codeowners.Service
+	locker                  *locker.Locker
+	settings                *settings.Service
+	importer                *migrate.PullReq
+	labelSvc                *label.Service
+	labelStore              store.LabelStore
+	labelValueStore         store.LabelValueStore
+	labelSuggestionStore    store.PullReqLabelSuggestionStore
+	instrumentation         instrument.Service
+	userGroupService        usergroup.Service
+	branchStore             store.BranchStore
+	userGroupResolver       usergroup.Resolver
+	signatureVerifyService  publickey.SignatureVerifyService
 }
 
 func NewController(
 	tx dbtx.Transactor,
 	urlProvider url.Provider,
 	authorizer authz.Authorizer,
+	auditService audit.Service,
 	pullreqStore store.PullReqStore,
 	pullreqActivityStore store.PullReqActivityStore,
 	codeCommentView store.CodeCommentView,
 	pullreqReviewStore store.PullReqReviewStore,
 	pullreqReviewerStore store.PullReqReviewerStore,
+	pullreqReviewerSuggestionStore store.PullReqReviewerSuggestionStore,
 	repoStore store.RepoStore,
 	principalStore store.PrincipalStore,
+	userGroupStore store.UserGroupStore,
+	userGroupReviewerStore store.UserGroupReviewerStore,
 	principalInfoCache store.PrincipalInfoCache,
 	fileViewStore store.PullReqFileViewStore,
+	fileGroupStore store.PullReqFileGroupStore,
 	membershipStore store.MembershipStore,
 	checkStore store.CheckStore,
+	autoMergeStore store.AutoMergeStore,
+	mergeQueueStore store.MergeQueueStore,
+	mergeQueueEntryStore store.MergeQueueEntryStore,
+	mergeQueueService *mergequeuesvc.Service,
 	git git.Interface,
+	repoFinder refcache.RepoFinder,
 	eventReporter *pullreqevents.Reporter,
 	codeCommentMigrator *codecomments.Migrator,
 	pullreqService *pullreq.Service,
+	pullreqListService *pullreq.ListService,
+	mergeService *merge.Service,
+	autoMergeService *automerge.Service,
 	protectionManager *protection.Manager,
 	sseStreamer sse.Streamer,
+	dotRangeService *dotrange.Service,
 	codeowners *codeowners.Service,
 	locker *locker.Locker,
+	settings *settings.Service,
+	importer *migrate.PullReq,
+	labelSvc *label.Service,
+	labelStore store.LabelStore,
+	labelValueStore store.LabelValueStore,
+	labelSuggestionStore store.PullReqLabelSuggestionStore,
+	instrumentation instrument.Service,
+	userGroupService usergroup.Service,
+	branchStore store.BranchStore,
+	userGroupResolver usergroup.Resolver,
+	signatureVerifyService publickey.SignatureVerifyService,
 ) *Controller {
 	return &Controller{
-		tx:                  tx,
-		urlProvider:         urlProvider,
-		authorizer:          authorizer,
-		pullreqStore:        pullreqStore,
-		activityStore:       pullreqActivityStore,
-		codeCommentView:     codeCommentView,
-		reviewStore:         pullreqReviewStore,
-		reviewerStore:       pullreqReviewerStore,
-		repoStore:           repoStore,
-		principalStore:      principalStore,
-		principalInfoCache:  principalInfoCache,
-		fileViewStore:       fileViewStore,
-		membershipStore:     membershipStore,
-		checkStore:          checkStore,
-		git:                 git,
-		codeCommentMigrator: codeCommentMigrator,
-		eventReporter:       eventReporter,
-		pullreqService:      pullreqService,
-		protectionManager:   protectionManager,
-		sseStreamer:         sseStreamer,
-		codeOwners:          codeowners,
-		locker:              locker,
+		tx:                      tx,
+		urlProvider:             urlProvider,
+		authorizer:              authorizer,
+		auditService:            auditService,
+		pullreqStore:            pullreqStore,
+		activityStore:           pullreqActivityStore,
+		codeCommentView:         codeCommentView,
+		reviewStore:             pullreqReviewStore,
+		reviewerStore:           pullreqReviewerStore,
+		reviewerSuggestionStore: pullreqReviewerSuggestionStore,
+		userGroupReviewerStore:  userGroupReviewerStore,
+		repoStore:               repoStore,
+		principalStore:          principalStore,
+		userGroupStore:          userGroupStore,
+		principalInfoCache:      principalInfoCache,
+		fileViewStore:           fileViewStore,
+		fileGroupStore:          fileGroupStore,
+		membershipStore:         membershipStore,
+		checkStore:              checkStore,
+		autoMergeStore:          autoMergeStore,
+		mergeQueueStore:         mergeQueueStore,
+		mergeQueueEntryStore:    mergeQueueEntryStore,
+		mergeQueueService:       mergeQueueService,
+		git:                     git,
+		repoFinder:              repoFinder,
+		codeCommentMigrator:     codeCommentMigrator,
+		eventReporter:           eventReporter,
+		pullreqService:          pullreqService,
+		pullreqListService:      pullreqListService,
+		protectionManager:       protectionManager,
+		mergeService:            mergeService,
+		autoMergeService:        autoMergeService,
+		sseStreamer:             sseStreamer,
+		dotRangeService:         dotRangeService,
+		codeOwners:              codeowners,
+		locker:                  locker,
+		settings:                settings,
+		importer:                importer,
+		labelSvc:                labelSvc,
+		labelStore:              labelStore,
+		labelValueStore:         labelValueStore,
+		labelSuggestionStore:    labelSuggestionStore,
+		instrumentation:         instrumentation,
+		userGroupService:        userGroupService,
+		branchStore:             branchStore,
+		userGroupResolver:       userGroupResolver,
+		signatureVerifyService:  signatureVerifyService,
 	}
 }
 
 func (c *Controller) verifyBranchExistence(ctx context.Context,
-	repo *types.Repository, branch string,
-) (string, error) {
+	repo *types.RepositoryCore, branch string,
+) (sha.SHA, error) {
 	if branch == "" {
-		return "", usererror.BadRequest("branch name can't be empty")
+		return sha.SHA{}, usererror.BadRequest("Branch name can't be empty")
 	}
 
 	ref, err := c.git.GetRef(ctx,
@@ -128,32 +217,46 @@ func (c *Controller) verifyBranchExistence(ctx context.Context,
 			Type:       gitenum.RefTypeBranch,
 		})
 	if errors.AsStatus(err) == errors.StatusNotFound {
-		return "", usererror.BadRequest(
+		return sha.SHA{}, usererror.BadRequest(
 			fmt.Sprintf("branch %q does not exist in the repository %q", branch, repo.Identifier))
 	}
 	if err != nil {
-		return "", fmt.Errorf(
+		return sha.SHA{}, fmt.Errorf(
 			"failed to check existence of the branch %q in the repository %q: %w",
 			branch, repo.Identifier, err)
 	}
 
-	return ref.SHA.String(), nil
+	return ref.SHA, nil
 }
 
-func (c *Controller) getRepoCheckAccess(ctx context.Context,
-	session *auth.Session, repoRef string, reqPermission enum.Permission,
-) (*types.Repository, error) {
+func (c *Controller) getRepo(ctx context.Context, repoRef string) (*types.RepositoryCore, error) {
 	if repoRef == "" {
 		return nil, usererror.BadRequest("A valid repository reference must be provided.")
 	}
 
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repository: %w", err)
 	}
 
-	if repo.Importing {
-		return nil, usererror.BadRequest("Repository import is in progress.")
+	return repo, nil
+}
+
+//nolint:unparam
+func (c *Controller) getRepoCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	repoRef string,
+	reqPermission enum.Permission,
+	allowedRepoStates ...enum.RepoState,
+) (*types.RepositoryCore, error) {
+	repo, err := c.getRepo(ctx, repoRef)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := apiauth.CheckRepoState(ctx, session, repo, reqPermission, allowedRepoStates...); err != nil {
+		return nil, err
 	}
 
 	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
@@ -161,6 +264,24 @@ func (c *Controller) getRepoCheckAccess(ctx context.Context,
 	}
 
 	return repo, nil
+}
+
+func (c *Controller) fetchRules(
+	ctx context.Context,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (protection.BranchProtection, bool, error) {
+	isRepoOwner, err := apiauth.IsRepoOwner(ctx, c.authorizer, session, repo)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to determine if user is repo owner: %w", err)
+	}
+
+	protectionRules, err := c.protectionManager.ListRepoBranchRules(ctx, repo.ID)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to fetch protection rules for the repository: %w", err)
+	}
+
+	return protectionRules, isRepoOwner, nil
 }
 
 func (c *Controller) getCommentForPR(
@@ -230,21 +351,22 @@ func (c *Controller) checkIfAlreadyExists(ctx context.Context,
 	targetRepoID, sourceRepoID int64, targetBranch, sourceBranch string,
 ) error {
 	existing, err := c.pullreqStore.List(ctx, &types.PullReqFilter{
-		SourceRepoID: sourceRepoID,
-		SourceBranch: sourceBranch,
-		TargetRepoID: targetRepoID,
-		TargetBranch: targetBranch,
-		States:       []enum.PullReqState{enum.PullReqStateOpen},
-		Size:         1,
-		Sort:         enum.PullReqSortNumber,
-		Order:        enum.OrderAsc,
+		SourceRepoID:       sourceRepoID,
+		SourceBranch:       sourceBranch,
+		TargetRepoID:       targetRepoID,
+		TargetBranch:       targetBranch,
+		States:             []enum.PullReqState{enum.PullReqStateOpen},
+		Size:               1,
+		Sort:               enum.PullReqSortNumber,
+		Order:              enum.OrderAsc,
+		ExcludeDescription: true,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to get existing pull requests: %w", err)
 	}
 	if len(existing) > 0 {
 		return usererror.ConflictWithPayload(
-			"a pull request for this target and source branch already exists",
+			"A pull request for this target and source branch already exists",
 			map[string]any{
 				"type":   "pr already exists",
 				"number": existing[0].Number,
@@ -264,4 +386,35 @@ func eventBase(pr *types.PullReq, principal *types.Principal) pullreqevents.Base
 		Number:       pr.Number,
 		PrincipalID:  principal.ID,
 	}
+}
+
+func validateTitle(title string) error {
+	if title == "" {
+		return usererror.BadRequest("Pull request title can't be empty")
+	}
+
+	const maxLen = 256
+	if utf8.RuneCountInString(title) > maxLen {
+		return usererror.BadRequestf("Pull request title is too long (maximum is %d characters)", maxLen)
+	}
+
+	return nil
+}
+
+func validateDescription(desc string) error {
+	const maxLen = 64 << 10 // 64K
+	if len(desc) > maxLen {
+		return usererror.BadRequest("Pull request description is too long")
+	}
+
+	return nil
+}
+
+func validateComment(desc string) error {
+	const maxLen = 16 << 10 // 16K
+	if len(desc) > maxLen {
+		return usererror.BadRequest("Pull request comment is too long")
+	}
+
+	return nil
 }

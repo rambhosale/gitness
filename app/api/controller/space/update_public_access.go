@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/types/enum"
@@ -28,25 +27,28 @@ type UpdatePublicAccessInput struct {
 	IsPublic bool `json:"is_public"`
 }
 
-func (c *Controller) UpdatePublicAccess(ctx context.Context,
+func (c *Controller) UpdatePublicAccess(
+	ctx context.Context,
 	session *auth.Session,
 	spaceRef string,
 	in *UpdatePublicAccessInput,
 ) (*SpaceOutput, error) {
-	space, err := c.spaceStore.FindByRef(ctx, spaceRef)
+	spaceCore, err := c.getSpaceCheckAuth(ctx, session, spaceRef, enum.PermissionSpaceEdit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to acquire access to space: %w", err)
 	}
 
-	if err = apiauth.CheckSpace(ctx, c.authorizer, session, space, enum.PermissionSpaceEdit); err != nil {
-		return nil, err
+	space, err := c.spaceStore.Find(ctx, spaceCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find space by ID: %w", err)
 	}
 
 	parentPath, _, err := paths.DisectLeaf(space.Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to disect path %q: %w", space.Path, err)
 	}
-	isPublicAccessSupported, err := c.publicAccess.IsPublicAccessSupported(ctx, parentPath)
+
+	isPublicAccessSupported, err := c.publicAccess.IsPublicAccessSupported(ctx, enum.PublicResourceTypeRepo, parentPath)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to check if public access is supported for parent space %q: %w",

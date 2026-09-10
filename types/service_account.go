@@ -21,7 +21,7 @@ type (
 	// ServiceAccount is a principal representing a service account.
 	ServiceAccount struct {
 		// Fields from Principal (without admin, as it's never an admin)
-		ID          int64  `db:"principal_id"           json:"-"`
+		ID          int64  `db:"principal_id"           json:"id"`
 		UID         string `db:"principal_uid"          json:"uid"`
 		Email       string `db:"principal_email"        json:"email"`
 		DisplayName string `db:"principal_display_name" json:"display_name"`
@@ -43,6 +43,12 @@ type (
 		ParentType  *enum.ParentResourceType `json:"parent_type"`
 		ParentID    *int64                   `json:"parent_id"`
 	}
+
+	ServiceAccountInfo struct {
+		PrincipalInfo
+		ParentType enum.ParentResourceType `json:"parent_type"`
+		ParentID   int64                   `json:"parent_id"`
+	}
 )
 
 func (s *ServiceAccount) ToPrincipal() *Principal {
@@ -62,4 +68,17 @@ func (s *ServiceAccount) ToPrincipal() *Principal {
 
 func (s *ServiceAccount) ToPrincipalInfo() *PrincipalInfo {
 	return s.ToPrincipal().ToPrincipalInfo()
+}
+
+func (s *ServiceAccount) ToServiceAccountInfo() *ServiceAccountInfo {
+	return &ServiceAccountInfo{
+		PrincipalInfo: *s.ToPrincipalInfo(),
+		ParentType:    s.ParentType,
+		ParentID:      s.ParentID,
+	}
+}
+
+type ServiceAccountParentInfo struct {
+	Type enum.ParentResourceType `json:"type"`
+	ID   int64                   `json:"id"`
 }

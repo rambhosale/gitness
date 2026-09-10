@@ -22,10 +22,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/harness/gitness/app/api/usererror"
-	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/types"
 
 	"github.com/drone/go-scm/scm"
@@ -35,9 +33,11 @@ import (
 	"github.com/drone/go-scm/scm/driver/github"
 	"github.com/drone/go-scm/scm/driver/gitlab"
 	"github.com/drone/go-scm/scm/driver/gogs"
+	"github.com/drone/go-scm/scm/driver/harness"
 	"github.com/drone/go-scm/scm/driver/stash"
 	"github.com/drone/go-scm/scm/transport"
 	"github.com/drone/go-scm/scm/transport/oauth2"
+	"github.com/rs/zerolog/log"
 )
 
 type ProviderType string
@@ -50,6 +50,7 @@ const (
 	ProviderTypeGitea     ProviderType = "gitea"
 	ProviderTypeGogs      ProviderType = "gogs"
 	ProviderTypeAzure     ProviderType = "azure"
+	ProviderTypeHarness   ProviderType = "harness"
 )
 
 func (p ProviderType) Enum() []any {
@@ -61,6 +62,7 @@ func (p ProviderType) Enum() []any {
 		ProviderTypeGitea,
 		ProviderTypeGogs,
 		ProviderTypeAzure,
+		ProviderTypeHarness,
 	}
 }
 
@@ -87,22 +89,14 @@ func (r *RepositoryInfo) ToRepo(
 	description string,
 	principal *types.Principal,
 ) (*types.Repository, bool) {
-	now := time.Now().UnixMilli()
-	gitTempUID := fmt.Sprintf("importing-%s-%d", hash(fmt.Sprintf("%d:%s", spaceID, identifier)), now)
-	return &types.Repository{
-		Version:       0,
-		ParentID:      spaceID,
-		Identifier:    identifier,
-		GitUID:        gitTempUID, // the correct git UID will be set by the job handler
-		Description:   description,
-		CreatedBy:     principal.ID,
-		Created:       now,
-		Updated:       now,
-		ForkID:        0,
-		DefaultBranch: r.DefaultBranch,
-		Importing:     true,
-		Path:          paths.Concatenate(spacePath, identifier),
-	}, r.IsPublic
+	return NewRepo(
+		spaceID,
+		spacePath,
+		identifier,
+		description,
+		principal,
+		r.DefaultBranch,
+	), r.IsPublic
 }
 
 func hash(s string) string {
@@ -111,33 +105,48 @@ func hash(s string) string {
 	return base32.StdEncoding.EncodeToString(h.Sum(nil)[:10])
 }
 
-func oauthTransport(token string, scheme string) http.RoundTripper {
+func oauthTransport(base http.RoundTripper, token string, scheme string) http.RoundTripper {
 	if token == "" {
-		return nil
+		return base
 	}
 	return &oauth2.Transport{
+		Base:   base,
 		Scheme: scheme,
 		Source: oauth2.StaticTokenSource(&scm.Token{Token: token}),
 	}
 }
 
-func authHeaderTransport(token string) http.RoundTripper {
+func authHeaderTransport(base http.RoundTripper, token string) http.RoundTripper {
 	if token == "" {
-		return nil
+		return base
 	}
 	return &transport.Authorization{
+		Base:        base,
 		Scheme:      "token",
 		Credentials: token,
 	}
 }
 
-func basicAuthTransport(username, password string) http.RoundTripper {
+func basicAuthTransport(base http.RoundTripper, username, password string) http.RoundTripper {
 	if username == "" && password == "" {
-		return nil
+		return base
 	}
 	return &transport.BasicAuth{
+		Base:     base,
 		Username: username,
 		Password: password,
+	}
+}
+
+func apiKeyTransport(base http.RoundTripper, apiKey string) http.RoundTripper {
+	if apiKey == "" {
+		return base
+	}
+	return &transport.Custom{
+		Base: base,
+		Before: func(r *http.Request) {
+			r.Header.Set("x-api-key", apiKey)
+		},
 	}
 }
 
@@ -145,9 +154,21 @@ func basicAuthTransport(username, password string) http.RoundTripper {
 // layer depending on the provider. For example, for bitbucket we support app passwords
 // so the auth transport is BasicAuth whereas it's Oauth for other providers.
 // It validates that auth credentials are provided if authReq is true.
-func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*scm.Client, error) { //nolint:gocognit
+//
+//nolint:gocognit
+func (r *Importer) getScmClientWithTransport(
+	provider Provider,
+	slug string,
+	authReq bool,
+) (*scm.Client, error) {
 	if authReq && (provider.Username == "" || provider.Password == "") {
-		return nil, usererror.BadRequest("scm provider authentication credentials missing")
+		return nil, usererror.BadRequest("SCM provider authentication credentials missing")
+	}
+	// an empty host means the public endpoint of the provider is used.
+	if provider.Host != "" {
+		if err := r.validateProviderHost(provider.Host); err != nil {
+			return nil, err
+		}
 	}
 	var c *scm.Client
 	var err error
@@ -165,7 +186,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		} else {
 			c = github.NewDefault()
 		}
-		transport = oauthTransport(provider.Password, oauth2.SchemeBearer)
+		transport = oauthTransport(r.baseTransport, provider.Password, oauth2.SchemeBearer)
 
 	case ProviderTypeGitLab:
 		if provider.Host != "" {
@@ -176,7 +197,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		} else {
 			c = gitlab.NewDefault()
 		}
-		transport = oauthTransport(provider.Password, oauth2.SchemeBearer)
+		transport = oauthTransport(r.baseTransport, provider.Password, oauth2.SchemeBearer)
 
 	case ProviderTypeBitbucket:
 		if provider.Host != "" {
@@ -187,7 +208,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		} else {
 			c = bitbucket.NewDefault()
 		}
-		transport = basicAuthTransport(provider.Username, provider.Password)
+		transport = basicAuthTransport(r.baseTransport, provider.Username, provider.Password)
 
 	case ProviderTypeStash:
 		if provider.Host != "" {
@@ -198,7 +219,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		} else {
 			c = stash.NewDefault()
 		}
-		transport = oauthTransport(provider.Password, oauth2.SchemeBearer)
+		transport = oauthTransport(r.baseTransport, provider.Password, oauth2.SchemeBearer)
 
 	case ProviderTypeGitea:
 		if provider.Host == "" {
@@ -208,7 +229,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		if err != nil {
 			return nil, fmt.Errorf("scm provider Host invalid: %w", err)
 		}
-		transport = authHeaderTransport(provider.Password)
+		transport = authHeaderTransport(r.baseTransport, provider.Password)
 
 	case ProviderTypeGogs:
 		if provider.Host == "" {
@@ -218,7 +239,7 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		if err != nil {
 			return nil, fmt.Errorf("scm provider Host invalid: %w", err)
 		}
-		transport = oauthTransport(provider.Password, oauth2.SchemeToken)
+		transport = oauthTransport(r.baseTransport, provider.Password, oauth2.SchemeToken)
 
 	case ProviderTypeAzure:
 		org, project, err := extractOrgAndProjectFromSlug(slug)
@@ -233,39 +254,55 @@ func getScmClientWithTransport(provider Provider, slug string, authReq bool) (*s
 		} else {
 			c = azure.NewDefault(org, project)
 		}
-		transport = basicAuthTransport(provider.Username, provider.Password)
+		transport = basicAuthTransport(r.baseTransport, provider.Username, provider.Password)
+
+	case ProviderTypeHarness:
+		if provider.Host == "" {
+			return nil, errors.New("scm provider Host missing")
+		}
+		account, org, project, _, err := extractHarnessScope(slug)
+		if err != nil {
+			return nil, fmt.Errorf("invalid slug format: %w", err)
+		}
+		c, err = harness.New(provider.Host, account, org, project)
+		if err != nil {
+			return nil, fmt.Errorf("scm provider Host invalid: %w", err)
+		}
+		transport = apiKeyTransport(r.baseTransport, provider.Password)
 
 	default:
 		return nil, fmt.Errorf("unsupported scm provider: %s", provider)
 	}
 
-	// override default transport if available
-	if transport != nil {
-		c.Client = &http.Client{Transport: transport}
+	c.Client = &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
 	return c, nil
 }
 
-func LoadRepositoryFromProvider(
+func (r *Importer) LoadRepositoryFromProvider(
 	ctx context.Context,
 	provider Provider,
 	repoSlug string,
 ) (RepositoryInfo, Provider, error) {
-	if repoSlug == "" {
-		return RepositoryInfo{}, provider, usererror.BadRequest("provider repository identifier is missing")
+	if err := validateProviderRepoSlug(provider.Type, repoSlug); err != nil {
+		return RepositoryInfo{}, provider, err
 	}
 
-	scmClient, err := getScmClientWithTransport(provider, repoSlug, false)
+	scmClient, err := r.getScmClientWithTransport(provider, repoSlug, false)
 	if err != nil {
-		return RepositoryInfo{}, provider, usererror.BadRequestf("could not create client: %s", err)
+		return RepositoryInfo{}, provider, usererror.BadRequestf("Could not create client: %s", err)
 	}
 
 	// Augment user information if it's not provided for certain vendors.
-	if provider.Password != "" && provider.Username == "" {
-		user, _, err := scmClient.Users.Find(ctx)
-		if err != nil {
-			return RepositoryInfo{}, provider, usererror.BadRequestf("could not find user: %s", err)
+	if provider.Password != "" && provider.Username == "" && provider.Type != ProviderTypeHarness {
+		user, scmResp, err := scmClient.Users.Find(ctx)
+		if err = convertSCMError(ctx, provider, "user", scmResp, err); err != nil {
+			return RepositoryInfo{}, provider, err
 		}
 		provider.Username = user.Login
 	}
@@ -273,11 +310,18 @@ func LoadRepositoryFromProvider(
 	if provider.Type == ProviderTypeAzure {
 		repoSlug, err = extractRepoFromSlug(repoSlug)
 		if err != nil {
-			return RepositoryInfo{}, provider, usererror.BadRequestf("invalid slug format: %s", err)
+			return RepositoryInfo{}, provider, usererror.BadRequestf("Invalid slug format: %s", err)
+		}
+	}
+
+	if provider.Type == ProviderTypeHarness {
+		_, _, _, repoSlug, err = extractHarnessScope(repoSlug)
+		if err != nil {
+			return RepositoryInfo{}, provider, usererror.BadRequestf("Invalid slug format: %s", err)
 		}
 	}
 	scmRepo, scmResp, err := scmClient.Repositories.Find(ctx, repoSlug)
-	if err = convertSCMError(provider, repoSlug, scmResp, err); err != nil {
+	if err = convertSCMError(ctx, provider, repoSlug, scmResp, err); err != nil {
 		return RepositoryInfo{}, provider, err
 	}
 
@@ -285,25 +329,26 @@ func LoadRepositoryFromProvider(
 		Space:         scmRepo.Namespace,
 		Identifier:    scmRepo.Name,
 		CloneURL:      scmRepo.Clone,
-		IsPublic:      provider.Type != ProviderTypeAzure && !scmRepo.Private,
+		IsPublic:      !scmRepo.Private,
 		DefaultBranch: scmRepo.Branch,
 	}, provider, nil
 }
 
 //nolint:gocognit
-func LoadRepositoriesFromProviderSpace(
+func (r *Importer) LoadRepositoriesFromProviderSpace(
 	ctx context.Context,
 	provider Provider,
 	spaceSlug string,
+	includeSubgroupsRepos bool,
 ) ([]RepositoryInfo, Provider, error) {
-	if spaceSlug == "" {
-		return nil, provider, usererror.BadRequest("provider space identifier is missing")
+	if err := validateProviderSpaceSlug(provider.Type, spaceSlug); err != nil {
+		return nil, provider, err
 	}
 
 	var err error
-	scmClient, err := getScmClientWithTransport(provider, spaceSlug, false)
+	scmClient, err := r.getScmClientWithTransport(provider, spaceSlug, false)
 	if err != nil {
-		return nil, provider, usererror.BadRequestf("could not create client: %s", err)
+		return nil, provider, usererror.BadRequestf("Could not create client: %s", err)
 	}
 
 	opts := scm.ListOptions{
@@ -312,22 +357,31 @@ func LoadRepositoriesFromProviderSpace(
 
 	// Augment user information if it's not provided for certain vendors.
 	if provider.Password != "" && provider.Username == "" {
-		user, _, err := scmClient.Users.Find(ctx)
-		if err != nil {
-			return nil, provider, usererror.BadRequestf("could not find user: %s", err)
+		user, scmResp, err := scmClient.Users.Find(ctx)
+		if err = convertSCMError(ctx, provider, "user", scmResp, err); err != nil {
+			return nil, provider, err
 		}
 		provider.Username = user.Login
 	}
 
 	var optsv2 scm.RepoListOptions
 	listv2 := false
-	if provider.Type == ProviderTypeGitHub {
+	//nolint:exhaustive
+	switch provider.Type {
+	case ProviderTypeGitHub:
 		listv2 = true
 		optsv2 = scm.RepoListOptions{
 			ListOptions: opts,
 			RepoSearchTerm: scm.RepoSearchTerm{
-				User: spaceSlug,
+				User: spaceSlug + "+fork:true",
 			},
+		}
+	case ProviderTypeGitLab:
+		listv2 = true
+		optsv2 = scm.RepoListOptions{
+			ListOptions:      opts,
+			Group:            spaceSlug,
+			IncludeSubgroups: includeSubgroupsRepos,
 		}
 	}
 
@@ -338,14 +392,14 @@ func LoadRepositoriesFromProviderSpace(
 	for {
 		if listv2 {
 			scmRepos, scmResp, err = scmClient.Repositories.ListV2(ctx, optsv2)
-			if err = convertSCMError(provider, spaceSlug, scmResp, err); err != nil {
+			if err = convertSCMError(ctx, provider, spaceSlug, scmResp, err); err != nil {
 				return nil, provider, err
 			}
 			optsv2.Page = scmResp.Page.Next
 			optsv2.URL = scmResp.Page.NextURL
 		} else {
 			scmRepos, scmResp, err = scmClient.Repositories.List(ctx, opts)
-			if err = convertSCMError(provider, spaceSlug, scmResp, err); err != nil {
+			if err = convertSCMError(ctx, provider, spaceSlug, scmResp, err); err != nil {
 				return nil, provider, err
 			}
 			opts.Page = scmResp.Page.Next
@@ -358,7 +412,8 @@ func LoadRepositoriesFromProviderSpace(
 
 		for _, scmRepo := range scmRepos {
 			// in some cases the namespace filter isn't working (e.g. Gitlab)
-			if !strings.EqualFold(scmRepo.Namespace, spaceSlug) {
+			// For GitLab with subgroups, namespace could be "group/subgroup", so use prefix match
+			if !matchesNamespace(provider.Type, scmRepo.Namespace, spaceSlug, includeSubgroupsRepos) {
 				continue
 			}
 
@@ -366,7 +421,7 @@ func LoadRepositoriesFromProviderSpace(
 				Space:         scmRepo.Namespace,
 				Identifier:    scmRepo.Name,
 				CloneURL:      scmRepo.Clone,
-				IsPublic:      provider.Type != ProviderTypeAzure && !scmRepo.Private,
+				IsPublic:      !scmRepo.Private,
 				DefaultBranch: scmRepo.Branch,
 			})
 		}
@@ -404,33 +459,81 @@ func extractRepoFromSlug(slug string) (string, error) {
 	return "", fmt.Errorf("repo name missing")
 }
 
-func convertSCMError(provider Provider, slug string, r *scm.Response, err error) error {
+// extractHarnessScope splits a Harness Code provider_repo slug into the account/org/project
+// scope and the repo identifier. Only account is required; org and project are optional and
+// returned empty if not present, matching account/repo, account/org/repo and
+// account/org/project/repo slug forms.
+func extractHarnessScope(slug string) (account, org, project, repo string, err error) {
+	parts := strings.Split(slug, "/")
+	switch len(parts) {
+	case 2:
+		return parts[0], "", "", parts[1], nil
+	case 3:
+		return parts[0], parts[1], "", parts[2], nil
+	case 4:
+		return parts[0], parts[1], parts[2], parts[3], nil
+	default:
+		return "", "", "", "", fmt.Errorf(
+			"expected account/repo, account/org/repo or account/org/project/repo, got %q", slug)
+	}
+}
+
+// matchesNamespace checks if the repository namespace matches the expected space slug.
+// For GitLab with includeSubgroups enabled, it matches the exact group or any subgroup
+// (e.g., "group" and "group/subgroup" match "group", but "grouptoo" does not).
+// For other providers or GitLab without includeSubgroups, it uses exact case-insensitive matching.
+func matchesNamespace(providerType ProviderType, repoNamespace, spaceSlug string, includeSubgroups bool) bool {
+	if providerType == ProviderTypeGitLab && includeSubgroups {
+		lower := strings.ToLower(repoNamespace)
+		slug := strings.ToLower(spaceSlug)
+		return lower == slug || strings.HasPrefix(lower, slug+"/")
+	}
+	return strings.EqualFold(repoNamespace, spaceSlug)
+}
+
+// convertSCMError translates a failed provider call into a user facing error.
+//
+// IMPORTANT: the provider host is user provided, so the details of a failure
+// must not be described to the caller. Neither the transport error (which names
+// the resolved address and the syscall) nor the upstream status code may be
+// exposed: both let a caller tell an open internal port apart from a closed one
+// and use repository import as a network scanner. The details are logged
+// instead.
+func convertSCMError(ctx context.Context, provider Provider, slug string, r *scm.Response, err error) error {
 	if err == nil {
 		return nil
 	}
 
-	if r == nil {
-		if provider.Host != "" {
-			return usererror.BadRequestf("failed to make HTTP request to %s (host=%s): %s",
-				provider.Type, provider.Host, err)
-		}
+	logger := log.Ctx(ctx).Warn().Err(err).
+		Str("provider_type", string(provider.Type)).
+		Str("provider_host", provider.Host)
 
-		return usererror.BadRequestf("failed to make HTTP request to %s: %s",
-			provider.Type, err)
+	if r == nil {
+		logger.Msg("failed to make http request to import provider")
+
+		return usererror.BadRequestf(
+			"Failed to make an HTTP request to %s. Verify that the provider host is correct and reachable.",
+			provider.Type)
 	}
 
+	logger = logger.Int("provider_status", r.Status)
+
 	switch r.Status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		logger.Msg("import provider responded with a redirect")
+		return usererror.BadRequest("Redirects are not supported.")
 	case http.StatusNotFound:
-		return usererror.BadRequestf("couldn't find %s at %s: %s",
-			slug, provider.Type, err.Error())
+		logger.Msg("import provider could not find the requested resource")
+		return usererror.BadRequestf("Couldn't find %s at %s.", slug, provider.Type)
 	case http.StatusUnauthorized:
-		return usererror.BadRequestf("bad credentials provided for %s at %s: %s",
-			slug, provider.Type, err.Error())
+		logger.Msg("import provider rejected the provided credentials")
+		return usererror.BadRequestf("Bad credentials provided for %s at %s.", slug, provider.Type)
 	case http.StatusForbidden:
-		return usererror.BadRequestf("access denied to %s at %s: %s",
-			slug, provider.Type, err.Error())
+		logger.Msg("import provider denied access to the requested resource")
+		return usererror.BadRequestf("Access denied to %s at %s.", slug, provider.Type)
 	default:
-		return usererror.BadRequestf("failed to fetch %s from %s (HTTP status %d): %s",
-			slug, provider.Type, r.Status, err.Error())
+		logger.Msg("failed to fetch resource from import provider")
+		return usererror.BadRequestf("Failed to fetch %s from %s.", slug, provider.Type)
 	}
 }

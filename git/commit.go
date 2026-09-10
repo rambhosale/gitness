@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -29,18 +30,28 @@ import (
 	"github.com/harness/gitness/git/sha"
 )
 
+func CommitMessage(subject, body string) string {
+	if body == "" {
+		return subject
+	}
+	return subject + "\n\n" + body
+}
+
 type GetCommitParams struct {
 	ReadParams
-	Revision string
+	Revision         string
+	IgnoreWhitespace bool
 }
 
 type Commit struct {
 	SHA        sha.SHA           `json:"sha"`
+	TreeSHA    sha.SHA           `json:"-"`
 	ParentSHAs []sha.SHA         `json:"parent_shas,omitempty"`
 	Title      string            `json:"title"`
 	Message    string            `json:"message,omitempty"`
 	Author     Signature         `json:"author"`
 	Committer  Signature         `json:"committer"`
+	SignedData *SignedData       `json:"-"`
 	FileStats  []CommitFileStats `json:"file_stats,omitempty"`
 }
 
@@ -53,9 +64,17 @@ type Signature struct {
 	When     time.Time `json:"when"`
 }
 
+func (s *Signature) String() string {
+	return s.Identity.String() + " " + s.When.String()
+}
+
 type Identity struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
+}
+
+func (i *Identity) String() string {
+	return fmt.Sprintf("%s <%s>", i.Name, i.Email)
 }
 
 func (i *Identity) Validate() error {
@@ -75,7 +94,7 @@ func (s *Service) GetCommit(ctx context.Context, params *GetCommitParams) (*GetC
 		return nil, ErrNoParamsProvided
 	}
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-	result, err := s.git.GetCommit(ctx, repoPath, params.Revision)
+	result, err := s.git.GetCommitFromRev(ctx, repoPath, params.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +129,14 @@ type ListCommitsParams struct {
 	// Committer allows to filter for commits based on the committer - Optional, ignored if string is empty.
 	Committer string
 
+	// Author allows to filter for commits based on the author - Optional, ignored if string is empty.
+	Author string
+
 	// IncludeStats allows to include information about inserted, deletions and status for changed files.
 	IncludeStats bool
+
+	// Regex allows to use regular expression in the Committer and Author fields
+	Regex bool
 }
 
 type RenameDetails struct {
@@ -155,6 +180,8 @@ func (s *Service) ListCommits(ctx context.Context, params *ListCommitsParams) (*
 			Since:     params.Since,
 			Until:     params.Until,
 			Committer: params.Committer,
+			Author:    params.Author,
+			Regex:     params.Regex,
 		},
 	)
 	if err != nil {
@@ -179,7 +206,7 @@ func (s *Service) ListCommits(ctx context.Context, params *ListCommitsParams) (*
 
 	commits := make([]Commit, len(gitCommits))
 	for i := range gitCommits {
-		commit, err := mapCommit(gitCommits[i])
+		commit, err := mapCommit(&gitCommits[i])
 		if err != nil {
 			return nil, fmt.Errorf("failed to map rpc commit: %w", err)
 		}
@@ -253,56 +280,7 @@ func (s *Service) GetCommitDivergences(
 	}, nil
 }
 
-type FindOversizeFilesParams struct {
-	RepoUID       string
-	GitObjectDirs []string
-	SizeLimit     int64
-}
-
-type FindOversizeFilesOutput struct {
-	FileInfos []FileInfo
-}
-
-type FileInfo struct {
-	SHA  sha.SHA
-	Size int64
-}
-
-//nolint:gocognit
-func (s *Service) FindOversizeFiles(
-	ctx context.Context,
-	params *FindOversizeFilesParams,
-) (*FindOversizeFilesOutput, error) {
-	if params.RepoUID == "" {
-		return nil, api.ErrRepositoryPathEmpty
-	}
-	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-
-	var fileInfos []FileInfo
-	for _, gitObjDir := range params.GitObjectDirs {
-		objects, err := catFileBatchCheckAllObjects(ctx, repoPath, gitObjDir)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, obj := range objects {
-			if obj.Type == string(TreeNodeTypeBlob) {
-				if obj.Size > params.SizeLimit {
-					fileInfos = append(fileInfos, FileInfo{
-						SHA:  obj.SHA,
-						Size: obj.Size,
-					})
-				}
-			}
-		}
-	}
-
-	return &FindOversizeFilesOutput{
-		FileInfos: fileInfos,
-	}, nil
-}
-
-func catFileBatchCheckAllObjects(
+func (s *Service) listGitObjDir(
 	ctx context.Context,
 	repoPath string,
 	gitObjDir string,
@@ -313,7 +291,8 @@ func catFileBatchCheckAllObjects(
 
 	// --batch-all-objects reports objects in the current repository and in all alternate directories.
 	// We want to report objects in the current repository only.
-	if err := os.Rename(gitObjDir+oldFilename, gitObjDir+newFilename); err != nil && !os.IsNotExist(err) {
+	if err := os.Rename(gitObjDir+oldFilename, gitObjDir+newFilename); err != nil &&
+		!errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("failed to rename %s to %s: %w", oldFilename, newFilename, err)
 	}
 
@@ -339,7 +318,8 @@ func catFileBatchCheckAllObjects(
 		return nil, fmt.Errorf("failed to parse output of cat-file batch check all objects: %w", err)
 	}
 
-	if err := os.Rename(gitObjDir+newFilename, gitObjDir+oldFilename); err != nil && !os.IsNotExist(err) {
+	if err := os.Rename(gitObjDir+newFilename, gitObjDir+oldFilename); err != nil &&
+		!errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("failed to rename %s to %s: %w", newFilename, oldFilename, err)
 	}
 

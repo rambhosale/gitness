@@ -16,7 +16,6 @@ package request
 
 import (
 	"net/http"
-	"net/url"
 
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/types"
@@ -25,16 +24,49 @@ import (
 
 const (
 	PathParamPublicKeyIdentifier = "public_key_identifier"
+
+	QueryParamPublicKeyScheme = "public_key_scheme"
+	QueryParamPublicKeyUsage  = "public_key_usage"
 )
 
 func GetPublicKeyIdentifierFromPath(r *http.Request) (string, error) {
-	identifier, err := PathParamOrError(r, PathParamPublicKeyIdentifier)
-	if err != nil {
-		return "", err
+	return PathParamOrError(r, PathParamPublicKeyIdentifier)
+}
+
+// ParsePublicKeyScheme extracts the public key scheme from the url.
+func ParsePublicKeyScheme(r *http.Request) []enum.PublicKeyScheme {
+	strSchemeList, _ := QueryParamList(r, QueryParamPublicKeyScheme)
+	m := make(map[enum.PublicKeyScheme]struct{}) // use map to eliminate duplicates
+	for _, s := range strSchemeList {
+		if state, ok := enum.PublicKeyScheme(s).Sanitize(); ok {
+			m[state] = struct{}{}
+		}
 	}
 
-	// paths are unescaped
-	return url.PathUnescape(identifier)
+	schemeList := make([]enum.PublicKeyScheme, 0, len(m))
+	for s := range m {
+		schemeList = append(schemeList, s)
+	}
+
+	return schemeList
+}
+
+// ParsePublicKeyUsage extracts the public key usage from the url.
+func ParsePublicKeyUsage(r *http.Request) []enum.PublicKeyUsage {
+	strUsageList, _ := QueryParamList(r, QueryParamPublicKeyUsage)
+	m := make(map[enum.PublicKeyUsage]struct{}) // use map to eliminate duplicates
+	for _, s := range strUsageList {
+		if state, ok := enum.PublicKeyUsage(s).Sanitize(); ok {
+			m[state] = struct{}{}
+		}
+	}
+
+	usageList := make([]enum.PublicKeyUsage, 0, len(m))
+	for s := range m {
+		usageList = append(usageList, s)
+	}
+
+	return usageList
 }
 
 // ParseListPublicKeyQueryFilterFromRequest parses query filter for public keys from the url.
@@ -45,9 +77,14 @@ func ParseListPublicKeyQueryFilterFromRequest(r *http.Request) (types.PublicKeyF
 		return types.PublicKeyFilter{}, usererror.BadRequest("Invalid value for the sort query parameter.")
 	}
 
+	schemes := ParsePublicKeyScheme(r)
+	usages := ParsePublicKeyUsage(r)
+
 	return types.PublicKeyFilter{
 		ListQueryFilter: ParseListQueryFilterFromRequest(r),
 		Sort:            sort,
 		Order:           ParseOrder(r),
+		Usages:          usages,
+		Schemes:         schemes,
 	}, nil
 }

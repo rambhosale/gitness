@@ -19,16 +19,21 @@ type CodeOwnerViolationCode string
 const (
 	// CodeOwnerViolationCodeUserNotFound occurs when user in codeowners file is not present.
 	CodeOwnerViolationCodeUserNotFound CodeOwnerViolationCode = "user_not_found"
+	// CodeOwnerViolationCodeUserGroupNotFound occurs when user group in codeowners file is not present.
+	CodeOwnerViolationCodeUserGroupNotFound CodeOwnerViolationCode = "user_group_not_found"
 	// CodeOwnerViolationCodePatternInvalid occurs when a pattern in codeowners file is incorrect.
 	CodeOwnerViolationCodePatternInvalid CodeOwnerViolationCode = "pattern_invalid"
 	// CodeOwnerViolationCodePatternEmpty occurs when a pattern in codeowners file is empty.
 	CodeOwnerViolationCodePatternEmpty CodeOwnerViolationCode = "pattern_empty"
+	// CodeOwnerViolationCodeUserPatternInvalid occurs when a pattern of user is invalid.
+	CodeOwnerViolationCodeUserPatternInvalid CodeOwnerViolationCode = "user_pattern_invalid"
 )
 
-func (CodeOwnerViolationCode) Enum() []interface{} { return toInterfaceSlice(codeOwnerViolationCodes) }
+func (CodeOwnerViolationCode) Enum() []any { return toInterfaceSlice(codeOwnerViolationCodes) }
 
 var codeOwnerViolationCodes = sortEnum([]CodeOwnerViolationCode{
 	CodeOwnerViolationCodeUserNotFound,
 	CodeOwnerViolationCodePatternInvalid,
 	CodeOwnerViolationCodePatternEmpty,
+	CodeOwnerViolationCodeUserPatternInvalid,
 })

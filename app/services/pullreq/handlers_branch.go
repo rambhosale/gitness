@@ -16,30 +16,35 @@ package pullreq
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strconv"
 	"strings"
-	"time"
 
 	gitevents "github.com/harness/gitness/app/events/git"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/git"
+	gitapi "github.com/harness/gitness/git/api"
+	gitenum "github.com/harness/gitness/git/enum"
+	"github.com/harness/gitness/git/sha"
+	gitness_store "github.com/harness/gitness/store"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
+	"github.com/gotidy/ptr"
 	"github.com/rs/zerolog/log"
 )
 
 var (
-	errPRNotOpen = errors.New("PR is not open")
+	ErrPullReqNotOpen = errors.New("pull request is not open")
 )
 
 // triggerPREventOnBranchUpdate handles branch update events. For every open pull request
 // it writes an activity entry and triggers the pull request Branch Updated event.
 //
 //nolint:gocognit // refactor if needed
-func (s *Service) triggerPREventOnBranchUpdate(ctx context.Context,
+func (s *Service) updatePullReqOnBranchUpdate(ctx context.Context,
 	event *events.Event[*gitevents.BranchUpdatedPayload],
 ) error {
 	// we should always update PR mergeable status check when target branch is updated.
@@ -57,22 +62,131 @@ func (s *Service) triggerPREventOnBranchUpdate(ctx context.Context,
 		}
 	}
 
-	// TODO: This function is currently executed directly on branch update event.
-	// TODO: But it should be executed after the PR's head ref has been updated.
-	// TODO: This is to make sure the commit exists on the target repository for forked repositories.
-	s.forEveryOpenPR(ctx, event.Payload.RepoID, event.Payload.Ref, func(pr *types.PullReq) error {
-		// First check if the merge base has changed
-
-		targetRepo, err := s.repoGitInfoCache.Get(ctx, pr.TargetRepoID)
+	var commitTitle string
+	err := func() error {
+		repo, err := s.repoFinder.FindByID(ctx, event.Payload.RepoID)
 		if err != nil {
 			return fmt.Errorf("failed to get repo git info: %w", err)
 		}
 
+		commit, err := s.git.GetCommit(ctx, &git.GetCommitParams{
+			ReadParams: git.ReadParams{RepoUID: repo.GitUID},
+			Revision:   event.Payload.NewSHA,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to get commit info: %w", err)
+		}
+
+		commitTitle = commit.Commit.Title
+
+		return nil
+	}()
+	if err != nil {
+		// non critical error
+		log.Ctx(ctx).Warn().Err(err).Msgf("failed to get commit info from git")
+	}
+
+	s.forEveryOpenPR(ctx, event.Payload.RepoID, event.Payload.Ref, func(pr *types.PullReq) error {
+		targetRepo, err := s.repoFinder.FindByID(ctx, pr.TargetRepoID)
+		if err != nil {
+			return fmt.Errorf("failed to get target repo git info: %w", err)
+		}
+
+		readParams := git.CreateReadParams(targetRepo)
+
+		writeParams, err := createRPCSystemReferencesWriteParams(ctx, s.urlProvider, targetRepo.ID, targetRepo.GitUID)
+		if err != nil {
+			return fmt.Errorf("failed to generate target repo write params: %w", err)
+		}
+
+		oldSHA, err := sha.New(event.Payload.OldSHA)
+		if err != nil {
+			return fmt.Errorf("failed to convert old commit SHA %q: %w",
+				event.Payload.OldSHA,
+				events.NewDiscardEventError(err),
+			)
+		}
+
+		newSHA, err := sha.New(event.Payload.NewSHA)
+		if err != nil {
+			return fmt.Errorf("failed to convert new commit SHA %s: %w",
+				event.Payload.NewSHA,
+				events.NewDiscardEventError(err),
+			)
+		}
+
+		// Pull git objects from the source repo into the target repo if this is a cross repo pull request.
+
+		if pr.SourceRepoID == nil {
+			return events.NewDiscardEventError(fmt.Errorf("pull request ID=%d has no source repo ID", pr.ID))
+		}
+
+		if *pr.SourceRepoID != pr.TargetRepoID {
+			sourceRepo, err := s.repoFinder.FindByID(ctx, *pr.SourceRepoID)
+			if errors.Is(err, gitness_store.ErrResourceNotFound) {
+				return events.NewDiscardEventError(fmt.Errorf("pull request ID=%d source repo not found ID", pr.ID))
+			} else if err != nil {
+				return fmt.Errorf("failed to get source repo git info: %w", err)
+			}
+
+			_, err = s.git.FetchObjects(ctx, &git.FetchObjectsParams{
+				WriteParams: writeParams,
+				Source:      sourceRepo.GitUID,
+				ObjectSHAs:  []sha.SHA{newSHA},
+			})
+			if err != nil {
+				return fmt.Errorf("failed to fetch git objects from the source repository: %w", err)
+			}
+		}
+
+		// Update pull request's head reference.
+
+		err = s.git.UpdateRef(ctx, git.UpdateRefParams{
+			WriteParams: writeParams,
+			Name:        strconv.Itoa(int(pr.Number)),
+			Type:        gitenum.RefTypePullReqHead,
+			NewValue:    newSHA,
+			OldValue:    oldSHA,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update PR head ref after new commit: %w", err)
+		}
+
+		// Check if the merge base has changed
+
+		targetRef, err := s.git.GetRef(ctx, git.GetRefParams{
+			ReadParams: readParams,
+			Name:       pr.TargetBranch,
+			Type:       gitenum.RefTypeBranch,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to resolve target branch reference: %w", err)
+		}
+
+		targetSHA := targetRef.SHA
+
 		mergeBaseInfo, err := s.git.MergeBase(ctx, git.MergeBaseParams{
 			ReadParams: git.ReadParams{RepoUID: targetRepo.GitUID},
 			Ref1:       event.Payload.NewSHA,
-			Ref2:       pr.TargetBranch,
+			Ref2:       targetSHA.String(),
 		})
+		if errors.IsInvalidArgument(err) || gitapi.IsUnrelatedHistoriesError(err) {
+			err = s.CloseBecauseNonUniqueMergeBase(ctx, targetSHA, newSHA, pr)
+			if errors.Is(err, ErrPullReqNotOpen) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("failed to close pull request after non-unique merge base: %w", err)
+			}
+
+			log.Ctx(ctx).Info().
+				Int64("pullreq", pr.Number).
+				Str("source_sha", event.Payload.NewSHA).
+				Str("target_sha", targetSHA.String()).
+				Msg("closed pull request after non-unique merge base")
+
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("failed to get merge base after branch update to=%s for PR=%d: %w",
 				event.Payload.NewSHA, pr.Number, err)
@@ -81,34 +195,54 @@ func (s *Service) triggerPREventOnBranchUpdate(ctx context.Context,
 		oldMergeBase := pr.MergeBaseSHA
 		newMergeBase := mergeBaseInfo.MergeBaseSHA
 
+		// Activity sequence numbers are reserved inside the update so that the branch update activity
+		// always precedes the auto-merge-disabled activity in the timeline.
+		var activitySeqBranchUpdate, activitySeqAutoMergeDisabled int64
+		var autoMergeDisabled bool
+
 		// Update the database with the latest source commit SHA and the merge base SHA.
 		pr, err = s.pullreqStore.UpdateOptLock(ctx, pr, func(pr *types.PullReq) error {
 			// to avoid racing conditions with merge
 			if pr.State != enum.PullReqStateOpen {
-				return errPRNotOpen
+				return ErrPullReqNotOpen
 			}
 
-			pr.ActivitySeq++
+			// Auto-merge expresses the intent to merge one specific revision once all other conditions pass,
+			// so a new revision has to be re-confirmed. Clearing the substate in the same update that sets the
+			// new source SHA is what makes this race-free: no downstream consumer of the pull request level
+			// BranchUpdated event can observe the new SHA while the PR is still flagged for auto-merge.
+			autoMergeDisabled = pr.SubState == enum.PullReqSubStateAutoMerge
+
+			if autoMergeDisabled {
+				pr.ActivitySeq += 2
+				activitySeqBranchUpdate = pr.ActivitySeq - 1
+				activitySeqAutoMergeDisabled = pr.ActivitySeq
+				pr.SubState = enum.PullReqSubStateNone
+			} else {
+				pr.ActivitySeq++
+				activitySeqBranchUpdate = pr.ActivitySeq
+			}
+
 			if pr.SourceSHA != event.Payload.OldSHA {
 				return fmt.Errorf(
 					"failed to set SourceSHA for PR %d to value '%s', expected SHA '%s' but current pr has '%s'",
 					pr.Number, event.Payload.NewSHA, event.Payload.OldSHA, pr.SourceSHA)
 			}
 
-			pr.Edited = time.Now().UnixMilli()
 			pr.SourceSHA = event.Payload.NewSHA
+			pr.MergeTargetSHA = ptr.String(targetSHA.String())
 			pr.MergeBaseSHA = newMergeBase.String()
 
 			// reset merge-check fields for new run
-			pr.MergeCheckStatus = enum.MergeCheckStatusUnchecked
+
 			pr.MergeSHA = nil
-			pr.MergeConflicts = nil
 			pr.Stats.DiffStats.Commits = nil
 			pr.Stats.DiffStats.FilesChanged = nil
+			pr.MarkAsMergeUnchecked()
 
 			return nil
 		})
-		if errors.Is(err, errPRNotOpen) {
+		if errors.Is(err, ErrPullReqNotOpen) {
 			return nil
 		}
 		if err != nil {
@@ -116,14 +250,38 @@ func (s *Service) triggerPREventOnBranchUpdate(ctx context.Context,
 		}
 
 		payload := &types.PullRequestActivityPayloadBranchUpdate{
-			Old: event.Payload.OldSHA,
-			New: event.Payload.NewSHA,
+			Old:         event.Payload.OldSHA,
+			New:         event.Payload.NewSHA,
+			Forced:      event.Payload.Forced,
+			CommitTitle: commitTitle,
 		}
 
-		_, err = s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID, payload)
+		pr.ActivitySeq = activitySeqBranchUpdate
+		_, err = s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID, payload, nil)
 		if err != nil {
 			// non-critical error
 			log.Ctx(ctx).Err(err).Msgf("failed to write pull request activity after branch update")
+		}
+
+		// The substate flip above is the load-bearing part and is already committed, so the
+		// remaining auto-merge cleanup is best-effort.
+		if autoMergeDisabled {
+			if _, err := s.autoMergeStore.Delete(ctx, pr.ID); err != nil {
+				// non-critical error
+				log.Ctx(ctx).Err(err).Msgf("failed to delete auto merge entry for PR %d after branch update",
+					pr.Number)
+			}
+
+			pr.ActivitySeq = activitySeqAutoMergeDisabled
+			if _, err := s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID,
+				&types.PullRequestActivityPayloadAutoMergeDisabledBranchUpdate{
+					Old: event.Payload.OldSHA,
+					New: event.Payload.NewSHA,
+				}, nil,
+			); err != nil {
+				// non-critical error
+				log.Ctx(ctx).Err(err).Msg("failed to write auto-merge-disabled activity after branch update")
+			}
 		}
 
 		s.pullreqEvReporter.BranchUpdated(ctx, &pullreqevents.BranchUpdatedPayload{
@@ -141,12 +299,27 @@ func (s *Service) triggerPREventOnBranchUpdate(ctx context.Context,
 			Forced:          event.Payload.Forced,
 		})
 
-		if err = s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-			log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
-		}
+		s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullReqUpdated, pr)
 
 		return nil
 	})
+	return nil
+}
+
+// handleBranchDeleted handles branch delete events.
+func (s *Service) handleBranchDeleted(ctx context.Context,
+	event *events.Event[*gitevents.BranchDeletedPayload],
+) error {
+	// First, close PRs where the source branch was deleted
+	if err := s.closePullReqOnBranchDelete(ctx, event); err != nil {
+		return err
+	}
+
+	// Then, update PRs where the target branch was deleted (to point to default branch)
+	if err := s.updatePullReqTargetOnBranchDelete(ctx, event); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -156,7 +329,7 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 	event *events.Event[*gitevents.BranchDeletedPayload],
 ) error {
 	s.forEveryOpenPR(ctx, event.Payload.RepoID, event.Payload.Ref, func(pr *types.PullReq) error {
-		targetRepo, err := s.repoGitInfoCache.Get(ctx, pr.TargetRepoID)
+		targetRepo, err := s.repoStore.Find(ctx, pr.TargetRepoID)
 		if err != nil {
 			return fmt.Errorf("failed to get repo info: %w", err)
 		}
@@ -165,7 +338,7 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 		pr, err = s.pullreqStore.UpdateOptLock(ctx, pr, func(pr *types.PullReq) error {
 			// to avoid racing conditions with merge
 			if pr.State != enum.PullReqStateOpen {
-				return errPRNotOpen
+				return ErrPullReqNotOpen
 			}
 
 			// get sequence numbers for both activities (branch deletion should be first)
@@ -174,17 +347,29 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 			activitySeqPRClosed = pr.ActivitySeq
 
 			pr.State = enum.PullReqStateClosed
-			pr.MergeCheckStatus = enum.MergeCheckStatusUnchecked
+			pr.SubState = enum.PullReqSubStateNone
+
 			pr.MergeSHA = nil
-			pr.MergeConflicts = nil
+			pr.MarkAsMergeUnchecked()
 
 			return nil
 		})
-		if errors.Is(err, errPRNotOpen) {
+		if errors.Is(err, ErrPullReqNotOpen) {
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("failed to close pull request after branch delete: %w", err)
+		}
+
+		ctxNoCancel := context.WithoutCancel(ctx)
+
+		_, err = s.repoStore.UpdateOptLock(ctxNoCancel, targetRepo, func(repo *types.Repository) error {
+			repo.NumClosedPulls++
+			repo.NumOpenPulls--
+			return nil
+		})
+		if err != nil {
+			log.Ctx(ctx).Err(err).Msg("failed to update pull request numbers after PR close after branch delete")
 		}
 
 		// NOTE: We use the latest PR source sha for the branch deleted activity.
@@ -192,7 +377,7 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 		// Whatever is the source sha of the PR is most likely to be pointed at by the PR head ref.
 		pr.ActivitySeq = activitySeqBranchDeleted
 		_, err = s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID,
-			&types.PullRequestActivityPayloadBranchDelete{SHA: pr.SourceSHA})
+			&types.PullRequestActivityPayloadBranchDelete{SHA: pr.SourceSHA}, nil)
 		if err != nil {
 			// non-critical error
 			log.Ctx(ctx).Err(err).Msg("failed to write pull request activity for branch deletion")
@@ -205,7 +390,7 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 			OldDraft: pr.IsDraft,
 			NewDraft: pr.IsDraft,
 		}
-		if _, err := s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID, payload); err != nil {
+		if _, err := s.activityStore.CreateWithPayload(ctx, pr, event.Payload.PrincipalID, payload, nil); err != nil {
 			// non-critical error
 			log.Ctx(ctx).Err(err).Msg(
 				"failed to write pull request activity for pullrequest closure after branch deletion",
@@ -220,12 +405,11 @@ func (s *Service) closePullReqOnBranchDelete(ctx context.Context,
 				PrincipalID:  event.Payload.PrincipalID,
 				Number:       pr.Number,
 			},
-			SourceSHA: pr.SourceSHA,
+			SourceSHA:    pr.SourceSHA,
+			SourceBranch: pr.SourceBranch,
 		})
 
-		if err = s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-			log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
-		}
+		s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullReqUpdated, pr)
 
 		return nil
 	})
@@ -262,7 +446,9 @@ func (s *Service) forEveryOpenPR(ctx context.Context,
 
 	for _, pr := range pullreqList {
 		if err = fn(pr); err != nil {
-			log.Ctx(ctx).Err(err).Msg("failed to process pull req")
+			log.Ctx(ctx).Err(err).
+				Str("error_status", string(errors.AsStatus(err))).
+				Msg("failed to process pull req")
 		}
 	}
 }

@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { CDERoutes, routes as cdeRoutes } from 'cde/RouteDefinitions'
+import { CDERoutes, routes as cdeRoutes } from 'cde-gitness/RouteDefinitions'
+import { ARRoutes, routes as arRoutes } from '@ar/gitness/RouteDefinitions'
 
 export interface CODEProps {
   space?: string
@@ -63,14 +64,19 @@ export const pathProps: Readonly<Omit<Required<CODEProps>, 'repoPath' | 'branch'
   gitspaceId: ':gitspaceId'
 }
 
-export interface CODERoutes extends CDERoutes {
+export interface CODERoutes extends CDERoutes, ARRoutes {
   toSignIn: () => string
   toRegister: () => string
 
   toCODEHome: () => string
 
   toCODESpaceAccessControl: (args: Required<Pick<CODEProps, 'space'>>) => string
-  toCODESpaceSettings: (args: Required<Pick<CODEProps, 'space'>>) => string
+  toCODESpaceSettings: (
+    args: RequiredField<Pick<CODEProps, 'space' | 'settingSection' | 'ruleId' | 'settingSectionMode'>, 'space'>
+  ) => string
+  toCODEManageRepositories: (
+    args: RequiredField<Pick<CODEProps, 'space' | 'settingSection' | 'ruleId' | 'settingSectionMode'>, 'space'>
+  ) => string
   toCODEPipelines: (args: Required<Pick<CODEProps, 'repoPath'>>) => string
   toCODEPipelineEdit: (args: Required<Pick<CODEProps, 'repoPath' | 'pipeline'>>) => string
   toCODEPipelineSettings: (args: Required<Pick<CODEProps, 'repoPath' | 'pipeline'>>) => string
@@ -126,7 +132,14 @@ export const routes: CODERoutes = {
   toCODEHome: () => `/`,
 
   toCODESpaceAccessControl: ({ space }) => `/access-control/${space}`,
-  toCODESpaceSettings: ({ space }) => `/settings/${space}`,
+  toCODESpaceSettings: ({ space, settingSection, ruleId, settingSectionMode }) =>
+    `/settings/${space}/project${settingSection ? '/' + settingSection : ''}${ruleId ? '/' + ruleId : ''}${
+      settingSectionMode ? '/' + settingSectionMode : ''
+    }`,
+  toCODEManageRepositories: ({ space, settingSection, ruleId, settingSectionMode }) =>
+    `/${space}/manage-repositories${settingSection ? '/' + settingSection : ''}${ruleId ? '/' + ruleId : ''}${
+      settingSectionMode ? '/' + settingSectionMode : ''
+    }`,
   toCODEPipelines: ({ repoPath }) => `/${repoPath}/pipelines`,
   toCODEPipelineEdit: ({ repoPath, pipeline }) => `/${repoPath}/pipelines/${pipeline}/edit`,
   toCODEPipelineSettings: ({ repoPath, pipeline }) => `/${repoPath}/pipelines/${pipeline}/triggers`,
@@ -137,7 +150,7 @@ export const routes: CODERoutes = {
   toCODEUserProfile: () => '/profile',
   toCODEUserChangePassword: () => '/change-password',
 
-  toCODERepositories: ({ space }) => `/spaces/${space}`,
+  toCODERepositories: ({ space }) => `/spaces/${space}/repos`,
   toCODERepository: ({ repoPath, gitRef, resourcePath }) =>
     `/${repoPath}${gitRef ? '/files/' + gitRef : ''}${resourcePath ? '/~/' + resourcePath : ''}`,
   toCODEFileEdit: ({
@@ -171,5 +184,6 @@ export const routes: CODERoutes = {
   toCODEExecutions: ({ repoPath, pipeline }) => `/${repoPath}/pipelines/${pipeline}`,
   toCODEExecution: ({ repoPath, pipeline, execution }) => `/${repoPath}/pipelines/${pipeline}/execution/${execution}`,
   toCODESecret: ({ space, secret }) => `/secrets/${space}/secret/${secret}`,
-  ...cdeRoutes
+  ...cdeRoutes,
+  ...arRoutes
 }

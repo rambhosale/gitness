@@ -17,12 +17,12 @@ package diff
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/enum"
 )
 
@@ -152,14 +152,14 @@ type File struct {
 }
 
 func (f *File) Status() string {
-	switch {
-	case f.Type == FileAdd:
+	switch f.Type {
+	case FileAdd:
 		return "added"
-	case f.Type == FileDelete:
+	case FileDelete:
 		return "deleted"
-	case f.Type == FileRename:
+	case FileRename:
 		return "renamed"
-	case f.Type == FileChange:
+	case FileChange:
 		return "changed"
 	default:
 		return "unchanged"
@@ -249,17 +249,25 @@ func (p *Parser) parseFileHeader() (*File, error) {
 
 	// NOTE: In case file name is surrounded by double quotes (it happens only in
 	// git-shell). e.g. diff --git "a/xxx" "b/xxx"
-	hasQuote := line[len(diffHead)] == '"' || line[len(line)-1] == '"'
+	aHasQuote := line[len(diffHead)] == '"'
+	bHasQuote := line[len(line)-1] == '"'
+
 	middle := strings.Index(line, ` b/`)
-	if hasQuote {
+	if middle == -1 && bHasQuote {
 		middle = strings.Index(line, ` "b/`)
+	}
+
+	if middle == -1 {
+		return nil, errors.InvalidArgumentf("malformed header line: %s", line)
 	}
 
 	beg := len(diffHead)
 	a := line[beg+2 : middle]
-	b := line[middle+3:]
-	if hasQuote {
+	if aHasQuote {
 		a = string(UnescapeChars([]byte(a[1 : len(a)-1])))
+	}
+	b := line[middle+3:]
+	if bHasQuote {
 		b = string(UnescapeChars([]byte(b[1 : len(b)-1])))
 	}
 
@@ -297,7 +305,7 @@ checkType:
 			fields := strings.Fields(subLine)
 			if len(fields) > 0 {
 				mode, _ := strconv.ParseUint(fields[len(fields)-1], 8, 64)
-				file.mode = enum.EntryMode(mode)
+				file.mode = enum.EntryMode(mode) //nolint:gosec
 				if file.oldMode == 0 {
 					file.oldMode = file.mode
 				}
@@ -308,7 +316,7 @@ checkType:
 			fields := strings.Fields(subLine)
 			if len(fields) > 0 {
 				mode, _ := strconv.ParseUint(fields[len(fields)-1], 8, 64)
-				file.mode = enum.EntryMode(mode)
+				file.mode = enum.EntryMode(mode) //nolint:gosec
 				if file.oldMode == 0 {
 					file.oldMode = file.mode
 				}
@@ -324,8 +332,8 @@ checkType:
 			file.SHA = shas[1]
 			if len(fields) > 1 {
 				mode, _ := strconv.ParseUint(fields[1], 8, 64)
-				file.mode = enum.EntryMode(mode)
-				file.oldMode = enum.EntryMode(mode)
+				file.mode = enum.EntryMode(mode)    //nolint:gosec
+				file.oldMode = enum.EntryMode(mode) //nolint:gosec
 			}
 			break checkType
 		case strings.HasPrefix(subLine, enum.DiffExtHeaderSimilarity):
@@ -341,13 +349,13 @@ checkType:
 			fields := strings.Fields(subLine)
 			if len(fields) > 0 {
 				mode, _ := strconv.ParseUint(fields[len(fields)-1], 8, 64)
-				file.mode = enum.EntryMode(mode)
+				file.mode = enum.EntryMode(mode) //nolint:gosec
 			}
 		case strings.HasPrefix(subLine, enum.DiffExtHeaderOldMode):
 			fields := strings.Fields(subLine)
 			if len(fields) > 0 {
 				mode, _ := strconv.ParseUint(fields[len(fields)-1], 8, 64)
-				file.oldMode = enum.EntryMode(mode)
+				file.oldMode = enum.EntryMode(mode) //nolint:gosec
 			}
 		}
 	}

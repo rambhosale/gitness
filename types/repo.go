@@ -15,25 +15,49 @@
 package types
 
 import (
+	"encoding/json"
+	"strings"
+
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types/enum"
 )
+
+type RepositoryCore struct {
+	ID            int64          `json:"id" yaml:"id"`
+	ParentID      int64          `json:"parent_id" yaml:"parent_id"`
+	Identifier    string         `json:"identifier" yaml:"identifier"`
+	Path          string         `json:"path" yaml:"path"`
+	GitUID        string         `json:"-" yaml:"-"`
+	DefaultBranch string         `json:"default_branch" yaml:"default_branch"`
+	ForkID        int64          `json:"fork_id" yaml:"fork_id"`
+	State         enum.RepoState `json:"-" yaml:"-"`
+	Type          enum.RepoType  `json:"type,omitempty" yaml:"type,omitempty"`
+}
+
+func (r *RepositoryCore) GetGitUID() string {
+	return r.GitUID
+}
 
 // Repository represents a code repository.
 type Repository struct {
 	// TODO: int64 ID doesn't match DB
-	ID          int64  `json:"id" yaml:"id"`
-	Version     int64  `json:"-" yaml:"-"`
-	ParentID    int64  `json:"parent_id" yaml:"parent_id"`
-	Identifier  string `json:"identifier" yaml:"identifier"`
-	Path        string `json:"path" yaml:"path"`
-	Description string `json:"description" yaml:"description"`
-	CreatedBy   int64  `json:"created_by" yaml:"created_by"`
-	Created     int64  `json:"created" yaml:"created"`
-	Updated     int64  `json:"updated" yaml:"updated"`
-	Deleted     *int64 `json:"deleted,omitempty" yaml:"deleted"`
+	ID                  int64  `json:"id" yaml:"id"`
+	Version             int64  `json:"-" yaml:"-"`
+	ParentID            int64  `json:"parent_id" yaml:"parent_id"`
+	Identifier          string `json:"identifier" yaml:"identifier"`
+	Path                string `json:"path" yaml:"path"`
+	Description         string `json:"description" yaml:"description"`
+	RootSpaceID         int64  `json:"root_space_id" yaml:"root_space_id"`
+	RootSpaceIdentifier string `json:"root_space_identifier" yaml:"root_space_identifier"`
+	CreatedBy           int64  `json:"created_by" yaml:"created_by"`
+	Created             int64  `json:"created" yaml:"created"`
+	Updated             int64  `json:"updated" yaml:"updated"`
+	Deleted             *int64 `json:"deleted,omitempty" yaml:"deleted"`
+	LastGITPush         int64  `json:"last_git_push" yaml:"last_git_push"`
 
 	// Size of the repository in KiB.
-	Size int64 `json:"size" yaml:"size"`
+	Size    int64 `json:"size" yaml:"size" description:"size of the repository in KiB"`
+	LFSSize int64 `json:"size_lfs" yaml:"lfs_size" description:"size of the repository LFS in KiB"`
 	// SizeUpdated is the time when the Size was last updated.
 	SizeUpdated int64 `json:"size_updated" yaml:"size_updated"`
 
@@ -48,12 +72,32 @@ type Repository struct {
 	NumOpenPulls   int `json:"num_open_pulls" yaml:"num_open_pulls"`
 	NumMergedPulls int `json:"num_merged_pulls" yaml:"num_merged_pulls"`
 
-	Importing bool `json:"importing" yaml:"-"`
-	IsEmpty   bool `json:"is_empty,omitempty" yaml:"is_empty"`
+	State   enum.RepoState `json:"state" yaml:"state"`
+	IsEmpty bool           `json:"is_empty,omitempty" yaml:"is_empty"`
 
 	// git urls
 	GitURL    string `json:"git_url" yaml:"-"`
 	GitSSHURL string `json:"git_ssh_url,omitempty" yaml:"-"`
+
+	Tags json.RawMessage `json:"tags,omitempty" yaml:"tags"`
+
+	Type enum.RepoType `json:"repo_type,omitempty" yaml:"repo_type"`
+
+	Language string `json:"language,omitempty" yaml:"language"`
+}
+
+func (r *Repository) Core() *RepositoryCore {
+	return &RepositoryCore{
+		ID:            r.ID,
+		ParentID:      r.ParentID,
+		Identifier:    r.Identifier,
+		Path:          r.Path,
+		GitUID:        r.GitUID,
+		ForkID:        r.ForkID,
+		DefaultBranch: r.DefaultBranch,
+		State:         r.State,
+		Type:          r.Type,
+	}
 }
 
 // Clone makes deep copy of repository object.
@@ -73,6 +117,8 @@ type RepositorySizeInfo struct {
 	GitUID string `json:"git_uid"`
 	// Size of the repository in KiB.
 	Size int64 `json:"size"`
+	// LFSSize size of the LFS data in KiB.
+	LFSSize int64 `json:"lfs_size"`
 	// SizeUpdated is the time when the Size was last updated.
 	SizeUpdated int64 `json:"size_updated"`
 }
@@ -90,14 +136,17 @@ type RepoFilter struct {
 	Order             enum.Order    `json:"order"`
 	DeletedAt         *int64        `json:"deleted_at,omitempty"`
 	DeletedBeforeOrAt *int64        `json:"deleted_before_or_at,omitempty"`
-	Recursive         bool
+	// Same tag key can be associated with multiple values
+	Tags             map[string][]string
+	Recursive        bool
+	OnlyFavoritesFor *int64
+
+	Identifiers []string `json:"-"`
 }
 
-// RepositoryGitInfo holds git info for a repository.
-type RepositoryGitInfo struct {
-	ID       int64
-	ParentID int64
-	GitUID   string
+type RepoCacheKey struct {
+	SpaceID        int64
+	RepoIdentifier string
 }
 
 type RepositoryPullReqSummary struct {
@@ -111,4 +160,67 @@ type RepositorySummary struct {
 	BranchCount              int                      `json:"branch_count"`
 	TagCount                 int                      `json:"tag_count"`
 	PullReqSummary           RepositoryPullReqSummary `json:"pull_req_summary"`
+}
+
+type RepositoryCount struct {
+	SpaceID  int64  `json:"space_id"`
+	SpaceUID string `json:"space_uid"`
+	Total    int    `json:"total"`
+}
+
+type RepoTags map[string]string
+
+func (t RepoTags) Sanitize() error {
+	if len(t) == 0 {
+		return nil
+	}
+
+	for k, v := range t {
+		sk, sv := k, v
+
+		if err := sanitizeRepoTag(&sk, TagPartTypeKey); err != nil {
+			return err
+		}
+		if err := sanitizeRepoTag(&sv, TagPartTypeValue); err != nil {
+			return err
+		}
+
+		if sk != k || sv != v {
+			delete(t, k) // remove old
+			t[sk] = sv   // insert sanitized
+		}
+	}
+
+	return nil
+}
+
+func sanitizeRepoTag(tag *string, typ TagPartType) error {
+	if tag == nil {
+		return nil
+	}
+
+	if strings.Contains(*tag, ":") {
+		return errors.InvalidArgumentf("tag %s cannot contain colon [:]", typ)
+	}
+
+	return SanitizeTag(tag, typ, false)
+}
+
+type LinkedRepo struct {
+	RepoID              int64
+	Version             int64
+	Created             int64
+	Updated             int64
+	LastFullSync        int64
+	ConnectorPath       string
+	ConnectorIdentifier string
+	ConnectorRepo       string
+	ProviderRepoID      string
+	ProviderType        string
+}
+
+type RepoLangStat struct {
+	Language string
+	Bytes    int64
+	Files    int64
 }

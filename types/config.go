@@ -28,7 +28,7 @@ import (
 
 // Config stores the system configuration.
 type Config struct {
-	// InstanceID specifis the ID of the gitness instance.
+	// InstanceID specifis the ID of the Harness instance.
 	// NOTE: If the value is not provided the hostname of the machine is used.
 	InstanceID string `envconfig:"GITNESS_INSTANCE_ID"`
 
@@ -53,12 +53,12 @@ type Config struct {
 	// URL defines the URLs via which the different parts of the service are reachable by.
 	URL struct {
 		// Base is used to generate external facing URLs in case they aren't provided explicitly.
-		// Value is derived from HTTP.Server unless explicitly specified (e.g. http://localhost:3000).
+		// Value is derived from Server.HTTP Config unless explicitly specified (e.g. http://localhost:3000).
 		Base string `envconfig:"GITNESS_URL_BASE"`
 
 		// Git defines the external URL via which the GIT API is reachable.
 		// NOTE: for routing to work properly, the request path & hostname reaching gitness
-		// have to statisfy at least one of the following two conditions:
+		// have to satisfy at least one of the following two conditions:
 		// - Path ends with `/git`
 		// - Hostname is different to API hostname
 		// (this could be after proxy path / header rewrite).
@@ -66,10 +66,11 @@ type Config struct {
 		Git string `envconfig:"GITNESS_URL_GIT"`
 
 		// GitSSH defines the external URL via which the GIT SSH server is reachable.
-		GitSSH string `envconfig:"GITNESS_URL_GIT_SSH" default:"localhost"`
+		// Value is derived from Base or SSH Config unless explicitly specified (e.g. ssh://localhost).
+		GitSSH string `envconfig:"GITNESS_URL_GIT_SSH"`
 
 		// API defines the external URL via which the rest API is reachable.
-		// NOTE: for routing to work properly, the request path reaching gitness has to end with `/api`
+		// NOTE: for routing to work properly, the request path reaching Harness has to end with `/api`
 		// (this could be after proxy path rewrite).
 		// Value is derived from Base unless explicitly specified (e.g. http://localhost:3000/api).
 		API string `envconfig:"GITNESS_URL_API"`
@@ -83,11 +84,15 @@ type Config struct {
 		Internal string `envconfig:"GITNESS_URL_INTERNAL"`
 
 		// Container is the endpoint that can be used by running container builds to communicate
-		// with gitness (for example while performing a clone on a local repo).
+		// with Harness (for example while performing a clone on a local repo).
 		// host.docker.internal allows a running container to talk to services exposed on the host
 		// (either running directly or via a port exposed in a docker container).
 		// Value is derived from HTTP.Server unless explicitly specified (e.g. http://host.docker.internal:3000).
 		Container string `envconfig:"GITNESS_URL_CONTAINER"`
+
+		// Registry is used as a base to generate external facing URLs.
+		// Value is derived from HTTP.Server unless explicitly specified (e.g. http://host.docker.internal:3000).
+		Registry string `envconfig:"GITNESS_URL_REGISTRY"`
 	}
 
 	// Git defines the git configuration parameters
@@ -120,27 +125,25 @@ type Config struct {
 		MixedContent bool   `envconfig:"GITNESS_ENCRYPTER_MIXED_CONTENT"`
 	}
 
-	// Server defines the server configuration parameters.
-	Server struct {
-		// HTTP defines the http configuration parameters
-		HTTP struct {
-			Port  int    `envconfig:"GITNESS_HTTP_PORT" default:"3000"`
-			Proto string `envconfig:"GITNESS_HTTP_PROTO" default:"http"`
-		}
+	// HTTP defines the http server configuration parameters
+	HTTP struct {
+		Port  int    `envconfig:"GITNESS_HTTP_PORT" default:"3000"`
+		Host  string `envconfig:"GITNESS_HTTP_HOST"`
+		Proto string `envconfig:"GITNESS_HTTP_PROTO" default:"http"`
+	}
 
-		// Acme defines Acme configuration parameters.
-		Acme struct {
-			Enabled bool   `envconfig:"GITNESS_ACME_ENABLED"`
-			Endpont string `envconfig:"GITNESS_ACME_ENDPOINT"`
-			Email   bool   `envconfig:"GITNESS_ACME_EMAIL"`
-			Host    string `envconfig:"GITNESS_ACME_HOST"`
-		}
+	// Acme defines Acme configuration parameters.
+	Acme struct {
+		Enabled bool   `envconfig:"GITNESS_ACME_ENABLED"`
+		Endpont string `envconfig:"GITNESS_ACME_ENDPOINT"`
+		Email   bool   `envconfig:"GITNESS_ACME_EMAIL"`
+		Host    string `envconfig:"GITNESS_ACME_HOST"`
 	}
 
 	SSH struct {
 		Enable bool   `envconfig:"GITNESS_SSH_ENABLE" default:"false"`
 		Host   string `envconfig:"GITNESS_SSH_HOST"`
-		Port   int    `envconfig:"GITNESS_SSH_PORT" default:"22"`
+		Port   int    `envconfig:"GITNESS_SSH_PORT" default:"3022"`
 		// DefaultUser holds value for generating urls {user}@host:path and force check
 		// no other user can authenticate unless it is empty then any username is allowed
 		DefaultUser             string   `envconfig:"GITNESS_SSH_DEFAULT_USER" default:"git"`
@@ -152,6 +155,7 @@ type Config struct {
 		TrustedUserCAKeysFile   string   `envconfig:"GITNESS_SSH_TRUSTED_USER_CA_KEYS_FILENAME"`
 		TrustedUserCAKeysParsed []gossh.PublicKey
 		KeepAliveInterval       time.Duration `envconfig:"GITNESS_SSH_KEEP_ALIVE_INTERVAL" default:"5s"`
+		ServerKeyPath           string        `envconfig:"GITNESS_SSH_SERVER_KEY_PATH" default:"ssh/gitness.rsa"`
 	}
 
 	// CI defines configuration related to build executions.
@@ -166,7 +170,7 @@ type Config struct {
 		// should be attached to.
 		// This can be needed when we don't want to use host.docker.internal (eg when a service mesh
 		// or proxy is being used) and instead want all the containers to run on the same network as
-		// the gitness container so that they can interact via the container name.
+		// the Harness container so that they can interact via the container name.
 		// In that case, GITNESS_URL_CONTAINER should also be changed
 		// (eg to http://<gitness_container_name>:<port>).
 		ContainerNetworks []string `envconfig:"GITNESS_CI_CONTAINER_NETWORKS"`
@@ -176,11 +180,20 @@ type Config struct {
 	Database struct {
 		Driver     string `envconfig:"GITNESS_DATABASE_DRIVER" default:"sqlite3"`
 		Datasource string `envconfig:"GITNESS_DATABASE_DATASOURCE" default:"database.sqlite3"`
+
+		// MaxOpenConns bounds the total open connections to the database.
+		MaxOpenConns int `envconfig:"GITNESS_DATABASE_MAX_OPEN_CONNS" default:"25"`
+		// MaxIdleConns bounds the idle connections kept in the pool.
+		MaxIdleConns int `envconfig:"GITNESS_DATABASE_MAX_IDLE_CONNS" default:"5"`
+		// ConnMaxLifetime is the maximum age of a connection before it is recycled.
+		ConnMaxLifetime time.Duration `envconfig:"GITNESS_DATABASE_CONN_MAX_LIFETIME" default:"5m"`
 	}
 
 	// BlobStore defines the blob storage configuration parameters.
 	BlobStore struct {
-		// Provider is a name of blob storage service like filesystem or gcs
+		// MaxFileSize defines the maximum size of files that can be uploaded (in bytes)
+		MaxFileSize int64 `envconfig:"GITNESS_BLOBSTORE_MAX_FILE_SIZE" default:"10485760"` // 10MB default
+		// Provider is a name of blob storage service like filesystem or gcs or cloudflare
 		Provider blob.Provider `envconfig:"GITNESS_BLOBSTORE_PROVIDER" default:"filesystem"`
 		// Bucket is a path to the directory where the files will be stored when using filesystem blob storage,
 		// in case of gcs provider this will be the actual bucket where the images are stored.
@@ -253,6 +266,14 @@ type Config struct {
 			DisplayName string `envconfig:"GITNESS_PRINCIPAL_PIPELINE_DISPLAY_NAME" default:"Gitness Pipeline"`
 			Email       string `envconfig:"GITNESS_PRINCIPAL_PIPELINE_EMAIL"        default:"pipeline@gitness.io"`
 		}
+
+		// Gitspace defines the principal information used to create the gitspace service.
+		Gitspace struct {
+			UID         string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_UID"          default:"gitspace"`
+			DisplayName string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_DISPLAY_NAME" default:"Gitness Gitspace"`
+			Email       string `envconfig:"GITNESS_PRINCIPAL_GITSPACE_EMAIL"        default:"gitspace@gitness.io"`
+		}
+
 		// Admin defines the principal information used to create the admin user.
 		// NOTE: The admin user is only auto-created in case a password and an email is provided.
 		Admin struct {
@@ -267,6 +288,7 @@ type Config struct {
 		Endpoint           string `envconfig:"GITNESS_REDIS_ENDPOINT"              default:"localhost:6379"`
 		MaxRetries         int    `envconfig:"GITNESS_REDIS_MAX_RETRIES"           default:"3"`
 		MinIdleConnections int    `envconfig:"GITNESS_REDIS_MIN_IDLE_CONNECTIONS"  default:"0"`
+		MaxConnections     int    `envconfig:"GITNESS_REDIS_MAX_CONNECTIONS"        default:"50"`
 		Password           string `envconfig:"GITNESS_REDIS_PASSWORD"`
 		SentinelMode       bool   `envconfig:"GITNESS_REDIS_USE_SENTINEL"          default:"false"`
 		SentinelMaster     string `envconfig:"GITNESS_REDIS_SENTINEL_MASTER"`
@@ -326,8 +348,20 @@ type Config struct {
 		MaxRetries          int    `envconfig:"GITNESS_WEBHOOK_MAX_RETRIES" default:"3"`
 		AllowPrivateNetwork bool   `envconfig:"GITNESS_WEBHOOK_ALLOW_PRIVATE_NETWORK" default:"false"`
 		AllowLoopback       bool   `envconfig:"GITNESS_WEBHOOK_ALLOW_LOOPBACK" default:"false"`
+		AllowLinkLocal      bool   `envconfig:"GITNESS_WEBHOOK_ALLOW_LINK_LOCAL" default:"false"`
 		// RetentionTime is the duration after which webhook executions will be purged from the DB.
-		RetentionTime time.Duration `envconfig:"GITNESS_WEBHOOK_RETENTION_TIME" default:"168h"` // 7 days
+		RetentionTime  time.Duration `envconfig:"GITNESS_WEBHOOK_RETENTION_TIME" default:"168h"` // 7 days
+		InternalSecret string        `envconfig:"GITNESS_WEBHOOK_INTERNAL_SECRET"`
+	}
+
+	Importer struct {
+		// AllowPrivateNetwork, AllowLoopback and AllowLinkLocal control which
+		// resolved addresses repository import is allowed to reach, both for the
+		// provider API calls and for the git clone of the imported repository.
+		// The provider host is user provided, so all of them default to false.
+		AllowPrivateNetwork bool `envconfig:"GITNESS_IMPORTER_ALLOW_PRIVATE_NETWORK" default:"false"`
+		AllowLoopback       bool `envconfig:"GITNESS_IMPORTER_ALLOW_LOOPBACK" default:"false"`
+		AllowLinkLocal      bool `envconfig:"GITNESS_IMPORTER_ALLOW_LINK_LOCAL" default:"false"`
 	}
 
 	Trigger struct {
@@ -335,10 +369,65 @@ type Config struct {
 		MaxRetries  int `envconfig:"GITNESS_TRIGGER_MAX_RETRIES" default:"3"`
 	}
 
+	Branch struct {
+		Concurrency int `envconfig:"GITNESS_BRANCH_CONCURRENCY" default:"4"`
+		MaxRetries  int `envconfig:"GITNESS_BRANCH_MAX_RETRIES" default:"3"`
+	}
+
+	PullReq struct {
+		// GitEventsConcurrency controls the number of concurrent workers processing git branch events
+		// (branch updates/deletes) that trigger PR updates. This is the main bottleneck for PR updates.
+		GitEventsConcurrency int `envconfig:"GITNESS_PULLREQ_GIT_EVENTS_CONCURRENCY" default:"1"`
+		// FileViewedConcurrency controls the number of concurrent workers processing file viewed events.
+		FileViewedConcurrency int `envconfig:"GITNESS_PULLREQ_FILE_VIEWED_CONCURRENCY" default:"3"`
+		// MergeabilityConcurrency controls the number of concurrent workers processing mergeability checks.
+		MergeabilityConcurrency int `envconfig:"GITNESS_PULLREQ_MERGEABILITY_CONCURRENCY" default:"3"`
+		// CodeCommentsConcurrency controls the number of concurrent workers processing code comment updates.
+		CodeCommentsConcurrency int `envconfig:"GITNESS_PULLREQ_CODE_COMMENTS_CONCURRENCY" default:"3"`
+	}
+
+	AutoMerge struct {
+		// CheckEventsConcurrency controls the number of concurrent workers processing check events for auto-merge.
+		CheckEventsConcurrency int `envconfig:"GITNESS_AUTOMERGE_CHECK_EVENTS_CONCURRENCY" default:"1"`
+		// PullReqEventsConcurrency controls the number of concurrent workers processing PR events for auto-merge.
+		PullReqEventsConcurrency int `envconfig:"GITNESS_AUTOMERGE_PULLREQ_EVENTS_CONCURRENCY" default:"3"`
+	}
+
+	MergeQueue struct {
+		// CheckEventsConcurrency controls the number of concurrent workers processing check events for merge queue.
+		CheckEventsConcurrency int `envconfig:"GITNESS_MERGE_QUEUE_CHECK_EVENTS_CONCURRENCY" default:"1"`
+		// QueueEventsConcurrency controls the number of concurrent workers processing merge queue events.
+		QueueEventsConcurrency int `envconfig:"GITNESS_MERGE_QUEUE_EVENTS_CONCURRENCY" default:"1"`
+	}
+
 	Metric struct {
+		// UserEventsConcurrency controls the number of concurrent workers processing user events for metrics.
+		UserEventsConcurrency int `envconfig:"GITNESS_METRIC_USER_EVENTS_CONCURRENCY" default:"1"`
+		// RepoEventsConcurrency controls the number of concurrent workers processing repo events for metrics.
+		RepoEventsConcurrency int `envconfig:"GITNESS_METRIC_REPO_EVENTS_CONCURRENCY" default:"1"`
+		// PullReqEventsConcurrency controls the number of concurrent workers processing PR events for metrics.
+		PullReqEventsConcurrency int `envconfig:"GITNESS_METRIC_PULLREQ_EVENTS_CONCURRENCY" default:"1"`
+		// RuleEventsConcurrency controls the number of concurrent workers processing rule events for metrics.
+		RuleEventsConcurrency int `envconfig:"GITNESS_METRIC_RULE_EVENTS_CONCURRENCY" default:"1"`
+
 		Enabled  bool   `envconfig:"GITNESS_METRIC_ENABLED" default:"true"`
 		Endpoint string `envconfig:"GITNESS_METRIC_ENDPOINT" default:"https://stats.drone.ci/api/v1/gitness"`
 		Token    string `envconfig:"GITNESS_METRIC_TOKEN"`
+
+		// PostHogEndpoint is URL to the PostHog service
+		PostHogEndpoint string `envconfig:"GITNESS_METRIC_POSTHOG_ENDPOINT" default:"https://us.i.posthog.com"`
+		// PostHogProjectAPIKey (starts with "phc_") is public (can be exposed in frontend) token used to submit events.
+		PostHogProjectAPIKey string `envconfig:"GITNESS_METRIC_POSTHOG_PROJECT_APIKEY"`
+		// PostHogPersonalAPIKey (starts with "phx_") is sensitive. It's used to access private access points.
+		// It's not required for submitting events.
+		PostHogPersonalAPIKey string `envconfig:"GITNESS_METRIC_POSTHOG_PERSONAL_APIKEY"`
+	}
+
+	LanguageAnalyzer struct {
+		// RepoEventsConcurrency controls the number of concurrent workers processing repo events for language analysis.
+		RepoEventsConcurrency int `envconfig:"GITNESS_LANGUAGE_ANALYZER_REPO_EVENTS_CONCURRENCY" default:"1"`
+		// GitEventsConcurrency controls the number of concurrent workers processing git events for language analysis.
+		GitEventsConcurrency int `envconfig:"GITNESS_LANGUAGE_ANALYZER_GIT_EVENTS_CONCURRENCY" default:"1"`
 	}
 
 	RepoSize struct {
@@ -346,6 +435,10 @@ type Config struct {
 		CRON        string        `envconfig:"GITNESS_REPO_SIZE_CRON" default:"0 0 * * *"`
 		MaxDuration time.Duration `envconfig:"GITNESS_REPO_SIZE_MAX_DURATION" default:"15m"`
 		NumWorkers  int           `envconfig:"GITNESS_REPO_SIZE_NUM_WORKERS" default:"5"`
+	}
+
+	Githook struct {
+		DisableAuth bool `envconfig:"GITNESS_GITHOOK_DISABLE_AUTH" default:"false"`
 	}
 
 	CodeOwners struct {
@@ -374,39 +467,199 @@ type Config struct {
 	Repos struct {
 		// DeletedRetentionTime is the duration after which deleted repositories will be purged.
 		DeletedRetentionTime time.Duration `envconfig:"GITNESS_REPOS_DELETED_RETENTION_TIME" default:"2160h"` // 90 days
+		// DeletedCleanupCron is the cron schedule on which the deleted repository purge job runs.
+		DeletedCleanupCron string `envconfig:"GITNESS_REPOS_DELETED_CLEANUP_CRON" default:"50 0 * * *"`
+		// DeletedCleanupMaxDuration is the max duration the deleted repository purge job is allowed to run for.
+		DeletedCleanupMaxDuration time.Duration `envconfig:"GITNESS_REPOS_DELETED_CLEANUP_MAX_DURATION" default:"1h"`
 	}
 
 	Docker struct {
 		// Host sets the url to the docker server.
-		Host string `envconfig:"GITNESS_DOCKER_HOST" default:"unix:///var/run/docker.sock"`
+		Host string `envconfig:"GITNESS_DOCKER_HOST"`
 		// APIVersion sets the version of the API to reach, leave empty for latest.
 		APIVersion string `envconfig:"GITNESS_DOCKER_API_VERSION"`
 		// CertPath sets the path to load the TLS certificates from.
 		CertPath string `envconfig:"GITNESS_DOCKER_CERT_PATH"`
 		// TLSVerify enables or disables TLS verification, off by default.
 		TLSVerify string `envconfig:"GITNESS_DOCKER_TLS_VERIFY"`
+		// MachineHostName is the public host name of the machine on which the Docker.Host is running.
+		// If not set, it parses the host from the URL.Base (e.g. localhost from http://localhost:3000).
+		MachineHostName string `envconfig:"GITNESS_DOCKER_MACHINE_HOST_NAME"`
 	}
 
 	IDE struct {
 		VSCodeWeb struct {
-			// PortAndProtocol is the port on which the VS Code Web will be accessible.
-			Port string `envconfig:"GITNESS_IDE_VSCODEWEB_PORT" default:"8089"`
+			// Port is the port on which the VSCode Web will be accessible.
+			Port int `envconfig:"GITNESS_IDE_VSCODEWEB_PORT" default:"8089"`
+		}
+
+		VSCode struct {
+			// Port is the port on which the SSH server for VSCode will be accessible.
+			Port       int    `envconfig:"GITNESS_IDE_VSCODE_PORT" default:"8088"`
+			PluginName string `envconfig:"GITNESS_IDE_VSCODE_Plugin_Name" default:"harness-inc.oss-gitspaces"`
+		}
+
+		Cursor struct {
+			// Port is the port on which the SSH server for Cursor will be accessible.
+			Port int `envconfig:"GITNESS_IDE_CURSOR_PORT" default:"8098"`
+		}
+
+		Windsurf struct {
+			// Port is the port on which the SSH server for Windsurf will be accessible.
+			Port int `envconfig:"GITNESS_IDE_WINDSURF_PORT" default:"8099"`
+		}
+
+		Intellij struct {
+			// Port is the port on which the SSH server for IntelliJ will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_INTELLIJ_PORT" default:"8090"`
+		}
+
+		Goland struct {
+			// Port is the port on which the SSH server for Goland will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_GOLAND_PORT" default:"8091"`
+		}
+
+		PyCharm struct {
+			// Port is the port on which the SSH server for PyCharm will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_PYCHARM_PORT" default:"8092"`
+		}
+
+		WebStorm struct {
+			// Port is the port on which the SSH server for WebStorm will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_WEBSTORM_PORT" default:"8093"`
+		}
+
+		CLion struct {
+			// Port is the port on which the SSH server for CLion will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_CLION_PORT" default:"8094"`
+		}
+
+		PHPStorm struct {
+			// Port is the port on which the SSH server for PHPStorm will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_PHPSTORM_PORT" default:"8095"`
+		}
+
+		RubyMine struct {
+			// Port is the port on which the SSH server for RubyMine will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_RUBYMINE_PORT" default:"8096"`
+		}
+
+		Rider struct {
+			// Port is the port on which the SSH server for Rider will be accessible
+			Port int `envconfig:"CDE_MANAGER_GITSPACE_IDE_RIDER_PORT" default:"8097"`
 		}
 	}
 
 	Gitspace struct {
 		// DefaultBaseImage is used to create the Gitspace when no devcontainer.json is absent or doesn't have image.
 		DefaultBaseImage string `envconfig:"GITNESS_GITSPACE_DEFAULT_BASE_IMAGE" default:"mcr.microsoft.com/devcontainers/base:dev-ubuntu-24.04"` //nolint:lll
-		// DefaultBindMountTargetPath is the target for bind mount in the Gitspace container.
-		DefaultBindMountTargetPath string `envconfig:"GITNESS_GITSPACE_DEFAULT_BIND_MOUNT_TARGET_PATH" default:"/gitspace"` //nolint:lll
-		// DefaultBindMountTargetPath is the source for bind mount in the Gitspace container.
-		// Sub-directories will be created from this eg <DefaultBindMountSourceBasePath>/gitspace/space1/space2/config1
-		// If left blank, it will be set to $HOME/.gitness
-		DefaultBindMountSourceBasePath string `envconfig:"GITNESS_GITSPACE_DEFAULT_BIND_MOUNT_SOURCE_BASE_PATH"`
+
+		Enable bool `envconfig:"GITNESS_GITSPACE_ENABLE" default:"false"`
+
+		AgentPort int `envconfig:"GITNESS_GITSPACE_AGENT_PORT" default:"8083"`
+
+		InfraTimeoutInMins int `envconfig:"GITNESS_INFRA_TIMEOUT_IN_MINS" default:"60"`
+
+		BusyActionInMins int `envconfig:"GITNESS_BUSY_ACTION_IN_MINS" default:"15"`
 
 		Events struct {
-			Concurrency int `envconfig:"GITNESS_GITSPACE_EVENTS_CONCURRENCY" default:"4"`
-			MaxRetries  int `envconfig:"GITNESS_GITSPACE_EVENTS_MAX_RETRIES" default:"3"`
+			Concurrency   int `envconfig:"GITNESS_GITSPACE_EVENTS_CONCURRENCY" default:"4"`
+			MaxRetries    int `envconfig:"GITNESS_GITSPACE_EVENTS_MAX_RETRIES" default:"3"`
+			TimeoutInMins int `envconfig:"GITNESS_GITSPACE_EVENTS_TIMEOUT_IN_MINS" default:"45"`
 		}
+	}
+
+	UI struct {
+		ShowPlugin bool `envconfig:"GITNESS_UI_SHOW_PLUGIN" default:"false"`
+	}
+
+	Registry struct {
+		Enable  bool `envconfig:"GITNESS_REGISTRY_ENABLED" default:"true"`
+		Storage struct {
+			// StorageType defines the type of storage to use for the registry. Options are: `filesystem`, `s3aws`, `gcs`
+			StorageType string `envconfig:"GITNESS_REGISTRY_STORAGE_TYPE" default:"filesystem"`
+
+			// FileSystemStorage defines the configuration for the filesystem storage if StorageType is `filesystem`.
+			FileSystemStorage struct {
+				MaxThreads    int    `envconfig:"GITNESS_REGISTRY_FILESYSTEM_MAX_THREADS" default:"100"`
+				RootDirectory string `envconfig:"GITNESS_REGISTRY_FILESYSTEM_ROOT_DIRECTORY"`
+			}
+
+			// S3Storage defines the configuration for the S3 storage if StorageType is `s3aws`.
+			S3Storage struct {
+				AccessKey                   string `envconfig:"GITNESS_REGISTRY_S3_ACCESS_KEY"`
+				SecretKey                   string `envconfig:"GITNESS_REGISTRY_S3_SECRET_KEY"`
+				Region                      string `envconfig:"GITNESS_REGISTRY_S3_REGION"`
+				RegionEndpoint              string `envconfig:"GITNESS_REGISTRY_S3_REGION_ENDPOINT"`
+				ForcePathStyle              bool   `envconfig:"GITNESS_REGISTRY_S3_FORCE_PATH_STYLE" default:"true"`
+				Accelerate                  bool   `envconfig:"GITNESS_REGISTRY_S3_ACCELERATED" default:"false"`
+				Bucket                      string `envconfig:"GITNESS_REGISTRY_S3_BUCKET"`
+				Encrypt                     bool   `envconfig:"GITNESS_REGISTRY_S3_ENCRYPT" default:"false"`
+				KeyID                       string `envconfig:"GITNESS_REGISTRY_S3_KEY_ID"`
+				Secure                      bool   `envconfig:"GITNESS_REGISTRY_S3_SECURE" default:"true"`
+				V4Auth                      bool   `envconfig:"GITNESS_REGISTRY_S3_V4_AUTH" default:"true"`
+				ChunkSize                   int    `envconfig:"GITNESS_REGISTRY_S3_CHUNK_SIZE" default:"10485760"`
+				MultipartCopyChunkSize      int    `envconfig:"GITNESS_REGISTRY_S3_MULTIPART_COPY_CHUNK_SIZE" default:"33554432"`
+				MultipartCopyMaxConcurrency int    `envconfig:"GITNESS_REGISTRY_S3_MULTIPART_COPY_MAX_CONCURRENCY" default:"100"`
+				MultipartCopyThresholdSize  int    `envconfig:"GITNESS_REGISTRY_S3_MULTIPART_COPY_THRESHOLD_SIZE" default:"33554432"` //nolint:lll
+				RootDirectory               string `envconfig:"GITNESS_REGISTRY_S3_ROOT_DIRECTORY"`
+				UseDualStack                bool   `envconfig:"GITNESS_REGISTRY_S3_USE_DUAL_STACK" default:"false"`
+				LogLevel                    string `envconfig:"GITNESS_REGISTRY_S3_LOG_LEVEL" default:"info"`
+				Delete                      bool   `envconfig:"GITNESS_REGISTRY_S3_DELETE_ENABLED" default:"true"`
+				Redirect                    bool   `envconfig:"GITNESS_REGISTRY_S3_STORAGE_REDIRECT" default:"false"`
+				Provider                    string `envconfig:"GITNESS_REGISTRY_S3_PROVIDER" default:"cloudflare"`
+			}
+
+			// GCSStorage defines the configuration for the GCS storage if StorageType is `gcs`.
+			// Authentication is handled via workload identity (google.DefaultTokenSource).
+			GCSStorage struct {
+				Bucket string `envconfig:"GITNESS_REGISTRY_GCS_BUCKET"`
+			}
+		}
+
+		HTTP struct {
+			// GITNESS_REGISTRY_HTTP_SECRET is used to encrypt the upload session details during docker push.
+			// If not provided, a random secret will be generated. This may cause problems with uploads if multiple
+			// registries are behind a load-balancer
+			Secret string `envconfig:"GITNESS_REGISTRY_HTTP_SECRET"`
+
+			RelativeURL bool `envconfig:"GITNESS_OCI_RELATIVE_URL" default:"false"`
+		}
+
+		//nolint:lll
+		GarbageCollection struct {
+			Enabled                     bool          `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_ENABLED" default:"false"`
+			NoIdleBackoff               bool          `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_NO_IDLE_BACKOFF" default:"false"`
+			MaxBackoffDuration          time.Duration `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_MAX_BACKOFF_DURATION" default:"10m"`
+			InitialIntervalDuration     time.Duration `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_INITIAL_INTERVAL_DURATION" default:"5s"`     //nolint:lll
+			TransactionTimeoutDuration  time.Duration `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_TRANSACTION_TIMEOUT_DURATION" default:"10s"` //nolint:lll
+			BlobsStorageTimeoutDuration time.Duration `envconfig:"GITNESS_REGISTRY_GARBAGE_COLLECTION_BLOB_STORAGE_TIMEOUT_DURATION" default:"5s"` //nolint:lll
+		}
+		SetupDetailsAuthHeaderPrefix string `envconfig:"SETUP_DETAILS_AUTH_PREFIX" default:"Authorization: Bearer"`
+
+		PostProcessing struct {
+			Concurrency   int  `envconfig:"GITNESS_REGISTRY_POST_PROCESSING_CONCURRENCY" default:"4"`
+			MaxRetries    int  `envconfig:"GITNESS_REGISTRY_POST_PROCESSING_MAX_RETRIES" default:"3"`
+			AllowLoopback bool `envconfig:"GITNESS_REGISTRY_POST_PROCESSING_ALLOW_LOOPBACK" default:"false"`
+		}
+	}
+
+	Auth struct {
+		AnonymousUserSecret string `envconfig:"GITNESS_ANONYMOUS_USER_SECRET"`
+	}
+
+	Instrumentation struct {
+		Enable bool   `envconfig:"GITNESS_INSTRUMENTATION_ENABLE" default:"false"`
+		Cron   string `envconfig:"GITNESS_INSTRUMENTATION_CRON" default:"0 0 * * *"`
+	}
+
+	UsageMetrics struct {
+		Enabled       bool          `envconfig:"GITNESS_USAGE_METRICS_ENABLED" default:"false"`
+		FlushInterval time.Duration `envconfig:"GITNESS_USAGE_METRICS_FLUSH_INTERVAL" default:"1m"`
+		QueueSize     int           `envconfig:"GITNESS_USAGE_METRICS_QUEUE_SIZE" default:"128"`
+	}
+
+	Development struct {
+		UISourceOverride string `envconfig:"GITNESS_DEVELOPMENT_UI_SOURCE_OVERRIDE"`
 	}
 }

@@ -16,12 +16,12 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"strings"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
-	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/services/dotrange"
 	"github.com/harness/gitness/git"
 	gittypes "github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/types"
@@ -34,6 +34,7 @@ func (c *Controller) RawDiff(
 	session *auth.Session,
 	repoRef string,
 	path string,
+	ignoreWhitespace bool,
 	files ...gittypes.FileDiffRequest,
 ) error {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
@@ -41,16 +42,22 @@ func (c *Controller) RawDiff(
 		return err
 	}
 
-	info, err := parseDiffPath(path)
+	dotRange, err := dotrange.ParsePath(path)
 	if err != nil {
 		return err
 	}
 
+	err = c.dotRangeService.FetchDotRangeObjectsFromUpstream(ctx, session, repo, &dotRange)
+	if err != nil {
+		return fmt.Errorf("failed to fetch diff upstream ref: %w", err)
+	}
+
 	return c.git.RawDiff(ctx, w, &git.DiffParams{
-		ReadParams: git.CreateReadParams(repo),
-		BaseRef:    info.BaseRef,
-		HeadRef:    info.HeadRef,
-		MergeBase:  info.MergeBase,
+		ReadParams:       git.CreateReadParams(repo),
+		BaseRef:          dotRange.BaseRef,
+		HeadRef:          dotRange.HeadRef,
+		MergeBase:        dotRange.MergeBase,
+		IgnoreWhitespace: ignoreWhitespace,
 	}, files...)
 }
 
@@ -59,6 +66,7 @@ func (c *Controller) CommitDiff(
 	session *auth.Session,
 	repoRef string,
 	rev string,
+	ignoreWhitespace bool,
 	w io.Writer,
 ) error {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
@@ -67,30 +75,10 @@ func (c *Controller) CommitDiff(
 	}
 
 	return c.git.CommitDiff(ctx, &git.GetCommitParams{
-		ReadParams: git.CreateReadParams(repo),
-		Revision:   rev,
+		ReadParams:       git.CreateReadParams(repo),
+		Revision:         rev,
+		IgnoreWhitespace: ignoreWhitespace,
 	}, w)
-}
-
-type CompareInfo struct {
-	BaseRef   string
-	HeadRef   string
-	MergeBase bool
-}
-
-func parseDiffPath(path string) (CompareInfo, error) {
-	infos := strings.SplitN(path, "...", 2)
-	if len(infos) != 2 {
-		infos = strings.SplitN(path, "..", 2)
-	}
-	if len(infos) != 2 {
-		return CompareInfo{}, usererror.BadRequestf("invalid format \"%s\"", path)
-	}
-	return CompareInfo{
-		BaseRef:   infos[0],
-		HeadRef:   infos[1],
-		MergeBase: strings.Contains(path, "..."),
-	}, nil
 }
 
 func (c *Controller) DiffStats(
@@ -98,8 +86,9 @@ func (c *Controller) DiffStats(
 	session *auth.Session,
 	repoRef string,
 	path string,
+	ignoreWhitespace bool,
 ) (types.DiffStats, error) {
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return types.DiffStats{}, err
 	}
@@ -108,22 +97,28 @@ func (c *Controller) DiffStats(
 		return types.DiffStats{}, err
 	}
 
-	info, err := parseDiffPath(path)
+	dotRange, err := dotrange.ParsePath(path)
 	if err != nil {
 		return types.DiffStats{}, err
 	}
 
+	err = c.dotRangeService.FetchDotRangeObjectsFromUpstream(ctx, session, repo, &dotRange)
+	if err != nil {
+		return types.DiffStats{}, fmt.Errorf("failed to fetch diff upstream ref: %w", err)
+	}
+
 	output, err := c.git.DiffStats(ctx, &git.DiffParams{
-		ReadParams: git.CreateReadParams(repo),
-		BaseRef:    info.BaseRef,
-		HeadRef:    info.HeadRef,
-		MergeBase:  info.MergeBase,
+		ReadParams:       git.CreateReadParams(repo),
+		BaseRef:          dotRange.BaseRef,
+		HeadRef:          dotRange.HeadRef,
+		MergeBase:        dotRange.MergeBase,
+		IgnoreWhitespace: ignoreWhitespace,
 	})
 	if err != nil {
 		return types.DiffStats{}, err
 	}
 
-	return types.NewDiffStats(output.Commits, output.FilesChanged), nil
+	return types.NewDiffStats(output.Commits, output.FilesChanged, output.Additions, output.Deletions), nil
 }
 
 func (c *Controller) Diff(
@@ -132,9 +127,10 @@ func (c *Controller) Diff(
 	repoRef string,
 	path string,
 	includePatch bool,
+	ignoreWhitespace bool,
 	files ...gittypes.FileDiffRequest,
 ) (types.Stream[*git.FileDiff], error) {
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, err
 	}
@@ -143,17 +139,23 @@ func (c *Controller) Diff(
 		return nil, err
 	}
 
-	info, err := parseDiffPath(path)
+	dotRange, err := dotrange.ParsePath(path)
 	if err != nil {
 		return nil, err
 	}
 
+	err = c.dotRangeService.FetchDotRangeObjectsFromUpstream(ctx, session, repo, &dotRange)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch diff upstream ref: %w", err)
+	}
+
 	reader := git.NewStreamReader(c.git.Diff(ctx, &git.DiffParams{
-		ReadParams:   git.CreateReadParams(repo),
-		BaseRef:      info.BaseRef,
-		HeadRef:      info.HeadRef,
-		MergeBase:    info.MergeBase,
-		IncludePatch: includePatch,
+		ReadParams:       git.CreateReadParams(repo),
+		BaseRef:          dotRange.BaseRef,
+		HeadRef:          dotRange.HeadRef,
+		MergeBase:        dotRange.MergeBase,
+		IncludePatch:     includePatch,
+		IgnoreWhitespace: ignoreWhitespace,
 	}, files...))
 
 	return reader, nil

@@ -18,6 +18,30 @@ import (
 	"strings"
 )
 
+// RuleType represents rule type.
+type RuleType string
+
+// RuleType enumeration.
+const (
+	RuleTypeBranch RuleType = "branch"
+	RuleTypeTag    RuleType = "tag"
+	RuleTypePush   RuleType = "push"
+)
+
+var ruleTypes = sortEnum([]RuleType{
+	RuleTypeBranch,
+	RuleTypeTag,
+	RuleTypePush,
+})
+
+func (RuleType) Enum() []any { return toInterfaceSlice(ruleTypes) }
+func (s RuleType) Sanitize() (RuleType, bool) {
+	return Sanitize(s, GetAllRuleTypes)
+}
+func GetAllRuleTypes() ([]RuleType, RuleType) {
+	return ruleTypes, ""
+}
+
 // RuleState represents rule state.
 type RuleState string
 
@@ -34,7 +58,7 @@ var ruleStates = sortEnum([]RuleState{
 	RuleStateDisabled,
 })
 
-func (RuleState) Enum() []interface{} { return toInterfaceSlice(ruleStates) }
+func (RuleState) Enum() []any { return toInterfaceSlice(ruleStates) }
 func (s RuleState) Sanitize() (RuleState, bool) {
 	return Sanitize(s, GetAllRuleStates)
 }
@@ -61,7 +85,7 @@ var ruleSorts = sortEnum([]RuleSort{
 	RuleSortUpdated,
 })
 
-func (RuleSort) Enum() []interface{} { return toInterfaceSlice(ruleSorts) }
+func (RuleSort) Enum() []any { return toInterfaceSlice(ruleSorts) }
 func (s RuleSort) Sanitize() (RuleSort, bool) {
 	return Sanitize(s, GetAllRuleSorts)
 }
@@ -83,3 +107,21 @@ func ParseRuleSortAttr(s string) RuleSort {
 
 	return RuleSortIdentifier
 }
+
+// RuleParent defines different types of parents of a rule.
+type RuleParent string
+
+func (RuleParent) Enum() []any { return toInterfaceSlice(RuleParents) }
+
+const (
+	// RuleParentRepo describes a repo as Rule owner.
+	RuleParentRepo RuleParent = "repo"
+
+	// RuleParentSpace describes a space as Rule owner.
+	RuleParentSpace RuleParent = "space"
+)
+
+var RuleParents = sortEnum([]RuleParent{
+	RuleParentRepo,
+	RuleParentSpace,
+})

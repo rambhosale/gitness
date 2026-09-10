@@ -17,6 +17,7 @@
 import React, { useMemo } from 'react'
 import { Container, Layout, Button, FlexExpander, ButtonVariation, Text, ButtonSize } from '@harnessio/uicore'
 import cx from 'classnames'
+import { useGet } from 'restful-react'
 import { Icon } from '@harnessio/icons'
 import { Color } from '@harnessio/design-system'
 import { Breadcrumbs, IBreadcrumbProps } from '@blueprintjs/core'
@@ -27,9 +28,10 @@ import { useAppContext } from 'AppContext'
 import { CloneButtonTooltip } from 'components/CloneButtonTooltip/CloneButtonTooltip'
 import { CodeIcon, GitInfoProps, isDir, isGitRev, isRefATag } from 'utils/GitUtils'
 import { BranchTagSelect } from 'components/BranchTagSelect/BranchTagSelect'
-import { useCreateBranchModal } from 'components/CreateBranchModal/CreateBranchModal'
-// import KeywordSearch from 'components/CodeSearch/KeywordSearch'
+import { useCreateBranchModal } from 'components/CreateRefModal/CreateBranchModal/CreateBranchModal'
+import { PRBanner } from 'components/PRBanner/PRBanner'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
+import type { TypesBranchTable } from 'services/code'
 import { permissionProps } from 'utils/Utils'
 import CodeSearch from 'components/CodeSearch/CodeSearch'
 import { useDocumentTitle } from 'hooks/useDocumentTitle'
@@ -73,6 +75,12 @@ export function ContentHeader({
     suggestedSourceBranch: gitRef,
     showSuccessMessage: true
   })
+
+  const { data: prCandidateBranches } = useGet<TypesBranchTable[]>({
+    path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/candidates`,
+    lazy: repoPath.length > 1
+  })
+
   const breadcrumbs = useMemo(() => {
     return resourcePath.split('/').map((_path, index, paths) => {
       const pathAtIndex = paths.slice(0, index + 1).join('/')
@@ -88,6 +96,13 @@ export function ContentHeader({
 
   return (
     <Container className={cx(css.main, { [css.mainContainer]: !isDir(resourceContent) })}>
+      {repoPath.length === 1 && (
+        <Layout.Vertical spacing="small" className={css.banners}>
+          {prCandidateBranches?.map(branch => (
+            <PRBanner key={branch.name} repoMetadata={repoMetadata} branch={branch} />
+          ))}
+        </Layout.Vertical>
+      )}
       <Layout.Horizontal className={isDir(resourceContent) ? '' : css.mainBorder} spacing="medium">
         <BranchTagSelect
           repoMetadata={repoMetadata}
@@ -169,7 +184,7 @@ export function ContentHeader({
           </>
         )}
       </Layout.Horizontal>
-      <div className={css.searchBoxCtn}>
+      <div className={cx(css.searchBoxCtn, { [css.searchBoxPositionArchivedRepo]: repoMetadata?.archived })}>
         {!standalone && !isCurrentSessionPublic ? <CodeSearch repoMetadata={repoMetadata} /> : null}
       </div>
     </Container>

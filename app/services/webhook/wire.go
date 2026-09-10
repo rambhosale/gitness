@@ -18,12 +18,17 @@ import (
 	"context"
 
 	gitevents "github.com/harness/gitness/app/events/git"
+	mergequeueevents "github.com/harness/gitness/app/events/mergequeue"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/encrypt"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/secret"
+	"github.com/harness/gitness/store/database/dbtx"
 
 	"github.com/google/wire"
 )
@@ -31,14 +36,19 @@ import (
 // WireSet provides a wire set for this package.
 var WireSet = wire.NewSet(
 	ProvideService,
+	ProvideURLProvider,
 )
 
-func ProvideService(ctx context.Context,
+func ProvideService(
+	ctx context.Context,
 	config Config,
+	tx dbtx.Transactor,
 	gitReaderFactory *events.ReaderFactory[*gitevents.Reader],
 	prReaderFactory *events.ReaderFactory[*pullreqevents.Reader],
+	mqReaderFactory *events.ReaderFactory[*mergequeueevents.Reader],
 	webhookStore store.WebhookStore,
 	webhookExecutionStore store.WebhookExecutionStore,
+	spaceStore store.SpaceStore,
 	repoStore store.RepoStore,
 	pullreqStore store.PullReqStore,
 	activityStore store.PullReqActivityStore,
@@ -46,8 +56,40 @@ func ProvideService(ctx context.Context,
 	principalStore store.PrincipalStore,
 	git git.Interface,
 	encrypter encrypt.Encrypter,
+	labelStore store.LabelStore,
+	webhookURLProvider URLProvider,
+	labelValueStore store.LabelValueStore,
+	auditService audit.Service,
+	sseStreamer sse.Streamer,
+	secretService secret.Service,
+	spacePathStore store.SpacePathStore,
 ) (*Service, error) {
-	return NewService(ctx, config, gitReaderFactory, prReaderFactory,
-		webhookStore, webhookExecutionStore, repoStore, pullreqStore, activityStore,
-		urlProvider, principalStore, git, encrypter)
+	return NewService(
+		ctx,
+		config,
+		tx,
+		gitReaderFactory,
+		prReaderFactory,
+		mqReaderFactory,
+		webhookStore,
+		webhookExecutionStore,
+		spaceStore, repoStore,
+		pullreqStore,
+		activityStore,
+		urlProvider,
+		principalStore,
+		git,
+		encrypter,
+		labelStore,
+		webhookURLProvider,
+		labelValueStore,
+		auditService,
+		sseStreamer,
+		secretService,
+		spacePathStore,
+	)
+}
+
+func ProvideURLProvider(ctx context.Context) URLProvider {
+	return NewURLProvider(ctx)
 }

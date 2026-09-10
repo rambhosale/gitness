@@ -30,13 +30,17 @@ func (c *Controller) ListPipelines(
 	ctx context.Context,
 	session *auth.Session,
 	repoRef string,
-	latest bool,
-	filter types.ListQueryFilter,
+	filter *types.ListPipelinesFilter,
 ) ([]*types.Pipeline, int64, error) {
-	repo, err := c.getRepo(ctx, repoRef)
+	repo, err := GetRepo(ctx, c.repoFinder, repoRef)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to find repo: %w", err)
 	}
+
+	if err := apiauth.CheckRepoState(ctx, session, repo, enum.PermissionPipelineView); err != nil {
+		return nil, 0, err
+	}
+
 	if err := apiauth.CheckPipeline(ctx, c.authorizer, session, repo.Path, "", enum.PermissionPipelineView); err != nil {
 		return nil, 0, fmt.Errorf("access check failed: %w", err)
 	}
@@ -50,7 +54,7 @@ func (c *Controller) ListPipelines(
 			return fmt.Errorf("failed to count child executions: %w", err)
 		}
 
-		if !latest {
+		if !filter.Latest {
 			pipelines, err = c.pipelineStore.List(ctx, repo.ID, filter)
 			if err != nil {
 				return fmt.Errorf("failed to list pipelines: %w", err)
@@ -62,7 +66,19 @@ func (c *Controller) ListPipelines(
 			}
 		}
 
-		return
+		pipelineIDs := make([]int64, len(pipelines))
+		for i, pipeline := range pipelines {
+			pipelineIDs[i] = pipeline.ID
+		}
+		execs, err := c.executionStore.ListByPipelineIDs(ctx, pipelineIDs, filter.LastExecutions)
+		if err != nil {
+			return fmt.Errorf("failed to list executions by pipeline IDs: %w", err)
+		}
+		for _, pipeline := range pipelines {
+			pipeline.LastExecutions = execs[pipeline.ID]
+		}
+
+		return nil
 	}, dbtx.TxDefaultReadOnly)
 	if err != nil {
 		return pipelines, count, fmt.Errorf("failed to list pipelines: %w", err)

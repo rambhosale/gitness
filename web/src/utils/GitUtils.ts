@@ -28,7 +28,8 @@ import type {
   TypesCommit,
   TypesPullReq,
   RepoRepositoryOutput,
-  TypesRuleViolations
+  TypesRuleViolations,
+  TypesDefaultReviewerApprovalsResponse
 } from 'services/code'
 import { getConfig } from 'services/config'
 import { PullRequestSection, getErrorMessage } from './Utils'
@@ -103,6 +104,11 @@ export enum RepoVisibility {
   PRIVATE = 'private'
 }
 
+export enum RepoState {
+  ARCHIVED = 'archived',
+  UNARCHIVED = 'unarchived'
+}
+
 export enum RepoCreationType {
   IMPORT = 'import',
   CREATE = 'create',
@@ -121,10 +127,33 @@ export enum GitContentType {
   SUBMODULE = 'submodule'
 }
 export enum SettingsTab {
-  webhooks = 'webhook',
-  general = '/',
-  branchProtection = 'rules',
-  security = 'security'
+  WEBHOOKS = 'webhook',
+  GENERAL = '/',
+  PROTECTION_RULES = 'rules',
+  SECURITY = 'security',
+  LABELS = 'labels'
+}
+
+export enum SpacePRTabs {
+  CREATED = 'created',
+  REVIEW_REQUESTED = 'review_requested'
+}
+
+export enum DashboardFilter {
+  ALL = 'all',
+  CREATED = 'created',
+  REVIEW_REQUESTED = 'review_requested'
+}
+
+export enum WebhookTabs {
+  DETAILS = 'details',
+  EXECUTIONS = 'executions'
+}
+
+export enum ExecutionTabs {
+  PAYLOAD = 'Payload',
+  REQUEST_HEADERS = 'Request Headers',
+  SERVER_RESPONSE = 'Server Response'
 }
 
 export enum VulnerabilityScanningType {
@@ -145,36 +174,21 @@ export enum GitRefType {
   TAG = 'tag'
 }
 
-export enum PrincipalUserType {
-  USER = 'user',
-  SERVICE = 'service'
-}
-
 export enum SettingTypeMode {
   EDIT = 'edit',
   NEW = 'new'
 }
 
-export enum BranchTargetType {
+export enum ProtectionRulesType {
+  BRANCH = 'branch',
+  TAG = 'tag',
+  PUSH = 'push'
+}
+
+export enum RulesTargetType {
   INCLUDE = 'include',
   EXCLUDE = 'exclude'
 }
-
-export interface BranchTargetOption {
-  type: BranchTargetType
-  title: string
-}
-
-export const branchTargetOptions: BranchTargetOption[] = [
-  {
-    type: BranchTargetType.INCLUDE,
-    title: 'Include'
-  },
-  {
-    type: BranchTargetType.EXCLUDE,
-    title: 'Exclude'
-  }
-]
 
 export enum GitCommitAction {
   DELETE = 'DELETE',
@@ -187,6 +201,15 @@ export enum PullRequestState {
   OPEN = 'open',
   MERGED = 'merged',
   CLOSED = 'closed'
+}
+
+export enum PullRequestFilterOption {
+  OPEN = 'open',
+  MERGED = 'merged',
+  CLOSED = 'closed',
+  DRAFT = 'draft',
+  YOURS = 'yours',
+  ALL = 'all'
 }
 
 export enum GitProviders {
@@ -206,54 +229,62 @@ export enum ConvertPipelineLabel {
   IGNORE = 'ignore'
 }
 
-export const PullRequestFilterOption = {
-  ...PullRequestState,
-  // REJECTED: 'rejected',
-  DRAFT: 'draft',
-  YOURS: 'yours',
-  ALL: 'all'
+export const PullRequestReviewFilterOption = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  CHANGES_REQUESTED: 'changereq'
 }
 
 export enum MergeStrategy {
   MERGE = 'merge',
   SQUASH = 'squash',
-  REBASE = 'rebase'
+  REBASE = 'rebase',
+  FAST_FORWARD = 'fast-forward'
 }
 
-export const CodeIcon = {
-  Logo: 'code' as IconName,
-  PullRequest: 'git-pull' as IconName,
-  Merged: 'code-merged' as IconName,
-  Draft: 'code-draft' as IconName,
-  Rejected: 'code-rejected' as IconName,
-  PullRequestRejected: 'main-close' as IconName,
-  Add: 'plus' as IconName,
-  BranchSmall: 'code-branch-small' as IconName,
-  Branch: 'code-branch' as IconName,
-  Tag: 'main-tags' as IconName,
-  Clone: 'code-clone' as IconName,
-  Close: 'code-close' as IconName,
-  CommitLight: 'code-commit-light' as IconName,
-  CommitSmall: 'code-commit-small' as IconName,
-  Commit: 'code-commit' as IconName,
-  Copy: 'code-copy' as IconName,
-  Delete: 'code-delete' as IconName,
-  Edit: 'code-edit' as IconName,
-  FileLight: 'code-file-light' as IconName,
-  File: 'code-file' as IconName,
-  Folder: 'code-folder' as IconName,
-  History: 'code-history' as IconName,
-  Info: 'code-info' as IconName,
-  More: 'code-more' as IconName,
-  Repo: 'code-repo' as IconName,
-  Settings: 'code-settings' as IconName,
-  Webhook: 'code-webhook' as IconName,
-  InputSpinner: 'steps-spinne' as IconName,
-  InputSearch: 'search' as IconName,
-  Chat: 'code-chat' as IconName,
-  Checks: 'main-tick' as IconName,
-  ChecksSuccess: 'success-tick' as IconName,
-  CheckIcon: 'code-checks' as IconName
+export enum MergeMethodDisplay {
+  MERGED = 'merged',
+  SQUASHED = 'squashed',
+  REBASED = 'rebased',
+  FAST_FORWARDED = 'fast-forwarded'
+}
+
+export const CodeIcon: Record<string, IconName> = {
+  Logo: 'code',
+  PullRequest: 'git-pull',
+  Merged: 'code-merged',
+  Draft: 'code-draft',
+  Rejected: 'code-rejected',
+  PullRequestRejected: 'main-close',
+  Add: 'plus',
+  BranchSmall: 'code-branch-small',
+  Branch: 'code-branch',
+  Tag: 'main-tags',
+  Clone: 'code-clone',
+  Close: 'code-close',
+  CommitLight: 'code-commit-light',
+  CommitSmall: 'code-commit-small',
+  Commit: 'code-commit',
+  Copy: 'code-copy',
+  Delete: 'code-delete',
+  Edit: 'code-edit',
+  FileLight: 'code-file-light',
+  File: 'code-file',
+  Folder: 'code-folder',
+  History: 'code-history',
+  Info: 'code-info',
+  More: 'code-more',
+  Repo: 'code-repo',
+  Settings: 'code-settings',
+  Webhook: 'code-webhook',
+  InputSpinner: 'steps-spinner',
+  InputSearch: 'search',
+  Chat: 'code-chat',
+  Checks: 'main-tick',
+  ChecksSuccess: 'success-tick',
+  CheckIcon: 'code-checks',
+  Tick: 'tick',
+  Blank: 'blank'
 }
 
 export const normalizeGitRef = (gitRef: string | undefined) => {
@@ -266,7 +297,7 @@ export const normalizeGitRef = (gitRef: string | undefined) => {
   } else if (gitRef && isGitRev(gitRef)) {
     return gitRef
   } else {
-    return `refs/heads/${gitRef}`
+    return REFS_BRANCH_PREFIX + gitRef
   }
 }
 
@@ -393,19 +424,31 @@ export const diffRefsToRefs = (diffRefs: string) => {
   }
 }
 
-export const decodeGitContent = (content = '') => {
+const isValidBase64 = (str: string): boolean => {
+  // Check if string contains only valid base64 characters
+  const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/
+  if (!base64Regex.test(str)) return false
+
+  // Check if string length is a multiple of 4 (with padding)
+  if (str.length % 4 !== 0) return false
+
+  return true
+}
+
+export const decodeGitContent = (content = ''): string => {
+  if (!content) return ''
+
+  if (!isValidBase64(content)) return content
+
   try {
-    // Decode base64 content for text file
-    return decodeURIComponent(escape(window.atob(content)))
-  } catch (_exception) {
-    try {
-      // Return original base64 content for binary file
-      return content
-    } catch (exception) {
-      console.error(exception) // eslint-disable-line no-console
-    }
+    const binary = atob(content)
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0))
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch (error) {
+    // If base64 decoding fails, return the original content
+    // This handles cases where content is not valid base64
+    return content
   }
-  return ''
 }
 
 // Check if gitRef is a git commit hash (https://github.com/diegohaz/is-git-rev, MIT © Diego Haz)
@@ -462,6 +505,8 @@ export const getProviders = () =>
 export const codeOwnersNotFoundMessage = 'CODEOWNERS file not found'
 export const codeOwnersNotFoundMessage2 = `path "CODEOWNERS" not found`
 export const codeOwnersNotFoundMessage3 = `failed to find node 'CODEOWNERS' in 'main': failed to get tree node: failed to ls file: path "CODEOWNERS" not found`
+export const oldCommitRefetchRequired = 'A newer commit is available. Only the latest commit can be merged.'
+export const prMergedRefetchRequired = 'Pull request already merged'
 
 export const dryMerge = (
   isMounted: React.MutableRefObject<boolean>,
@@ -498,69 +543,75 @@ export const dryMerge = (
   pullRequestSection: string | undefined,
   showError: (message: React.ReactNode, timeout?: number | undefined, key?: string | undefined) => void,
   setConflictingFiles: React.Dispatch<React.SetStateAction<string[] | undefined>>,
+  refetchPullReq: () => void,
   setRequiresCommentApproval?: (value: React.SetStateAction<boolean>) => void,
   setAtLeastOneReviewerRule?: (value: React.SetStateAction<boolean>) => void,
   setReqCodeOwnerApproval?: (value: React.SetStateAction<boolean>) => void,
   setMinApproval?: (value: React.SetStateAction<number>) => void,
   setReqCodeOwnerLatestApproval?: (value: React.SetStateAction<boolean>) => void,
   setMinReqLatestApproval?: (value: React.SetStateAction<number>) => void,
-  setPRStateLoading?: (value: React.SetStateAction<boolean>) => void
+  setPRStateLoading?: (value: React.SetStateAction<boolean>) => void,
+  setDefaultReviewersInfoSet?: React.Dispatch<React.SetStateAction<TypesDefaultReviewerApprovalsResponse[]>>
 ) => {
-  if (isMounted.current && !isClosed && pullReqMetadata.state !== PullRequestState.MERGED) {
+  if (isMounted.current && !isClosed && pullReqMetadata?.state !== PullRequestState.MERGED) {
     // Use an internal flag to prevent flickering during the loading state of buttons
     internalFlags.current.dryRun = true
     mergePR({ bypass_rules: true, dry_run: true, source_sha: pullReqMetadata?.source_sha })
       .then(res => {
-        if (isMounted.current) {
-          if (res?.rule_violations?.length > 0) {
-            setRuleViolation(true)
-            setRuleViolationArr({ data: { rule_violations: res?.rule_violations } })
-            setAllowedStrats(res.allowed_methods)
-            setRequiresCommentApproval?.(res.requires_comment_resolution)
-            setAtLeastOneReviewerRule?.(res.requires_no_change_requests)
-            setReqCodeOwnerApproval?.(res.requires_code_owners_approval)
-            setMinApproval?.(res.minimum_required_approvals_count)
-            setReqCodeOwnerLatestApproval?.(res.requires_code_owners_approval_latest)
-            setMinReqLatestApproval?.(res.minimum_required_approvals_count_latest)
-            setConflictingFiles?.(res.conflict_files)
-          } else {
-            setRuleViolation(false)
-            setAllowedStrats(res.allowed_methods)
-            setRequiresCommentApproval?.(res.requires_comment_resolution)
-            setAtLeastOneReviewerRule?.(res.requires_no_change_requests)
-            setReqCodeOwnerApproval?.(res.requires_code_owners_approval)
-            setMinApproval?.(res.minimum_required_approvals_count)
-            setReqCodeOwnerLatestApproval?.(res.requires_code_owners_approval_latest)
-            setMinReqLatestApproval?.(res.minimum_required_approvals_count_latest)
-            setConflictingFiles?.(res.conflict_files)
-          }
+        if (res?.rule_violations?.length > 0) {
+          setRuleViolation(true)
+          setRuleViolationArr({ data: { rule_violations: res?.rule_violations } })
+          setAllowedStrats(res.allowed_methods)
+          setRequiresCommentApproval?.(res.requires_comment_resolution)
+          setAtLeastOneReviewerRule?.(res.requires_no_change_requests)
+          setReqCodeOwnerApproval?.(res.requires_code_owners_approval)
+          setMinApproval?.(res.minimum_required_approvals_count)
+          setReqCodeOwnerLatestApproval?.(res.requires_code_owners_approval_latest)
+          setMinReqLatestApproval?.(res.minimum_required_approvals_count_latest)
+          setConflictingFiles?.(res.conflict_files)
+          setDefaultReviewersInfoSet?.(res.default_reviewer_aprovals)
+        } else {
+          setRuleViolation(false)
+          setAllowedStrats(res.allowed_methods)
+          setRequiresCommentApproval?.(res.requires_comment_resolution)
+          setAtLeastOneReviewerRule?.(res.requires_no_change_requests)
+          setReqCodeOwnerApproval?.(res.requires_code_owners_approval)
+          setMinApproval?.(res.minimum_required_approvals_count)
+          setReqCodeOwnerLatestApproval?.(res.requires_code_owners_approval_latest)
+          setMinReqLatestApproval?.(res.minimum_required_approvals_count_latest)
+          setConflictingFiles?.(res.conflict_files)
+          setDefaultReviewersInfoSet?.(res.default_reviewer_aprovals)
         }
       })
       .catch(err => {
-        if (isMounted.current) {
-          if (err.status === 422) {
-            setRuleViolation(true)
-            setRuleViolationArr(err)
-            setAllowedStrats(err.allowed_methods)
-            setRequiresCommentApproval?.(err.requires_comment_resolution)
-            setAtLeastOneReviewerRule?.(err.requires_no_change_requests)
-            setReqCodeOwnerApproval?.(err.requires_code_owners_approval)
-            setMinApproval?.(err.minimum_required_approvals_count)
-            setReqCodeOwnerLatestApproval?.(err.requires_code_owners_approval_latest)
-            setMinReqLatestApproval?.(err.minimum_required_approvals_count_latest)
-            setConflictingFiles?.(err.conflict_files)
-          } else if (
-            getErrorMessage(err) === codeOwnersNotFoundMessage ||
-            getErrorMessage(err) === codeOwnersNotFoundMessage2 ||
-            getErrorMessage(err) === codeOwnersNotFoundMessage3 ||
-            err.status === 423 // resource locked (merge / dry-run already ongoing)
-          ) {
-            return
-          } else if (pullRequestSection !== PullRequestSection.CONVERSATION) {
-            return
-          } else {
-            showError(getErrorMessage(err))
-          }
+        if (err.status === 422) {
+          setRuleViolation(true)
+          setRuleViolationArr(err)
+          setAllowedStrats(err.allowed_methods)
+          setRequiresCommentApproval?.(err.requires_comment_resolution)
+          setAtLeastOneReviewerRule?.(err.requires_no_change_requests)
+          setReqCodeOwnerApproval?.(err.requires_code_owners_approval)
+          setMinApproval?.(err.minimum_required_approvals_count)
+          setReqCodeOwnerLatestApproval?.(err.requires_code_owners_approval_latest)
+          setMinReqLatestApproval?.(err.minimum_required_approvals_count_latest)
+          setConflictingFiles?.(err.conflict_files)
+          setDefaultReviewersInfoSet?.(err.default_reviewer_aprovals)
+        } else if (
+          err.status === 400 &&
+          [oldCommitRefetchRequired, prMergedRefetchRequired].includes(getErrorMessage(err) || '')
+        ) {
+          refetchPullReq()
+        } else if (
+          [codeOwnersNotFoundMessage, codeOwnersNotFoundMessage2, codeOwnersNotFoundMessage3].includes(
+            getErrorMessage(err) || ''
+          ) ||
+          err.status === 423 // resource locked (merge / dry-run already ongoing)
+        ) {
+          return
+        } else if (pullRequestSection !== PullRequestSection.CONVERSATION) {
+          return
+        } else {
+          showError(getErrorMessage(err))
         }
       })
       .finally(() => {
@@ -568,4 +619,85 @@ export const dryMerge = (
         setPRStateLoading?.(false)
       })
   }
+}
+
+export enum WebhookEventType {
+  PUSH = 'push',
+  ALL = 'all',
+  INDIVIDUAL = 'individual'
+}
+
+export enum WebhookIndividualEvent {
+  BRANCH_CREATED = 'branch_created',
+  BRANCH_UPDATED = 'branch_updated',
+  BRANCH_DELETED = 'branch_deleted',
+  TAG_CREATED = 'tag_created',
+  TAG_UPDATED = 'tag_updated',
+  TAG_DELETED = 'tag_deleted',
+  PR_CREATED = 'pullreq_created',
+  PR_UPDATED = 'pullreq_updated',
+  PR_REOPENED = 'pullreq_reopened',
+  PR_BRANCH_UPDATED = 'pullreq_branch_updated',
+  PR_CLOSED = 'pullreq_closed',
+  PR_COMMENT_CREATED = 'pullreq_comment_created',
+  PR_COMMENT_STATUS_UPDATED = 'pullreq_comment_status_updated',
+  PR_COMMENT_UPDATED = 'pullreq_comment_updated',
+  PR_MERGED = 'pullreq_merged',
+  PR_LABEL_ASSIGNED = 'pullreq_label_assigned',
+  PR_REVIEW_SUBMITTED = 'pullreq_review_submitted'
+}
+
+export enum WebhookEventMap {
+  BRANCH_CREATED = 'Branch created',
+  BRANCH_UPDATED = 'Branch updated',
+  BRANCH_DELETED = 'Branch deleted',
+  TAG_CREATED = 'Tag created',
+  TAG_UPDATED = 'Tag updated',
+  TAG_DELETED = 'Tag deleted',
+  PR_CREATED = 'PR created',
+  PR_UPDATED = 'PR updated',
+  PR_REOPENED = 'PR reopened',
+  PR_BRANCH_UPDATED = 'PR branch updated',
+  PR_CLOSED = 'PR closed',
+  PR_COMMENT_CREATED = 'PR comment created',
+  PR_COMMENT_STATUS_UPDATED = 'PR comment status updated',
+  PR_COMMENT_UPDATED = 'PR comment updated',
+  PR_MERGED = 'PR merged',
+  PR_LABEL_ASSIGNED = 'PR label assigned',
+  PR_REVIEW_SUBMITTED = 'PR review submitted'
+}
+
+export const eventMapping: Record<WebhookIndividualEvent, WebhookEventMap> = {
+  [WebhookIndividualEvent.BRANCH_CREATED]: WebhookEventMap.BRANCH_CREATED,
+  [WebhookIndividualEvent.BRANCH_UPDATED]: WebhookEventMap.BRANCH_UPDATED,
+  [WebhookIndividualEvent.BRANCH_DELETED]: WebhookEventMap.BRANCH_DELETED,
+  [WebhookIndividualEvent.TAG_CREATED]: WebhookEventMap.TAG_CREATED,
+  [WebhookIndividualEvent.TAG_UPDATED]: WebhookEventMap.TAG_UPDATED,
+  [WebhookIndividualEvent.TAG_DELETED]: WebhookEventMap.TAG_DELETED,
+  [WebhookIndividualEvent.PR_CREATED]: WebhookEventMap.PR_CREATED,
+  [WebhookIndividualEvent.PR_UPDATED]: WebhookEventMap.PR_UPDATED,
+  [WebhookIndividualEvent.PR_REOPENED]: WebhookEventMap.PR_REOPENED,
+  [WebhookIndividualEvent.PR_BRANCH_UPDATED]: WebhookEventMap.PR_BRANCH_UPDATED,
+  [WebhookIndividualEvent.PR_CLOSED]: WebhookEventMap.PR_CLOSED,
+  [WebhookIndividualEvent.PR_COMMENT_CREATED]: WebhookEventMap.PR_COMMENT_CREATED,
+  [WebhookIndividualEvent.PR_COMMENT_STATUS_UPDATED]: WebhookEventMap.PR_COMMENT_STATUS_UPDATED,
+  [WebhookIndividualEvent.PR_COMMENT_UPDATED]: WebhookEventMap.PR_COMMENT_UPDATED,
+  [WebhookIndividualEvent.PR_MERGED]: WebhookEventMap.PR_MERGED,
+  [WebhookIndividualEvent.PR_LABEL_ASSIGNED]: WebhookEventMap.PR_LABEL_ASSIGNED,
+  [WebhookIndividualEvent.PR_REVIEW_SUBMITTED]: WebhookEventMap.PR_REVIEW_SUBMITTED
+}
+
+export function getEventDescription(event: WebhookIndividualEvent): string {
+  return eventMapping[event]
+}
+
+export const mergeMethodMapping: Record<MergeStrategy, MergeMethodDisplay> = {
+  [MergeStrategy.MERGE]: MergeMethodDisplay.MERGED,
+  [MergeStrategy.SQUASH]: MergeMethodDisplay.SQUASHED,
+  [MergeStrategy.REBASE]: MergeMethodDisplay.REBASED,
+  [MergeStrategy.FAST_FORWARD]: MergeMethodDisplay.FAST_FORWARDED
+}
+
+export function getMergeMethodDisplay(mergeMethodType: MergeStrategy): string {
+  return mergeMethodMapping[mergeMethodType]
 }

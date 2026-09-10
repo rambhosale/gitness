@@ -19,7 +19,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
+	registryrefcache "github.com/harness/gitness/registry/app/services/refcache"
 	gitness_store "github.com/harness/gitness/store"
 	"github.com/harness/gitness/types/enum"
 
@@ -31,22 +33,24 @@ var _ Service = (*service)(nil)
 type service struct {
 	publicResourceCreationEnabled bool
 	publicAccessStore             store.PublicAccessStore
-	repoStore                     store.RepoStore
-	spaceStore                    store.SpaceStore
+	spaceFinder                   refcache.SpaceFinder
+	repoFinder                    refcache.RepoFinder
+	registryFinder                registryrefcache.RegistryFinder
 }
 
 func NewService(
 	publicResourceCreationEnabled bool,
 	publicAccessStore store.PublicAccessStore,
-	repoStore store.RepoStore,
-	spaceStore store.SpaceStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	registryFinder registryrefcache.RegistryFinder,
 ) Service {
 	return &service{
 		publicResourceCreationEnabled: publicResourceCreationEnabled,
-
-		publicAccessStore: publicAccessStore,
-		repoStore:         repoStore,
-		spaceStore:        spaceStore,
+		publicAccessStore:             publicAccessStore,
+		spaceFinder:                   spaceFinder,
+		repoFinder:                    repoFinder,
+		registryFinder:                registryFinder,
 	}
 }
 
@@ -116,6 +120,6 @@ func (s *service) Delete(
 	return err
 }
 
-func (s *service) IsPublicAccessSupported(context.Context, string) (bool, error) {
+func (s *service) IsPublicAccessSupported(context.Context, enum.PublicResourceType, string) (bool, error) {
 	return s.publicResourceCreationEnabled, nil
 }

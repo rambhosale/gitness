@@ -25,6 +25,7 @@ import (
 
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	events "github.com/harness/gitness/app/events/check"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/store"
 	"github.com/harness/gitness/types"
@@ -40,9 +41,16 @@ type ReportInput struct {
 	Link       string             `json:"link"`
 	Payload    types.CheckPayload `json:"payload"`
 
+	BypassedBy *int64 `json:"bypassed_by,omitempty"`
+
 	Started int64 `json:"started,omitempty"`
 	Ended   int64 `json:"ended,omitempty"`
 }
+
+const (
+	maxSummaryLength = 2048
+	maxLinkLength    = 2048
+)
 
 // TODO: Can we drop the '$' - depends on whether harness allows it.
 var regexpCheckIdentifier = "^[0-9a-zA-Z-_.$]{1,127}$"
@@ -65,6 +73,14 @@ func (in *ReportInput) Sanitize(
 		return usererror.BadRequestf("Identifier must match the regular expression: %s", regexpCheckIdentifier)
 	}
 
+	if len(in.Summary) > maxSummaryLength {
+		return usererror.BadRequestf("Summary can be at most %d bytes long.", maxSummaryLength)
+	}
+
+	if len(in.Link) > maxLinkLength {
+		return usererror.BadRequestf("Link can be at most %d bytes long.", maxLinkLength)
+	}
+
 	_, ok := in.Status.Sanitize()
 	if !ok {
 		return usererror.BadRequest("Invalid value provided for status check status")
@@ -81,7 +97,18 @@ func (in *ReportInput) Sanitize(
 	}
 
 	if in.Ended != 0 && in.Ended < in.Started {
-		return usererror.BadRequest("started time reported after ended time")
+		return usererror.BadRequest("Started time reported after ended time")
+	}
+
+	if in.BypassedBy != nil {
+		// Only service principals are allowed to report a bypass.
+		if session.Principal.Type != enum.PrincipalTypeService {
+			return usererror.Forbidden("Only service principals can report bypassed_by")
+		}
+
+		if *in.BypassedBy <= 0 {
+			return usererror.BadRequest("bypassed_by must be a valid (positive) principal id")
+		}
 	}
 
 	return nil
@@ -136,7 +163,19 @@ func (c *Controller) Report(
 	}
 
 	if !git.ValidateCommitSHA(commitSHA) {
-		return nil, usererror.BadRequest("invalid commit SHA provided")
+		return nil, usererror.BadRequest("Invalid commit SHA provided")
+	}
+
+	var bypassedBy *types.PrincipalInfo
+	if in.BypassedBy != nil {
+		principal, err := c.principalStore.Find(ctx, *in.BypassedBy)
+		if err != nil {
+			if errors.Is(err, store.ErrResourceNotFound) {
+				return nil, usererror.BadRequest("Invalid value provided for bypassed_by")
+			}
+			return nil, fmt.Errorf("failed to look up bypassed_by principal: %w", err)
+		}
+		bypassedBy = principal.ToPrincipalInfo()
 	}
 
 	_, err = c.git.GetCommit(ctx, &git.GetCommitParams{
@@ -175,12 +214,26 @@ func (c *Controller) Report(
 		ReportedBy: session.Principal.ToPrincipalInfo(),
 		Started:    started,
 		Ended:      ended,
+
+		BypassedByID: in.BypassedBy,
+		BypassedBy:   bypassedBy,
 	}
 
 	err = c.checkStore.Upsert(ctx, statusCheckReport)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert status check result for repo=%s: %w", repo.Identifier, err)
 	}
+
+	c.eventReporter.Reported(ctx, &events.ReportedPayload{
+		Base: events.Base{
+			RepoID: repo.ID,
+			SHA:    commitSHA,
+		},
+		Identifier: in.Identifier,
+		Status:     in.Status,
+	})
+
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypeStatusCheckReportUpdated, statusCheckReport)
 
 	return statusCheckReport, nil
 }

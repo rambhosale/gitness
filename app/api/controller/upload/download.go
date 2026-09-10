@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/blob"
@@ -38,7 +39,7 @@ func (c *Controller) Download(
 
 	fileBucketPath := getFileBucketPath(repo.ID, filePath)
 
-	signedURL, err := c.blobStore.GetSignedURL(ctx, fileBucketPath)
+	signedURL, err := c.blobStore.GetSignedURL(ctx, fileBucketPath, time.Now().Add(1*time.Hour))
 	if err != nil && !errors.Is(err, blob.ErrNotSupported) {
 		return "", nil, fmt.Errorf("failed to get signed URL: %w", err)
 	}

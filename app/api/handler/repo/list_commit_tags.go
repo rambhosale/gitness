@@ -22,9 +22,6 @@ import (
 	"github.com/harness/gitness/app/api/request"
 )
 
-/*
- * Writes json-encoded commit tag information to the http response body.
- */
 func HandleListCommitTags(repoCtrl *repo.Controller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

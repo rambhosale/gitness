@@ -17,7 +17,7 @@
 import type React from 'react'
 import type { CODERoutes } from 'RouteDefinitions'
 import type { TypesUser } from 'services/code'
-import type { UsefulOrNotProps } from 'utils/types'
+import type { DelegateSelectorsV2Props, UsefulOrNotProps } from 'utils/types'
 import type { LangLocale } from './framework/strings/languageLoader'
 
 /**
@@ -61,10 +61,11 @@ export interface AppProps {
   /** React Components which are passed down from the Parent that are needed by the child app */
   customComponents: {
     UsefulOrNot: (props: UsefulOrNotProps) => React.ReactElement
+    DelegateSelectorsV2: (props: DelegateSelectorsV2Props) => React.ReactElement
+    MultiTypeConnectorField: (props: any) => React.ReactElement
   }
   /** React Hooks that Harness Platform passes down. Note: Pass only hooks that your app need */
   hooks: Partial<{
-    useGetToken: Unknown
     usePermissionTranslate: Unknown
     useGenerateToken: Unknown
     useExecutionDataHook: Unknown
@@ -72,6 +73,18 @@ export interface AppProps {
     useLogsStreaming: Unknown
     useFeatureFlags: Unknown
     useGetSettingValue: Unknown
+    useGetAuthSettings: Unknown
+    useGetUserSourceCodeManagers?: Unknown
+    useListAggregatedTokens?: Unknown
+    useDeleteToken?: Unknown
+    useCreateToken?: Unknown
+    useGetDelegateSelectorsUpTheHierarchyV2?: Unknown
+    useGetPaginatedListOfReposByRefConnector?: Unknown
+    useGetPaginatedListOfBranchesByRefConnector?: Unknown
+    useGetRepoURL?: Unknown
+    getRepoURLPromise?: Unknown
+    useGetConnector?: Unknown
+    useCodeOPAError?: Unknown
   }>
 
   currentUser: Required<TypesUser>
@@ -81,4 +94,13 @@ export interface AppProps {
   isPublicAccessEnabledOnResources: boolean
   isCurrentSessionPublic: boolean
   module?: string
+
+  accountInfo?: Unknown
+
+  arAppStore?: {
+    repositoryIdentifier?: string
+    artifactIdentifier?: string
+    versionIdentifier?: string
+    repositoryType?: 'UPSTREAM' | 'VIRTUAL'
+  }
 }

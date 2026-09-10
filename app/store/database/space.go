@@ -62,13 +62,15 @@ type space struct {
 	ID      int64 `db:"space_id"`
 	Version int64 `db:"space_version"`
 	// IMPORTANT: We need to make parentID optional for spaces to allow it to be a foreign key.
-	ParentID    null.Int `db:"space_parent_id"`
-	Identifier  string   `db:"space_uid"`
-	Description string   `db:"space_description"`
-	CreatedBy   int64    `db:"space_created_by"`
-	Created     int64    `db:"space_created"`
-	Updated     int64    `db:"space_updated"`
-	Deleted     null.Int `db:"space_deleted"`
+	ParentID            null.Int `db:"space_parent_id"`
+	Identifier          string   `db:"space_uid"`
+	Description         string   `db:"space_description"`
+	RootSpaceID         int64    `db:"space_root_space_id"`
+	RootSpaceIdentifier string   `db:"space_root_space_identifier"`
+	CreatedBy           int64    `db:"space_created_by"`
+	Created             int64    `db:"space_created"`
+	Updated             int64    `db:"space_updated"`
+	Deleted             null.Int `db:"space_deleted"`
 }
 
 const (
@@ -78,6 +80,8 @@ const (
 		,space_parent_id
 		,space_uid
 		,space_description
+		,space_root_space_id
+		,space_root_space_identifier
 		,space_created_by
 		,space_created
 		,space_updated
@@ -91,6 +95,28 @@ const (
 // Find the space by id.
 func (s *SpaceStore) Find(ctx context.Context, id int64) (*types.Space, error) {
 	return s.find(ctx, id, nil)
+}
+
+// FindByIDs finds all spaces by ids.
+func (s *SpaceStore) FindByIDs(ctx context.Context, ids ...int64) ([]*types.Space, error) {
+	stmt := database.Builder.
+		Select(spaceColumns).
+		From("spaces").
+		Where(squirrel.Eq{"space_id": ids})
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var dst []*space
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
+	}
+
+	return s.mapToSpaces(ctx, s.db, dst)
 }
 
 func (s *SpaceStore) find(ctx context.Context, id int64, deletedAt *int64) (*types.Space, error) {
@@ -123,6 +149,41 @@ func (s *SpaceStore) find(ctx context.Context, id int64, deletedAt *int64) (*typ
 // FindByRef finds the space using the spaceRef as either the id or the space path.
 func (s *SpaceStore) FindByRef(ctx context.Context, spaceRef string) (*types.Space, error) {
 	return s.findByRef(ctx, spaceRef, nil)
+}
+
+// FindByRefCaseInsensitive finds the space using the spaceRef.
+func (s *SpaceStore) FindByRefCaseInsensitive(ctx context.Context, spaceRef string) (int64, error) {
+	segments := paths.Segments(spaceRef)
+	if len(segments) < 1 {
+		return -1, fmt.Errorf("invalid space reference provided")
+	}
+
+	var stmt squirrel.SelectBuilder
+	switch {
+	case len(segments) == 1:
+		stmt = database.Builder.
+			Select("space_id").
+			From("spaces").
+			Where("LOWER(space_uid) = ? ", strings.ToLower(segments[0])).
+			Limit(1)
+
+	case len(segments) > 1:
+		stmt = buildRecursiveSelectQueryUsingCaseInsensitivePath(segments)
+	}
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return -1, fmt.Errorf("failed to create sql query: %w", err)
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var spaceID int64
+	if err = db.GetContext(ctx, &spaceID, sql, args...); err != nil {
+		return -1, database.ProcessSQLErrorf(ctx, err, "Failed executing custom select query")
+	}
+
+	return spaceID, nil
 }
 
 // FindByRefAndDeletedAt finds the space using the spaceRef as either the id or the space path and deleted timestamp.
@@ -192,22 +253,40 @@ func (s *SpaceStore) findByPathAndDeletedAt(
 	return s.find(ctx, spaceID, &deletedAt)
 }
 
-// GetRootSpace returns a space where space_parent_id is NULL.
-func (s *SpaceStore) GetRootSpace(ctx context.Context, spaceID int64) (*types.Space, error) {
-	query := `WITH RECURSIVE SpaceHierarchy AS (
-	SELECT space_id, space_parent_id
+const spaceAncestorsQuery = `
+WITH RECURSIVE space_ancestors(space_ancestor_id, space_ancestor_uid, space_ancestor_parent_id) AS (
+	SELECT space_id, space_uid, space_parent_id
 	FROM spaces
 	WHERE space_id = $1
 	
 	UNION
 	
-	SELECT s.space_id, s.space_parent_id
-	FROM spaces s
-	JOIN SpaceHierarchy h ON s.space_id = h.space_parent_id
+	SELECT space_id, space_uid, space_parent_id
+	FROM spaces
+	JOIN space_ancestors ON space_id = space_ancestor_parent_id
 )
-SELECT space_id
-FROM SpaceHierarchy
-WHERE space_parent_id IS NULL;`
+`
+
+const spaceDescendantsQuery = `
+WITH RECURSIVE space_descendants(space_descendant_id, space_descendant_uid, space_descendant_parent_id) AS (
+	SELECT space_id, space_uid, space_parent_id
+	FROM spaces
+	WHERE space_id = $1
+
+	UNION
+
+	SELECT space_id, space_uid, space_parent_id
+	FROM spaces
+	JOIN space_descendants ON space_descendant_id = space_parent_id
+)
+`
+
+// GetRootSpace returns a space where space_parent_id is NULL.
+func (s *SpaceStore) GetRootSpace(ctx context.Context, spaceID int64) (*types.Space, error) {
+	query := spaceAncestorsQuery + `
+		SELECT space_ancestor_id
+		FROM space_ancestors
+		WHERE space_ancestor_parent_id IS NULL`
 
 	db := dbtx.GetAccessor(ctx, s.db)
 
@@ -217,6 +296,153 @@ WHERE space_parent_id IS NULL;`
 	}
 
 	return s.Find(ctx, rootID)
+}
+
+// GetAllRootSpaces returns all spaces where space_parent_id is NULL.
+func (s *SpaceStore) GetAllRootSpaces(ctx context.Context, opts *types.SpaceFilter) ([]*types.Space, error) {
+	stmt := database.Builder.
+		Select(spaceColumns).
+		From("spaces").
+		Where(squirrel.Expr("space_parent_id IS NULL"))
+
+	stmt = s.applyQueryFilter(stmt, opts)
+	stmt = s.applySortFilter(stmt, opts)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var dst []*space
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
+	}
+
+	return s.mapToSpaces(ctx, s.db, dst)
+}
+
+// GetAncestorIDs returns a list of all space IDs along the recursive path to the root space.
+func (s *SpaceStore) GetAncestorIDs(ctx context.Context, spaceID int64) ([]int64, error) {
+	query := spaceAncestorsQuery + `
+		SELECT space_ancestor_id FROM space_ancestors`
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var spaceIDs []int64
+	if err := db.SelectContext(ctx, &spaceIDs, query, spaceID); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to get space ancestors IDs")
+	}
+
+	return spaceIDs, nil
+}
+
+// GetTreeLevel returns the level of a space in a space tree.
+func (s *SpaceStore) GetTreeLevel(ctx context.Context, spaceID int64) (int64, error) {
+	query := spaceAncestorsQuery + `
+		SELECT COUNT(space_ancestor_id) FROM space_ancestors`
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var level int64
+	if err := db.GetContext(ctx, &level, query, spaceID); err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get space ancestors IDs")
+	}
+
+	return level, nil
+}
+
+func (s *SpaceStore) GetAncestors(
+	ctx context.Context,
+	spaceID int64,
+) ([]*types.Space, error) {
+	query := spaceAncestorsQuery + `
+		SELECT ` + spaceColumns + `
+		FROM spaces INNER JOIN space_ancestors ON space_id = space_ancestor_id`
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var dst []*space
+	if err := db.SelectContext(ctx, &dst, query, spaceID); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing get space ancestors query")
+	}
+
+	return s.mapToSpaces(ctx, s.db, dst)
+}
+
+// GetAncestorsData returns a list of space parent data for spaces that are ancestors of the space.
+func (s *SpaceStore) GetAncestorsData(ctx context.Context, spaceID int64) ([]types.SpaceParentData, error) {
+	query := spaceAncestorsQuery + `
+		SELECT space_ancestor_id, space_ancestor_uid, space_ancestor_parent_id FROM space_ancestors`
+
+	return s.readParentsData(ctx, query, spaceID)
+}
+
+// GetDescendantsData returns a list of space parent data for spaces that are descendants of the space.
+func (s *SpaceStore) GetDescendantsData(ctx context.Context, spaceID int64) ([]types.SpaceParentData, error) {
+	query := spaceDescendantsQuery + `
+		SELECT space_descendant_id, space_descendant_uid, space_descendant_parent_id FROM space_descendants`
+
+	return s.readParentsData(ctx, query, spaceID)
+}
+
+// GetDescendantsIDs returns a list of space ids for spaces that are descendants of the specified space.
+func (s *SpaceStore) GetDescendantsIDs(ctx context.Context, spaceID int64) ([]int64, error) {
+	return getSpaceDescendantsIDs(ctx, dbtx.GetAccessor(ctx, s.db), spaceID)
+}
+
+func getSpaceDescendantsIDs(ctx context.Context, db dbtx.Accessor, spaceID int64) ([]int64, error) {
+	query := spaceDescendantsQuery + `
+		SELECT space_descendant_id
+		FROM space_descendants`
+
+	var ids []int64
+	if err := db.SelectContext(ctx, &ids, query, spaceID); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to retrieve spaces")
+	}
+
+	return ids, nil
+}
+
+func (s *SpaceStore) readParentsData(
+	ctx context.Context,
+	query string,
+	spaceID int64,
+) ([]types.SpaceParentData, error) {
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	rows, err := db.QueryContext(ctx, query, spaceID)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to run space parent data query")
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var result []types.SpaceParentData
+
+	for rows.Next() {
+		var id int64
+		var uid string
+		var parent null.Int
+
+		err = rows.Scan(&id, &uid, &parent)
+		if err != nil {
+			return nil, database.ProcessSQLErrorf(ctx, err, "failed to scan space parent data")
+		}
+
+		result = append(result, types.SpaceParentData{
+			ID:         id,
+			Identifier: uid,
+			ParentID:   parent.Int64,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to read space parent data")
+	}
+
+	return result, nil
 }
 
 // Create a new space.
@@ -231,6 +457,8 @@ func (s *SpaceStore) Create(ctx context.Context, space *types.Space) error {
 			,space_parent_id
 			,space_uid
 			,space_description
+			,space_root_space_id
+			,space_root_space_identifier
 			,space_created_by
 			,space_created
 			,space_updated
@@ -240,6 +468,8 @@ func (s *SpaceStore) Create(ctx context.Context, space *types.Space) error {
 			,:space_parent_id
 			,:space_uid
 			,:space_description
+			,:space_root_space_id
+			,:space_root_space_identifier
 			,:space_created_by
 			,:space_created
 			,:space_updated
@@ -266,15 +496,18 @@ func (s *SpaceStore) Update(ctx context.Context, space *types.Space) error {
 		return errors.New("space is nil")
 	}
 
+	// NOTE: the root space columns are deliberately not updated here. They are a
+	// derived, structural value that must only change during a move, through the
+	// dedicated UpdateRootSpace method - never as a side effect of a generic Update.
 	const sqlQuery = `
 		UPDATE spaces
 		SET
-		    space_version		= :space_version
-			,space_updated		= :space_updated
-			,space_parent_id	= :space_parent_id
-			,space_uid			= :space_uid
-			,space_description	= :space_description
-			,space_deleted 		= :space_deleted
+		    space_version					= :space_version
+			,space_updated					= :space_updated
+			,space_parent_id				= :space_parent_id
+			,space_uid						= :space_uid
+			,space_description				= :space_description
+			,space_deleted					= :space_deleted
 		WHERE space_id = :space_id AND space_version = :space_version - 1`
 
 	dbSpace := mapToInternalSpace(space)
@@ -311,6 +544,38 @@ func (s *SpaceStore) Update(ctx context.Context, space *types.Space) error {
 	space.Path, err = getSpacePath(ctx, s.db, s.spacePathStore, space.ID)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// UpdateRootSpace sets the root space id and identifier for all given spaces.
+func (s *SpaceStore) UpdateRootSpace(
+	ctx context.Context,
+	spaceIDs []int64,
+	rootSpaceID int64,
+	rootSpaceIdentifier string,
+) error {
+	if len(spaceIDs) == 0 {
+		return nil
+	}
+
+	// deliberately not touching space_updated: this is a bulk propagation, and
+	// stamping every row with the same timestamp would collapse their sort order.
+	stmt := database.Builder.
+		Update("spaces").
+		Set("space_root_space_id", rootSpaceID).
+		Set("space_root_space_identifier", rootSpaceIdentifier).
+		Where(squirrel.Eq{"space_id": spaceIDs})
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	if _, err := db.ExecContext(ctx, sql, args...); err != nil {
+		return database.ProcessSQLErrorf(ctx, err, "failed to update root space for spaces")
 	}
 
 	return nil
@@ -388,7 +653,7 @@ func (s *SpaceStore) FindForUpdate(ctx context.Context, id int64) (*types.Space,
 		return s.find(ctx, id, nil)
 	}
 
-	stmt := database.Builder.Select("space_id").
+	stmt := database.Builder.Select(spaceColumns).
 		From("spaces").
 		Where("space_id = ? AND space_deleted IS NULL", id).
 		Suffix("FOR UPDATE")
@@ -493,7 +758,7 @@ func (s *SpaceStore) count(
 		Where("space_parent_id = ?", id)
 
 	if opts.Query != "" {
-		stmt = stmt.Where("LOWER(space_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
+		stmt = stmt.Where(PartialMatch("space_uid", opts.Query))
 	}
 
 	stmt = s.applyQueryFilter(stmt, opts)
@@ -561,7 +826,7 @@ func (s *SpaceStore) List(
 	opts *types.SpaceFilter,
 ) ([]*types.Space, error) {
 	if opts.Recursive {
-		return s.listAll(ctx, id, opts)
+		return s.listRecursive(ctx, id, opts)
 	}
 	return s.list(ctx, id, opts)
 }
@@ -594,7 +859,8 @@ func (s *SpaceStore) list(
 	return s.mapToSpaces(ctx, s.db, dst)
 }
 
-func (s *SpaceStore) listAll(ctx context.Context,
+func (s *SpaceStore) listRecursive(
+	ctx context.Context,
 	id int64,
 	opts *types.SpaceFilter,
 ) ([]*types.Space, error) {
@@ -639,7 +905,7 @@ func (s *SpaceStore) applyQueryFilter(
 	opts *types.SpaceFilter,
 ) squirrel.SelectBuilder {
 	if opts.Query != "" {
-		stmt = stmt.Where("LOWER(space_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
+		stmt = stmt.Where(PartialMatch("space_uid", opts.Query))
 	}
 	//nolint:gocritic
 	if opts.DeletedAt != nil {
@@ -713,14 +979,16 @@ func mapToSpace(
 ) (*types.Space, error) {
 	var err error
 	res := &types.Space{
-		ID:          in.ID,
-		Version:     in.Version,
-		Identifier:  in.Identifier,
-		Description: in.Description,
-		Created:     in.Created,
-		CreatedBy:   in.CreatedBy,
-		Updated:     in.Updated,
-		Deleted:     in.Deleted.Ptr(),
+		ID:                  in.ID,
+		Version:             in.Version,
+		Identifier:          in.Identifier,
+		Description:         in.Description,
+		RootSpaceID:         in.RootSpaceID,
+		RootSpaceIdentifier: in.RootSpaceIdentifier,
+		Created:             in.Created,
+		CreatedBy:           in.CreatedBy,
+		Updated:             in.Updated,
+		Deleted:             in.Deleted.Ptr(),
 	}
 
 	// Only overwrite ParentID if it's not a root space
@@ -773,14 +1041,16 @@ func (s *SpaceStore) mapToSpaces(
 
 func mapToInternalSpace(s *types.Space) *space {
 	res := &space{
-		ID:          s.ID,
-		Version:     s.Version,
-		Identifier:  s.Identifier,
-		Description: s.Description,
-		Created:     s.Created,
-		CreatedBy:   s.CreatedBy,
-		Updated:     s.Updated,
-		Deleted:     null.IntFromPtr(s.Deleted),
+		ID:                  s.ID,
+		Version:             s.Version,
+		Identifier:          s.Identifier,
+		Description:         s.Description,
+		RootSpaceID:         s.RootSpaceID,
+		RootSpaceIdentifier: s.RootSpaceIdentifier,
+		Created:             s.Created,
+		CreatedBy:           s.CreatedBy,
+		Updated:             s.Updated,
+		Deleted:             null.IntFromPtr(s.Deleted),
 	}
 
 	// Only overwrite ParentID if it's not a root space
@@ -794,7 +1064,7 @@ func mapToInternalSpace(s *types.Space) *space {
 
 // buildRecursiveSelectQueryUsingPath builds the recursive select query using path among active or soft deleted spaces.
 func buildRecursiveSelectQueryUsingPath(segments []string, deletedAt int64) squirrel.SelectBuilder {
-	leaf := "s" + fmt.Sprint(len(segments)-1)
+	leaf := "s" + strconv.Itoa(len(segments)-1)
 
 	// add the current space (leaf)
 	stmt := database.Builder.
@@ -803,10 +1073,11 @@ func buildRecursiveSelectQueryUsingPath(segments []string, deletedAt int64) squi
 		Where(leaf+".space_uid = ? AND "+leaf+".space_deleted = ?", segments[len(segments)-1], deletedAt)
 
 	for i := len(segments) - 2; i >= 0; i-- {
-		parentAlias := "s" + fmt.Sprint(i)
-		alias := "s" + fmt.Sprint(i+1)
+		parentAlias := "s" + strconv.Itoa(i)
+		alias := "s" + strconv.Itoa(i+1)
 
-		stmt = stmt.InnerJoin(fmt.Sprintf("spaces %s ON %s.space_id = %s.space_parent_id", parentAlias, parentAlias, alias)).
+		stmt = stmt.InnerJoin(fmt.Sprintf("spaces %s ON %s.space_id = %s.space_parent_id", parentAlias, parentAlias,
+			alias)).
 			Where(parentAlias+".space_uid = ?", segments[i])
 	}
 
@@ -814,4 +1085,79 @@ func buildRecursiveSelectQueryUsingPath(segments []string, deletedAt int64) squi
 	stmt = stmt.Where("s0.space_parent_id IS NULL")
 
 	return stmt
+}
+
+// buildRecursiveSelectQueryUsingCaseInsensitivePath builds the recursive select query using path among active or soft
+// deleted spaces.
+func buildRecursiveSelectQueryUsingCaseInsensitivePath(segments []string) squirrel.SelectBuilder {
+	leaf := "s" + strconv.Itoa(len(segments)-1)
+
+	// add the current space (leaf)
+	stmt := database.Builder.
+		Select(leaf+".space_id").
+		From("spaces "+leaf).
+		Where("LOWER("+leaf+".space_uid) = LOWER(?)", segments[len(segments)-1])
+
+	for i := len(segments) - 2; i >= 0; i-- {
+		parentAlias := "s" + strconv.Itoa(i)
+		alias := "s" + strconv.Itoa(i+1)
+
+		stmt = stmt.InnerJoin(fmt.Sprintf("spaces %s ON %s.space_id = %s.space_parent_id", parentAlias, parentAlias,
+			alias)).
+			Where(parentAlias+".space_uid = ?", segments[i])
+	}
+
+	// add parent check for root
+	stmt = stmt.Where("s0.space_parent_id IS NULL")
+
+	return stmt
+}
+
+func (s *SpaceStore) GetRootSpacesSize(ctx context.Context) ([]types.SpaceStorage, error) {
+	const query = `
+WITH RECURSIVE SpaceHierarchy AS (
+    SELECT space_id, space_id AS root_space_id, space_uid AS root_space_uid
+    FROM spaces
+    WHERE space_parent_id IS NULL
+
+    UNION ALL
+
+    SELECT s.space_id, sh.root_space_id, sh.root_space_uid
+    FROM spaces s
+    JOIN SpaceHierarchy sh ON s.space_parent_id = sh.space_id
+)
+SELECT
+    sh.root_space_id,
+    sh.root_space_uid,
+    COALESCE(SUM(r.repo_size), 0) AS total_repository_size,
+    COALESCE(SUM(r.repo_lfs_size), 0) AS total_lfs_size
+FROM SpaceHierarchy sh
+LEFT JOIN repositories r ON r.repo_parent_id = sh.space_id
+WHERE repo_deleted IS NULL
+GROUP BY sh.root_space_id, sh.root_space_uid
+`
+	db := dbtx.GetAccessor(ctx, s.db)
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get root spaces storage size: %w", err)
+	}
+	defer rows.Close()
+
+	spaces := make([]types.SpaceStorage, 0, 32)
+	for rows.Next() {
+		var space types.SpaceStorage
+		if err := rows.Scan(
+			&space.ID,
+			&space.Identifier,
+			&space.Size,
+			&space.LFSSize,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan root space storage: %w", err)
+		}
+		spaces = append(spaces, space)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan rows for root spaces storage size: %w", err)
+	}
+	return spaces, nil
 }

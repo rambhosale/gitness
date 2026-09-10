@@ -16,13 +16,14 @@ package enum
 
 type GitspaceActionType string
 
-func (GitspaceActionType) Enum() []interface{} { return toInterfaceSlice(gitspaceActionTypes) }
+func (GitspaceActionType) Enum() []any { return toInterfaceSlice(gitspaceActionTypes) }
 
 var gitspaceActionTypes = []GitspaceActionType{
-	GitspaceActionTypeStart, GitspaceActionTypeStop,
+	GitspaceActionTypeStart, GitspaceActionTypeStop, GitspaceActionTypeReset,
 }
 
 const (
 	GitspaceActionTypeStart GitspaceActionType = "start"
 	GitspaceActionTypeStop  GitspaceActionType = "stop"
+	GitspaceActionTypeReset GitspaceActionType = "reset"
 )

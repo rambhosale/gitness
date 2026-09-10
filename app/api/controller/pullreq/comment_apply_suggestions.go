@@ -20,11 +20,10 @@ import (
 	"strings"
 	"time"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
-	"github.com/harness/gitness/app/bootstrap"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/contextutil"
 	"github.com/harness/gitness/git"
@@ -83,9 +82,7 @@ func (i *CommentApplySuggestionsInput) sanitize() error {
 
 type CommentApplySuggestionsOutput struct {
 	CommitID string `json:"commit_id"`
-
-	DryRunRules    bool                   `json:"dry_run_rules,omitempty"`
-	RuleViolations []types.RuleViolations `json:"rule_violations,omitempty"`
+	types.DryRunRulesOutput
 }
 
 // CommentApplySuggestions applies suggestions for code comments.
@@ -108,28 +105,30 @@ func (c *Controller) CommentApplySuggestions(
 		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf("failed to find pull request by number: %w", err)
 	}
 
+	if c.mergeQueueService.IsEnqueued(pr) {
+		return CommentApplySuggestionsOutput{}, nil,
+			usererror.BadRequest("Applying suggestions is not allowed, " +
+				"because the pull request is in the merge queue.")
+	}
+
 	if err := in.sanitize(); err != nil {
 		return CommentApplySuggestionsOutput{}, nil, err
 	}
 
 	// verify branch rules
-	isRepoOwner, err := apiauth.IsRepoOwner(ctx, c.authorizer, session, repo)
+	protectionRules, isRepoOwner, err := c.fetchRules(ctx, session, repo)
 	if err != nil {
-		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf("failed to determine if user is repo owner: %w", err)
-	}
-	protectionRules, err := c.protectionManager.ForRepository(ctx, repo.ID)
-	if err != nil {
-		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf(
-			"failed to fetch protection rules for the repository: %w", err)
+		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf("failed to fetch rules: %w", err)
 	}
 	violations, err := protectionRules.RefChangeVerify(ctx, protection.RefChangeVerifyInput{
-		Actor:       &session.Principal,
-		AllowBypass: in.BypassRules,
-		IsRepoOwner: isRepoOwner,
-		Repo:        repo,
-		RefAction:   protection.RefActionUpdate,
-		RefType:     protection.RefTypeBranch,
-		RefNames:    []string{pr.SourceBranch},
+		ResolveUserGroupID: c.userGroupService.ListUserIDsByGroupIDs,
+		Actor:              &session.Principal,
+		AllowBypass:        in.BypassRules,
+		IsRepoOwner:        isRepoOwner,
+		Repo:               repo,
+		RefAction:          protection.RefActionUpdate,
+		RefType:            protection.RefTypeBranch,
+		RefNames:           []string{pr.SourceBranch},
 	})
 	if err != nil {
 		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf("failed to verify protection rules: %w", err)
@@ -137,8 +136,10 @@ func (c *Controller) CommentApplySuggestions(
 
 	if in.DryRunRules {
 		return CommentApplySuggestionsOutput{
-			DryRunRules:    true,
-			RuleViolations: violations,
+			DryRunRulesOutput: types.DryRunRulesOutput{
+				DryRunRules:    true,
+				RuleViolations: violations,
+			},
 		}, nil, nil
 	}
 
@@ -261,12 +262,12 @@ func (c *Controller) CommentApplySuggestions(
 				Action: git.PatchTextAction,
 				Path:   cc.Path,
 				SHA:    fileSHA,
-				Payload: []byte(fmt.Sprintf(
+				Payload: fmt.Appendf(nil,
 					"%d:%d\u0000%s",
 					cc.LineNew,
 					cc.LineNew+cc.SpanNew,
 					suggestionToApply.code,
-				)),
+				),
 			})
 
 		activityUpdates[activity.ID] = activityUpdate{
@@ -286,14 +287,12 @@ func (c *Controller) CommentApplySuggestions(
 	// TODO: This is a small change to reduce likelihood of dirty state (e.g. git work done but db canceled).
 	// We still require a proper solution to handle an application crash or very slow execution times
 	const timeout = 1 * time.Minute
-	ctx, cancel := context.WithTimeout(
-		contextutil.WithNewValues(context.Background(), ctx),
-		timeout,
-	)
+	ctx, cancel := contextutil.WithNewTimeout(ctx, timeout)
 	defer cancel()
 
-	// Create internal write params. Note: This will skip the pre-commit protection rules check.
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	// Create API write params. Note: This will skip the pre-commit protection rules check.
+	// Use APIContent for applying code suggestions - this creates new commits.
+	writeParams, err := controller.CreateRPCAPIContentWriteParams(ctx, c.urlProvider, session, repo)
 	if err != nil {
 		return CommentApplySuggestionsOutput{}, nil, fmt.Errorf("failed to create RPC write params: %w", err)
 	}
@@ -306,12 +305,11 @@ func (c *Controller) CommentApplySuggestions(
 	now := time.Now()
 	commitOut, err := c.git.CommitFiles(ctx, &git.CommitFilesParams{
 		WriteParams:   writeParams,
-		Title:         in.Title,
-		Message:       in.Message,
+		Message:       git.CommitMessage(in.Title, in.Message),
 		Branch:        pr.SourceBranch,
-		Committer:     identityFromPrincipalInfo(*bootstrap.NewSystemServiceSession().Principal.ToPrincipalInfo()),
+		Committer:     controller.SystemServicePrincipalInfo(),
 		CommitterDate: &now,
-		Author:        identityFromPrincipalInfo(*session.Principal.ToPrincipalInfo()),
+		Author:        controller.IdentityFromPrincipalInfo(*session.Principal.ToPrincipalInfo()),
 		AuthorDate:    &now,
 		Actions:       actions,
 	})
@@ -322,11 +320,16 @@ func (c *Controller) CommentApplySuggestions(
 	// update activities (use UpdateOptLock as it can have racing condition with comment migration)
 	resolved := ptr.Of(now.UnixMilli())
 	resolvedBy := &session.Principal.ID
+	resolvedActivities := map[int64]struct{}{}
 	for _, update := range activityUpdates {
 		_, err = c.activityStore.UpdateOptLock(ctx, update.act, func(act *types.PullReqActivity) error {
-			if update.resolve {
+			// only resolve where required (can happen in case of parallel resolution of activity)
+			if update.resolve && act.Resolved == nil {
 				act.Resolved = resolved
 				act.ResolvedBy = resolvedBy
+				resolvedActivities[act.ID] = struct{}{}
+			} else {
+				delete(resolvedActivities, act.ID)
 			}
 
 			if update.checksum != "" {
@@ -345,8 +348,42 @@ func (c *Controller) CommentApplySuggestions(
 		}
 	}
 
+	// This is a best effort approach as in case of sqlite a transaction is likely to be blocked
+	// by parallel event-triggered db writes from the above commit.
+	// WARNING: This could cause the count to diverge (similar to create / delete).
+	// TODO: Use transaction once sqlite issue has been addressed.
+	pr, err = c.pullreqStore.UpdateOptLock(ctx, pr, func(pr *types.PullReq) error {
+		pr.UnresolvedCount -= len(resolvedActivities)
+		return nil
+	})
+	if err != nil {
+		return CommentApplySuggestionsOutput{}, nil,
+			fmt.Errorf("failed to update pull request's unresolved comment count: %w", err)
+	}
+
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullReqUpdated, pr)
+
+	err = c.instrumentation.Track(ctx, instrument.Event{
+		Type:      instrument.EventTypePRSuggestionApplied,
+		Principal: session.Principal.ToPrincipalInfo(),
+		Path:      repo.Path,
+		Properties: map[instrument.Property]any{
+			instrument.PropertyRepositoryID:   repo.ID,
+			instrument.PropertyRepositoryName: repo.Identifier,
+			instrument.PropertyPullRequestID:  pr.Number,
+		},
+	})
+	if err != nil {
+		log.Ctx(ctx).Warn().Msgf(
+			"failed to insert instrumentation record for pull request suggestion applied operation: %s",
+			err,
+		)
+	}
+
 	return CommentApplySuggestionsOutput{
-		CommitID:       commitOut.CommitID.String(),
-		RuleViolations: violations,
+		CommitID: commitOut.CommitID.String(),
+		DryRunRulesOutput: types.DryRunRulesOutput{
+			RuleViolations: violations,
+		},
 	}, nil, nil
 }

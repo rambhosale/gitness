@@ -28,9 +28,8 @@ import {
   useMembershipAdd,
   useMembershipUpdate
 } from 'services/code'
-import { getErrorMessage, LIST_FETCHING_LIMIT } from 'utils/Utils'
+import { getErrorMessage, LIST_FETCHING_LIMIT, PrincipalType, roleStringKeyMap } from 'utils/Utils'
 import { useModalHook } from 'hooks/useModalHook'
-import { roleStringKeyMap } from '../SpaceAccessControl'
 
 const roles = ['reader', 'executor', 'contributor', 'space_owner'] as const
 
@@ -55,7 +54,7 @@ const useAddNewMember = ({ onClose }: { onClose: () => void }) => {
       query: searchTerm,
       page: 1,
       limit: LIST_FETCHING_LIMIT,
-      type: 'user'
+      type: PrincipalType.USER
     },
     debounce: 500
   })

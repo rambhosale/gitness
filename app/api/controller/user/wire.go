@@ -16,6 +16,8 @@ package user
 
 import (
 	"github.com/harness/gitness/app/auth/authz"
+	userevents "github.com/harness/gitness/app/events/user"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types/check"
@@ -23,7 +25,6 @@ import (
 	"github.com/google/wire"
 )
 
-// WireSet provides a wire set for this package.
 var WireSet = wire.NewSet(
 	ProvideController,
 )
@@ -36,6 +37,11 @@ func ProvideController(
 	tokenStore store.TokenStore,
 	membershipStore store.MembershipStore,
 	publicKeyStore store.PublicKeyStore,
+	publicKeySubKeyStore store.PublicKeySubKeyStore,
+	gitSignatureResultStore store.GitSignatureResultStore,
+	eventReporter *userevents.Reporter,
+	repoFinder refcache.RepoFinder,
+	favoriteStore store.FavoriteStore,
 ) *Controller {
 	return NewController(
 		tx,
@@ -44,5 +50,10 @@ func ProvideController(
 		principalStore,
 		tokenStore,
 		membershipStore,
-		publicKeyStore)
+		publicKeyStore,
+		publicKeySubKeyStore,
+		gitSignatureResultStore,
+		eventReporter,
+		repoFinder,
+		favoriteStore)
 }

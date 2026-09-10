@@ -148,32 +148,26 @@ func (c *RedisConsumer) Start(ctx context.Context) error {
 
 	wg := &sync.WaitGroup{}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		c.removeStaleConsumers(ctx, time.Hour)
 		// launch redis reader, it will finish when the ctx is done
 		c.reader(ctx)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		// launch redis message reclaimer, it will finish when the ctx is done.
 		// IMPORTANT: Keep reclaim interval small for now to support faster retries => higher load on redis!
 		// TODO: Make retries local by default with opt-in cross-instance retries.
 		// https://harness.atlassian.net/browse/SCM-83
 		const reclaimInterval = 10 * time.Second
 		c.reclaimer(ctx, reclaimInterval)
-	}()
+	})
 
 	for i := 0; i < c.Config.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// launch redis message consumer, it will finish when the ctx is done
 			c.consumer(ctx)
-		}()
+		})
 	}
 
 	go func() {
@@ -286,6 +280,14 @@ func (c *RedisConsumer) reader(ctx context.Context) {
 					if len(stream.Messages) > 0 {
 						scanHistory = true
 						streamsArg[streamLen+x] = stream.Messages[len(stream.Messages)-1].ID
+
+						c.pushInfo(fmt.Sprintf(
+							"stream %q had %d more messages in the history (delivered but no yet acked),"+
+								"continuing scanning after %q",
+							stream.Stream,
+							len(stream.Messages),
+							streamsArg[streamLen+x],
+						))
 					}
 					x++
 				}
@@ -294,7 +296,7 @@ func (c *RedisConsumer) reader(ctx context.Context) {
 					c.pushInfo("completed scan of history")
 
 					// Update stream args to read latest messages for all streams
-					for j := 0; j < streamLen; j++ {
+					for j := range streamLen {
 						streamsArg[streamLen+j] = ">"
 					}
 
@@ -381,14 +383,19 @@ func (c *RedisConsumer) reclaimer(ctx context.Context, reclaimInterval time.Dura
 						// WARNING this will discard the message!
 						errAck := c.rdb.XAck(ctx, streamID, c.groupName, resMessage.ID).Err()
 						if errAck != nil {
-							c.pushError(fmt.Errorf(
-								"failed to force acknowledge (discard) message '%s' (Retries: %d) in stream '%s': %w",
-								resMessage.ID, resMessage.RetryCount, streamID, errAck))
+							c.pushError(&DiscardedMessageError{
+								MessageID:  resMessage.ID,
+								StreamID:   streamID,
+								RetryCount: resMessage.RetryCount,
+								AckErr:     errAck,
+							})
 						} else {
 							retryCount := resMessage.RetryCount - 1 // redis is counting this execution as retry
-							c.pushError(fmt.Errorf(
-								"force acknowledged (discarded) message '%s' (Retries: %d) in stream '%s'",
-								resMessage.ID, retryCount, streamID))
+							c.pushError(&DiscardedMessageError{
+								MessageID:  resMessage.ID,
+								StreamID:   streamID,
+								RetryCount: retryCount,
+							})
 						}
 						continue
 					}

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
@@ -42,6 +43,9 @@ type (
 
 		// FindByEmail finds the principal by email.
 		FindByEmail(ctx context.Context, email string) (*types.Principal, error)
+
+		// FindManyByEmail finds all principals for the provided emails.
+		FindManyByEmail(ctx context.Context, emails []string) ([]*types.Principal, error)
 
 		/*
 		 * USER RELATED OPERATIONS.
@@ -84,6 +88,8 @@ type (
 		// FindServiceAccountByUID finds the service account by uid.
 		FindServiceAccountByUID(ctx context.Context, uid string) (*types.ServiceAccount, error)
 
+		FindManyServiceAccountByUID(ctx context.Context, uid []string) ([]*types.ServiceAccount, error)
+
 		// CreateServiceAccount saves the service account.
 		CreateServiceAccount(ctx context.Context, sa *types.ServiceAccount) error
 
@@ -94,12 +100,18 @@ type (
 		DeleteServiceAccount(ctx context.Context, id int64) error
 
 		// ListServiceAccounts returns a list of service accounts for a specific parent.
-		ListServiceAccounts(ctx context.Context,
-			parentType enum.ParentResourceType, parentID int64) ([]*types.ServiceAccount, error)
+		ListServiceAccounts(
+			ctx context.Context,
+			parentInfos []*types.ServiceAccountParentInfo,
+			opts *types.PrincipalFilter,
+		) ([]*types.ServiceAccount, error)
 
 		// CountServiceAccounts returns a count of service accounts for a specific parent.
-		CountServiceAccounts(ctx context.Context,
-			parentType enum.ParentResourceType, parentID int64) (int64, error)
+		CountServiceAccounts(
+			ctx context.Context,
+			parentInfos []*types.ServiceAccountParentInfo,
+			opts *types.PrincipalFilter,
+		) (int64, error)
 
 		/*
 		 * SERVICE RELATED OPERATIONS.
@@ -134,6 +146,13 @@ type (
 		FindMany(ctx context.Context, ids []int64) ([]*types.PrincipalInfo, error)
 	}
 
+	// InfraProviderResourceView defines helper utility for fetching types.InfraProviderResource objects.
+	// It uses the same underlying data storage as InfraProviderResourceStore.
+	InfraProviderResourceView interface {
+		Find(ctx context.Context, id int64) (*types.InfraProviderResource, error)
+		FindMany(ctx context.Context, ids []int64) ([]*types.InfraProviderResource, error)
+	}
+
 	// SpacePathStore defines the path data storage for spaces.
 	SpacePathStore interface {
 		// InsertSegment inserts a space path segment to the table.
@@ -157,14 +176,42 @@ type (
 		// Find the space by id.
 		Find(ctx context.Context, id int64) (*types.Space, error)
 
+		// FindByIDs finds all spaces with specified ids.
+		FindByIDs(ctx context.Context, ids ...int64) ([]*types.Space, error)
+
 		// FindByRef finds the space using the spaceRef as either the id or the space path.
 		FindByRef(ctx context.Context, spaceRef string) (*types.Space, error)
+
+		// FindByRefCaseInsensitive finds the space using the spaceRef.
+		FindByRefCaseInsensitive(ctx context.Context, spaceRef string) (int64, error)
 
 		// FindByRefAndDeletedAt finds the space using the spaceRef and deleted timestamp.
 		FindByRefAndDeletedAt(ctx context.Context, spaceRef string, deletedAt int64) (*types.Space, error)
 
 		// GetRootSpace returns a space where space_parent_id is NULL.
 		GetRootSpace(ctx context.Context, spaceID int64) (*types.Space, error)
+
+		// GetAllRootSpaces returns all spaces where space_parent_id is NULL.
+		GetAllRootSpaces(ctx context.Context, opts *types.SpaceFilter) ([]*types.Space, error)
+
+		// GetAncestorIDs returns a list of all space IDs along the recursive path to the root space.
+		// NB: it returns also the spaceID itself in the []int64 slice.
+		GetAncestorIDs(ctx context.Context, spaceID int64) ([]int64, error)
+
+		// GetTreeLevel returns the level of a space in a space tree.
+		GetTreeLevel(ctx context.Context, spaceID int64) (int64, error)
+
+		// GetAncestors returns a list of all spaces along the recursive path to the root space.
+		GetAncestors(ctx context.Context, spaceID int64) ([]*types.Space, error)
+
+		// GetAncestorsData returns a list of space parent data for spaces that are ancestors of the space.
+		GetAncestorsData(ctx context.Context, spaceID int64) ([]types.SpaceParentData, error)
+
+		// GetDescendantsData returns a list of space parent data for spaces that are descendants of the space.
+		GetDescendantsData(ctx context.Context, spaceID int64) ([]types.SpaceParentData, error)
+
+		// GetDescendantsIDs returns a list of space ids for spaces that are descendants of the specified space.
+		GetDescendantsIDs(ctx context.Context, spaceID int64) ([]int64, error)
 
 		// Create creates a new space
 		Create(ctx context.Context, space *types.Space) error
@@ -173,8 +220,10 @@ type (
 		Update(ctx context.Context, space *types.Space) error
 
 		// UpdateOptLock updates the space using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, space *types.Space,
-			mutateFn func(space *types.Space) error) (*types.Space, error)
+		UpdateOptLock(
+			ctx context.Context, space *types.Space,
+			mutateFn func(space *types.Space) error,
+		) (*types.Space, error)
 
 		// FindForUpdate finds the space and locks it for an update.
 		FindForUpdate(ctx context.Context, id int64) (*types.Space, error)
@@ -186,14 +235,22 @@ type (
 		Purge(ctx context.Context, id int64, deletedAt *int64) error
 
 		// Restore restores a soft deleted space.
-		Restore(ctx context.Context, space *types.Space,
-			newIdentifier *string, newParentID *int64) (*types.Space, error)
+		Restore(
+			ctx context.Context, space *types.Space,
+			newIdentifier *string, newParentID *int64,
+		) (*types.Space, error)
 
 		// Count the child spaces of a space.
 		Count(ctx context.Context, id int64, opts *types.SpaceFilter) (int64, error)
 
 		// List returns a list of child spaces in a space.
 		List(ctx context.Context, id int64, opts *types.SpaceFilter) ([]*types.Space, error)
+
+		// GetRootSpacesSize returns the size of the root spaces
+		GetRootSpacesSize(ctx context.Context) ([]types.SpaceStorage, error)
+
+		// UpdateRootSpace sets the root space id and identifier for all given spaces.
+		UpdateRootSpace(ctx context.Context, spaceIDs []int64, rootSpaceID int64, rootSpaceIdentifier string) error
 	}
 
 	// RepoStore defines the repository data storage.
@@ -201,11 +258,19 @@ type (
 		// Find the repo by id.
 		Find(ctx context.Context, id int64) (*types.Repository, error)
 
-		// FindByRefAndDeletedAt finds the repo using the repoRef and deleted timestamp.
-		FindByRefAndDeletedAt(ctx context.Context, repoRef string, deletedAt int64) (*types.Repository, error)
+		// FindDeleted the deleted repo by id.
+		FindDeleted(ctx context.Context, id int64, deleted *int64) (*types.Repository, error)
 
-		// FindByRef finds the repo using the repoRef as either the id or the repo path.
-		FindByRef(ctx context.Context, repoRef string) (*types.Repository, error)
+		// FindActiveByUID finds a non-deleted repo by UID.
+		FindActiveByUID(ctx context.Context, parentSpaceID int64, uid string) (*types.Repository, error)
+
+		// FindDeletedByUID finds a deleted repo by UID.
+		FindDeletedByUID(
+			ctx context.Context,
+			parentSpaceID int64,
+			uid string,
+			deletedAt int64,
+		) (*types.Repository, error)
 
 		// Create a new repo.
 		Create(ctx context.Context, repo *types.Repository) error
@@ -214,14 +279,19 @@ type (
 		Update(ctx context.Context, repo *types.Repository) error
 
 		// UpdateSize updates the size of a specific repository in the database (size is in KiB).
-		UpdateSize(ctx context.Context, id int64, sizeInKiB int64) error
+		UpdateSize(ctx context.Context, id int64, sizeInKiB, sizeLFSInKiB int64) error
 
-		// Get the repo size.
+		// GetSize returns the repo size.
 		GetSize(ctx context.Context, id int64) (int64, error)
 
+		// GetLFSSize returns LFS size.
+		GetLFSSize(ctx context.Context, id int64) (int64, error)
+
 		// UpdateOptLock the repo details using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, repo *types.Repository,
-			mutateFn func(repository *types.Repository) error) (*types.Repository, error)
+		UpdateOptLock(
+			ctx context.Context, repo *types.Repository,
+			mutateFn func(repository *types.Repository) error,
+		) (*types.Repository, error)
 
 		// SoftDelete a repo.
 		SoftDelete(ctx context.Context, repo *types.Repository, deletedAt int64) error
@@ -230,17 +300,90 @@ type (
 		Purge(ctx context.Context, id int64, deletedAt *int64) error
 
 		// Restore a deleted repo using the optimistic locking mechanism.
-		Restore(ctx context.Context, repo *types.Repository,
-			newIdentifier *string, newParentID *int64) (*types.Repository, error)
+		Restore(
+			ctx context.Context, repo *types.Repository,
+			newIdentifier *string, newParentID *int64,
+		) (*types.Repository, error)
 
 		// Count of active repos in a space. With "DeletedBeforeOrAt" filter, counts deleted repos.
 		Count(ctx context.Context, parentID int64, opts *types.RepoFilter) (int64, error)
 
+		CountByRootSpaces(ctx context.Context) ([]types.RepositoryCount, error)
+
 		// List returns a list of repos in a space. With "DeletedBeforeOrAt" filter, lists deleted repos.
 		List(ctx context.Context, parentID int64, opts *types.RepoFilter) ([]*types.Repository, error)
 
+		// MapOfAllRepos returns a map of all repository paths per repository ID in the given space.
+		MapOfAllRepos(ctx context.Context, spaceID int64, recursive bool) (map[int64]string, error)
+
+		// ListAll returns a list of all repos across spaces with the provided filters.
+		ListAll(ctx context.Context, filter *types.RepoFilter) ([]*types.Repository, error)
+
 		// ListSizeInfos returns a list of all active repo sizes.
 		ListSizeInfos(ctx context.Context) ([]*types.RepositorySizeInfo, error)
+
+		// UpdateNumForks increases or decreases number of forks of the repository.
+		UpdateNumForks(ctx context.Context, repoID int64, delta int64) error
+
+		// ClearForkID clears fork ID of all repositories that have this fork ID.
+		ClearForkID(ctx context.Context, repoUpstreamID int64) error
+
+		// UpdateParent updates parent_id for all repos with currentParentID to newParentID.
+		UpdateParent(ctx context.Context, currentParentID, newParentID int64) (int64, error)
+
+		// ListIDsByParentSpaceIDs returns the IDs of all repos directly parented by any of the given spaces.
+		ListIDsByParentSpaceIDs(ctx context.Context, spaceIDs []int64) ([]int64, error)
+
+		// UpdateRootSpace sets the root space id and identifier for all given repos.
+		UpdateRootSpace(ctx context.Context, repoIDs []int64, rootSpaceID int64, rootSpaceIdentifier string) error
+	}
+
+	RepoLangStore interface {
+		InsertByRepoID(
+			ctx context.Context,
+			repoID int64,
+			langs []*types.RepoLangStat,
+		) error
+
+		DeleteByRepoID(ctx context.Context, repoID int64) error
+
+		ListByRepoID(
+			ctx context.Context,
+			repoID int64,
+		) ([]*types.RepoLangStat, error)
+	}
+
+	LinkedRepoStore interface {
+		Find(ctx context.Context, repoID int64) (*types.LinkedRepo, error)
+		Create(ctx context.Context, v *types.LinkedRepo) error
+		Update(ctx context.Context, linked *types.LinkedRepo) error
+		UpdateOptLock(
+			ctx context.Context,
+			r *types.LinkedRepo,
+			mutateFn func(*types.LinkedRepo) error,
+		) (*types.LinkedRepo, error)
+		List(ctx context.Context, limit int) ([]types.LinkedRepo, error)
+		ListByProviderID(
+			ctx context.Context,
+			accountID, provider, providerID string,
+			pagination types.Pagination,
+		) ([]types.LinkedRepo, error)
+	}
+
+	// LinkedPullReqStore defines persistence operations for the linked-PR mirror table.
+	LinkedPullReqStore interface {
+		Find(ctx context.Context, pullReqID int64) (*types.LinkedPullReq, error)
+		// FindByLinkedRepoAndProviderPR returns the linked-PR row scoped to a
+		// single linked repo.
+		FindByLinkedRepoAndProviderPR(
+			ctx context.Context,
+			linkedRepoID int64,
+			provider, providerID string,
+			providerPRNumber int,
+		) (*types.LinkedPullReq, error)
+		// Create inserts a new linked-PR row; parent pullreqs row must exist.
+		Create(ctx context.Context, v *types.LinkedPullReq) error
+		Update(ctx context.Context, v *types.LinkedPullReq) error
 	}
 
 	// SettingsStore defines the settings storage.
@@ -270,11 +413,22 @@ type (
 			key string,
 			value json.RawMessage,
 		) error
-	}
 
-	// RepoGitInfoView defines the repository GitUID view.
-	RepoGitInfoView interface {
-		Find(ctx context.Context, id int64) (*types.RepositoryGitInfo, error)
+		// Delete deletes the setting with the given key for the provided scope.
+		Delete(
+			ctx context.Context,
+			scope enum.SettingsScope,
+			scopeID int64,
+			key string,
+		) error
+
+		// DeleteMany deletes the settings with the given keys for the provided scope.
+		DeleteMany(
+			ctx context.Context,
+			scope enum.SettingsScope,
+			scopeID int64,
+			keys ...string,
+		) error
 	}
 
 	// MembershipStore defines the membership data storage.
@@ -287,7 +441,11 @@ type (
 		CountUsers(ctx context.Context, spaceID int64, filter types.MembershipUserFilter) (int64, error)
 		ListUsers(ctx context.Context, spaceID int64, filter types.MembershipUserFilter) ([]types.MembershipUser, error)
 		CountSpaces(ctx context.Context, userID int64, filter types.MembershipSpaceFilter) (int64, error)
-		ListSpaces(ctx context.Context, userID int64, filter types.MembershipSpaceFilter) ([]types.MembershipSpace, error)
+		ListSpaces(
+			ctx context.Context,
+			userID int64,
+			filter types.MembershipSpaceFilter,
+		) ([]types.MembershipSpace, error)
 	}
 
 	// PublicAccessStore defines the publicly accessible resources data storage.
@@ -341,8 +499,17 @@ type (
 		Update(ctx context.Context, pr *types.PullReq) error
 
 		// UpdateOptLock the pull request details using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, pr *types.PullReq,
-			mutateFn func(pr *types.PullReq) error) (*types.PullReq, error)
+		UpdateOptLock(
+			ctx context.Context, pr *types.PullReq,
+			mutateFn func(pr *types.PullReq) error,
+		) (*types.PullReq, error)
+
+		// UpdateMergeCheckMetadataOptLock updates only the pull request's merge check metadata
+		// using the optimistic locking mechanism without updating the updated field.
+		UpdateMergeCheckMetadataOptLock(
+			ctx context.Context, pr *types.PullReq,
+			mutateFn func(pr *types.PullReq) error,
+		) (*types.PullReq, error)
 
 		// UpdateActivitySeq the pull request's activity sequence number.
 		// It will set new values to the ActivitySeq, Version and Updated fields.
@@ -358,8 +525,22 @@ type (
 		// Count of pull requests in a space.
 		Count(ctx context.Context, opts *types.PullReqFilter) (int64, error)
 
-		// List returns a list of pull requests in a space.
+		// List returns a list of pull requests in a repository.
 		List(ctx context.Context, opts *types.PullReqFilter) ([]*types.PullReq, error)
+
+		// Stream returns streams pull requests from repositories.
+		Stream(ctx context.Context, opts *types.PullReqFilter) (<-chan *types.PullReq, <-chan error)
+
+		// ListOpenByBranchName returns open pull requests for each branch.
+		ListOpenByBranchName(
+			ctx context.Context,
+			repoID int64,
+			branchNames []string,
+		) (map[string][]*types.PullReq, error)
+
+		// UpdateRootSpace sets the root space id and identifier for all pull requests
+		// whose target repository is any of the given repos.
+		UpdateRootSpace(ctx context.Context, targetRepoIDs []int64, rootSpaceID int64, rootSpaceIdentifier string) error
 	}
 
 	PullReqActivityStore interface {
@@ -371,14 +552,20 @@ type (
 		Create(ctx context.Context, act *types.PullReqActivity) error
 
 		// CreateWithPayload create a new system activity from the provided payload.
-		CreateWithPayload(ctx context.Context,
-			pr *types.PullReq, principalID int64, payload types.PullReqActivityPayload) (*types.PullReqActivity, error)
+		CreateWithPayload(
+			ctx context.Context,
+			pr *types.PullReq,
+			principalID int64,
+			payload types.PullReqActivityPayload,
+			metadata *types.PullReqActivityMetadata,
+		) (*types.PullReqActivity, error)
 
 		// Update the pull request activity. It will set new values to the Version and Updated fields.
 		Update(ctx context.Context, act *types.PullReqActivity) error
 
 		// UpdateOptLock updates the pull request activity using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context,
+		UpdateOptLock(
+			ctx context.Context,
 			act *types.PullReqActivity,
 			mutateFn func(act *types.PullReqActivity) error,
 		) (*types.PullReqActivity, error)
@@ -421,7 +608,6 @@ type (
 		Create(ctx context.Context, v *types.PullReqReview) error
 	}
 
-	// PullReqReviewerStore defines the pull request reviewer storage.
 	PullReqReviewerStore interface {
 		// Find returns the pull request reviewer or an error if it doesn't exist.
 		Find(ctx context.Context, prID, principalID int64) (*types.PullReqReviewer, error)
@@ -439,6 +625,35 @@ type (
 		List(ctx context.Context, prID int64) ([]*types.PullReqReviewer, error)
 	}
 
+	PullReqReviewerSuggestionStore interface {
+		// Find returns reviewer suggestion by pull request id and principal id.
+		Find(ctx context.Context, prID, principalID int64) (*types.PullReqReviewerSuggestion, error)
+
+		// List returns reviewer suggestions for a pull request.
+		List(ctx context.Context, prID int64, pagination types.Pagination) ([]*types.PullReqReviewerSuggestion, error)
+
+		// Count returns total number of reviewer suggestions for a pull request.
+		Count(ctx context.Context, prID int64) (int64, error)
+
+		// CreateMany inserts reviewer suggestions in batch and ignores conflicts.
+		CreateMany(ctx context.Context, suggestions []*types.PullReqReviewerSuggestion) error
+
+		// Delete removes reviewer suggestion by pull request id and principal id.
+		Delete(ctx context.Context, prID, principalID int64) error
+	}
+
+	// UserGroupReviewerStore defines the pull request usergroup reviewer storage.
+	UserGroupReviewerStore interface {
+		Create(ctx context.Context, v *types.UserGroupReviewer) error
+		Delete(ctx context.Context, prID, principalID int64) error
+		List(ctx context.Context, prID int64) ([]*types.UserGroupReviewer, error)
+		Find(
+			ctx context.Context,
+			prID,
+			userGroupReviewerID int64,
+		) (*types.UserGroupReviewer, error)
+	}
+
 	// PullReqFileViewStore stores information about what file a user viewed.
 	PullReqFileViewStore interface {
 		// Upsert inserts or updates the latest viewed sha for a file in a PR.
@@ -454,13 +669,65 @@ type (
 		List(ctx context.Context, prID int64, principalID int64) ([]*types.PullReqFileView, error)
 	}
 
+	// PullReqFileGroupStore stores pull request file groups.
+	PullReqFileGroupStore interface {
+		// List returns all pull request file groups with their files.
+		List(ctx context.Context, prID int64) ([]*types.PullReqFileGroupWithFiles, error)
+
+		// DeleteByPrID deletes all file groups for the pull request.
+		DeleteByPrID(ctx context.Context, prID int64) error
+
+		// CreateMany inserts the provided file groups for the pull request.
+		CreateMany(ctx context.Context, groups []*types.PullReqFileGroupWithFiles) error
+	}
+
+	AutoMergeStore interface {
+		Find(ctx context.Context, pullreqID int64) (*types.AutoMerge, error)
+		Delete(ctx context.Context, pullreqID int64) (bool, error)
+		Upsert(ctx context.Context, autoMerge *types.AutoMerge) error
+	}
+
+	MergeQueueStore interface {
+		Find(ctx context.Context, id int64) (*types.MergeQueue, error)
+		FindByRepoAndBranch(ctx context.Context, repoID int64, branch string) (*types.MergeQueue, error)
+		Create(ctx context.Context, q *types.MergeQueue) error
+		Update(ctx context.Context, q *types.MergeQueue) error
+		Delete(ctx context.Context, id int64) error
+		UpdateOptLock(ctx context.Context,
+			q *types.MergeQueue,
+			mutateFn func(q *types.MergeQueue) error,
+		) (*types.MergeQueue, error)
+	}
+
+	MergeQueueEntryStore interface {
+		Find(ctx context.Context, pullReqID int64) (*types.MergeQueueEntry, error)
+		FindByMergeCommit(ctx context.Context, mergeCommitSHA sha.SHA) (*types.MergeQueueEntry, error)
+		Create(ctx context.Context, e *types.MergeQueueEntry) error
+		Update(ctx context.Context, e *types.MergeQueueEntry) error
+		UpdateOptLock(ctx context.Context,
+			e *types.MergeQueueEntry,
+			mutateFn func(e *types.MergeQueueEntry) error,
+		) (*types.MergeQueueEntry, error)
+		Delete(ctx context.Context, pullReqID int64) error
+		DeleteAllForMergeQueue(ctx context.Context, mergeQueueID int64) error
+		ListForMergeQueue(ctx context.Context, mergeQueueID int64) ([]*types.MergeQueueEntry, error)
+		ListOverdueChecks(ctx context.Context, now int64) ([]*types.MergeQueueEntry, error)
+		CountForRepoAndBranch(ctx context.Context, repoID int64, branch string) (int64, error)
+		BranchesWithPullReqInQueue(ctx context.Context, repoID int64, branches []string) (map[string]struct{}, error)
+	}
+
 	// RuleStore defines database interface for protection rules.
 	RuleStore interface {
 		// Find finds a protection rule by ID.
 		Find(ctx context.Context, id int64) (*types.Rule, error)
 
 		// FindByIdentifier finds a protection rule by parent ID and identifier.
-		FindByIdentifier(ctx context.Context, spaceID, repoID *int64, identifier string) (*types.Rule, error)
+		FindByIdentifier(
+			ctx context.Context,
+			parentType enum.RuleParent,
+			parentID int64,
+			identifier string,
+		) (*types.Rule, error)
 
 		// Create inserts a new protection rule.
 		Create(ctx context.Context, rule *types.Rule) error
@@ -471,17 +738,37 @@ type (
 		// Delete removes a protection rule by its ID.
 		Delete(ctx context.Context, id int64) error
 
-		// DeleteByIdentifier removes a protection rule by its identifier.
-		DeleteByIdentifier(ctx context.Context, spaceID, repoID *int64, identifier string) error
+		// Count returns count of protection rules of a repository or a space.
+		Count(
+			ctx context.Context,
+			parents []types.RuleParentInfo,
+			filter *types.RuleFilter,
+		) (int64, error)
 
-		// Count returns count of protection rules matching the provided criteria.
-		Count(ctx context.Context, spaceID, repoID *int64, filter *types.RuleFilter) (int64, error)
-
-		// List returns a list of protection rules of a repository or a space that matches the provided criteria.
-		List(ctx context.Context, spaceID, repoID *int64, filter *types.RuleFilter) ([]types.Rule, error)
+		// List returns a list of protection rules of a repository or a space.
+		List(
+			ctx context.Context,
+			parents []types.RuleParentInfo,
+			filter *types.RuleFilter,
+		) ([]types.Rule, error)
 
 		// ListAllRepoRules returns a list of all protection rules that can be applied on a repository.
-		ListAllRepoRules(ctx context.Context, repoID int64) ([]types.RuleInfoInternal, error)
+		ListAllRepoRules(
+			ctx context.Context,
+			repoID int64,
+			ruleTypes ...enum.RuleType,
+		) ([]types.RuleInfoInternal, error)
+
+		// ListOnlyRepoRules returns a list of only repo-level protection rules for a repository.
+		// Should be used only if the relevant rules can be defined on repo level only (such as merge queue).
+		ListOnlyRepoRules(
+			ctx context.Context,
+			repo *types.RepositoryCore,
+			ruleTypes ...enum.RuleType,
+		) ([]types.RuleInfoInternal, error)
+
+		// UpdateParentSpace updates the parent space of rules.
+		UpdateParentSpace(ctx context.Context, srcParentSpaceID int64, targetParentSpaceID int64) (int64, error)
 	}
 
 	// WebhookStore defines the webhook data storage.
@@ -504,8 +791,10 @@ type (
 		Update(ctx context.Context, hook *types.Webhook) error
 
 		// UpdateOptLock updates the webhook using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, hook *types.Webhook,
-			mutateFn func(hook *types.Webhook) error) (*types.Webhook, error)
+		UpdateOptLock(
+			ctx context.Context, hook *types.Webhook,
+			mutateFn func(hook *types.Webhook) error,
+		) (*types.Webhook, error)
 
 		// Delete deletes the webhook for the given id.
 		Delete(ctx context.Context, id int64) error
@@ -514,12 +803,21 @@ type (
 		DeleteByIdentifier(ctx context.Context, parentType enum.WebhookParent, parentID int64, identifier string) error
 
 		// Count counts the webhooks for a given parent type and id.
-		Count(ctx context.Context, parentType enum.WebhookParent, parentID int64,
-			opts *types.WebhookFilter) (int64, error)
+		Count(
+			ctx context.Context,
+			parents []types.WebhookParentInfo,
+			opts *types.WebhookFilter,
+		) (int64, error)
 
 		// List lists the webhooks for a given parent type and id.
-		List(ctx context.Context, parentType enum.WebhookParent, parentID int64,
-			opts *types.WebhookFilter) ([]*types.Webhook, error)
+		List(
+			ctx context.Context,
+			parents []types.WebhookParentInfo,
+			opts *types.WebhookFilter,
+		) ([]*types.Webhook, error)
+
+		// UpdateParentSpace updates the parent space of webhooks.
+		UpdateParentSpace(ctx context.Context, srcParentSpaceID int64, targetParentSpaceID int64) (int64, error)
 	}
 
 	// WebhookExecutionStore defines the webhook execution data storage.
@@ -534,8 +832,12 @@ type (
 		DeleteOld(ctx context.Context, olderThan time.Time) (int64, error)
 
 		// ListForWebhook lists the webhook executions for a given webhook id.
-		ListForWebhook(ctx context.Context, webhookID int64,
-			opts *types.WebhookExecutionFilter) ([]*types.WebhookExecution, error)
+		ListForWebhook(
+			ctx context.Context, webhookID int64,
+			opts *types.WebhookExecutionFilter,
+		) ([]*types.WebhookExecution, error)
+
+		CountForWebhook(ctx context.Context, webhookID int64) (int64, error)
 
 		// ListForTrigger lists the webhook executions for a given trigger id.
 		ListForTrigger(ctx context.Context, triggerID string) ([]*types.WebhookExecution, error)
@@ -555,97 +857,158 @@ type (
 		List(ctx context.Context, repoID int64, commitSHA string, opts types.CheckListOptions) ([]types.Check, error)
 
 		// ListRecent returns a list of recently executed status checks in a repository.
-		ListRecent(ctx context.Context, repoID int64, opts types.CheckRecentOptions) ([]string, error)
+		ListRecent(
+			ctx context.Context,
+			repoID int64,
+			opts types.CheckRecentOptions,
+		) ([]string, error)
+
+		// ListRecentSpace returns a list of recently executed status checks in
+		// repositories in spaces with specified space IDs.
+		ListRecentSpace(
+			ctx context.Context,
+			spaceIDs []int64,
+			opts types.CheckRecentOptions,
+		) ([]string, error)
 
 		// ListResults returns a list of status check results for a specific commit in a repo.
 		ListResults(ctx context.Context, repoID int64, commitSHA string) ([]types.CheckResult, error)
+
+		// ResultSummary returns a list of status check result summaries for the provided list of commits in a repo.
+		ResultSummary(
+			ctx context.Context,
+			repoID int64,
+			commitSHAs []string,
+		) (map[sha.SHA]types.CheckCountSummary, error)
 	}
 
 	GitspaceConfigStore interface {
 		// Find returns a gitspace config given a ID from the datastore.
-		Find(ctx context.Context, id int64) (*types.GitspaceConfig, error)
+		Find(ctx context.Context, id int64, includeDeleted bool) (*types.GitspaceConfig, error)
+
+		// FindAll returns list of gitspace configs given a IDs from the datastore.
+		FindAll(ctx context.Context, id []int64) ([]*types.GitspaceConfig, error)
 
 		// FindByIdentifier returns a gitspace config with a given UID in a space
 		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.GitspaceConfig, error)
+
+		// FindAllByIdentifier returns a list of gitspace configs with a given UIDs for a given space
+		FindAllByIdentifier(ctx context.Context, spaceID int64, identifiers []string) ([]types.GitspaceConfig, error)
 
 		// Create creates a new gitspace config in the datastore.
 		Create(ctx context.Context, gitspaceConfig *types.GitspaceConfig) error
 
 		// Update tries to update a gitspace config in the datastore with optimistic locking.
-		Update(ctx context.Context, gitspaceConfig *types.GitspaceConfig) (*types.GitspaceConfig, error)
+		Update(ctx context.Context, gitspaceConfig *types.GitspaceConfig) error
 
-		// List lists the gitspace configs present in a parent space ID in the datastore.
-		List(ctx context.Context, filter *types.GitspaceFilter) ([]*types.GitspaceConfig, error)
+		// ListWithLatestInstance returns gitspace configs for the given filter with the latest gitspace instance
+		// information.
+		ListWithLatestInstance(ctx context.Context, filter *types.GitspaceFilter) ([]*types.GitspaceConfig, error)
 
 		// Count the number of gitspace configs in a space matching the given filter.
 		Count(ctx context.Context, filter *types.GitspaceFilter) (int64, error)
 
-		// Delete deletes a pipeline ID from the datastore.
-		Delete(ctx context.Context, id int64) error
-
-		// DeleteByIdentifier deletes the gitspaceConfig with the given identifier for the given space.
-		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
+		// ListActiveConfigsForInfraProviderResource returns all active configs for the given infra resource.
+		ListActiveConfigsForInfraProviderResource(
+			ctx context.Context,
+			infraProviderResourceID int64,
+		) ([]*types.GitspaceConfig, error)
 	}
 
 	GitspaceInstanceStore interface {
 		// Find returns a gitspace instance given a gitspace instance ID from the datastore.
 		Find(ctx context.Context, id int64) (*types.GitspaceInstance, error)
 
+		// FindByIdentifier returns a gitspace instance given a gitspace instance identifier from the datastore.
+		// TODO: Fix this. It needs to use space ID as well.
+		FindByIdentifier(ctx context.Context, identifier string) (*types.GitspaceInstance, error)
+
 		// FindLatestByGitspaceConfigID returns the latest gitspace instance given a gitspace config ID from the datastore.
 		FindLatestByGitspaceConfigID(
 			ctx context.Context,
 			gitspaceConfigID int64,
-			spaceID int64,
 		) (*types.GitspaceInstance, error)
 
 		// Create creates a new gitspace instance in the datastore.
 		Create(ctx context.Context, gitspaceInstance *types.GitspaceInstance) error
 
 		// Update tries to update a gitspace instance in the datastore with optimistic locking.
-		Update(ctx context.Context, gitspaceInstance *types.GitspaceInstance) (*types.GitspaceInstance, error)
+		Update(ctx context.Context, gitspaceInstance *types.GitspaceInstance) error
 
 		// List lists the gitspace instance present in a parent space ID in the datastore.
-		List(ctx context.Context, filter *types.GitspaceFilter) ([]*types.GitspaceInstance, error)
+		List(ctx context.Context, filter *types.GitspaceInstanceFilter) ([]*types.GitspaceInstance, error)
 
-		// Delete deletes a gitspace instance ID from the datastore.
-		Delete(ctx context.Context, id int64) error
+		// Count the number of gitspace instances in a space matching the given filter.
+		Count(ctx context.Context, filter *types.GitspaceInstanceFilter) (int64, error)
+
+		// List lists the latest gitspace instance present for the gitspace configs in the datastore.
+		FindAllLatestByGitspaceConfigID(
+			ctx context.Context,
+			gitspaceConfigIDs []int64,
+		) ([]*types.GitspaceInstance, error)
+
+		// FindTotalUsage calculates the total time used in millis for all the instances within the time window
+		// defined by fromTime and toTime.
+		FindTotalUsage(ctx context.Context, fromTime int64, toTime int64, spaceIDs []int64) (int64, error)
 	}
 
 	InfraProviderConfigStore interface {
 		// Find returns a infra provider config given a ID from the datastore.
-		Find(ctx context.Context, id int64) (*types.InfraProviderConfig, error)
+		Find(ctx context.Context, id int64, includeDeleted bool) (*types.InfraProviderConfig, error)
+
+		// FindByType returns a infra provider config given a type from the datastore.
+		FindByType(
+			ctx context.Context,
+			spaceID int64,
+			infraType enum.InfraProviderType,
+			includeDeleted bool,
+		) (
+			*types.InfraProviderConfig, error)
 
 		// FindByIdentifier returns a infra provider config with a given UID in a space
 		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.InfraProviderConfig, error)
 
+		// List returns all infra provider config matching the given filter
+		List(ctx context.Context, filter *types.InfraProviderConfigFilter) ([]*types.InfraProviderConfig, error)
+
 		// Create creates a new infra provider config in the datastore.
 		Create(ctx context.Context, infraProviderConfig *types.InfraProviderConfig) error
 
-		// DeleteByIdentifier deletes the infra provider config with the given identifier for the given space.
-		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
+		// Update tries to update the infra provider config in the datastore.
+		Update(ctx context.Context, infraProviderConfig *types.InfraProviderConfig) error
+
+		// Delete soft deletes the infra provider config given a ID from the datastore.
+		Delete(ctx context.Context, id int64) error
 	}
 
 	InfraProviderResourceStore interface {
 		// Find returns a Infra provider resource given a ID from the datastore.
 		Find(ctx context.Context, id int64) (*types.InfraProviderResource, error)
 
-		// FindByIdentifier returns a infra provider resource with a given UID in a space
-		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.InfraProviderResource, error)
+		// FindByConfigAndIdentifier returns the most recent infra provider resource with a given identifier in
+		// a space for the given infra provider config.
+		FindByConfigAndIdentifier(
+			ctx context.Context,
+			spaceID int64,
+			infraProviderConfigID int64,
+			identifier string,
+		) (*types.InfraProviderResource, error)
 
 		// Create creates a new infra provider resource in the datastore.
-		Create(ctx context.Context, infraProviderConfigID int64, infraProviderResource *types.InfraProviderResource) error
+		Create(ctx context.Context, infraProviderResource *types.InfraProviderResource) error
 
 		// List lists the infra provider resource present for the gitspace config in a parent space ID in the datastore.
-		List(ctx context.Context,
+		List(
+			ctx context.Context,
 			infraProviderConfigID int64,
 			filter types.ListQueryFilter,
 		) ([]*types.InfraProviderResource, error)
 
-		// ListAll lists all the infra provider resource in a given space.
-		ListAll(ctx context.Context, parentID int64, filter types.ListQueryFilter) ([]*types.InfraProviderResource, error)
+		// Update tries to update the infra provider resource in the datastore
+		Update(ctx context.Context, infraProviderResource *types.InfraProviderResource) error
 
-		// DeleteByIdentifier deletes the Infra provider resource with the given identifier for the given space.
-		DeleteByIdentifier(ctx context.Context, spaceID int64, identifier string) error
+		// Delete soft deletes the Infra provider resource with the given id.
+		Delete(ctx context.Context, id int64) error
 	}
 
 	PipelineStore interface {
@@ -662,27 +1025,35 @@ type (
 		Update(ctx context.Context, pipeline *types.Pipeline) error
 
 		// List lists the pipelines present in a repository in the datastore.
-		List(ctx context.Context, repoID int64, pagination types.ListQueryFilter) ([]*types.Pipeline, error)
+		List(ctx context.Context, repoID int64, filter *types.ListPipelinesFilter) ([]*types.Pipeline, error)
 
 		// ListLatest lists the pipelines present in a repository in the datastore.
 		// It also returns latest build information for all the returned entries.
-		ListLatest(ctx context.Context, repoID int64, pagination types.ListQueryFilter) ([]*types.Pipeline, error)
+		ListLatest(ctx context.Context, repoID int64, filter *types.ListPipelinesFilter) ([]*types.Pipeline, error)
 
 		// UpdateOptLock updates the pipeline using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, pipeline *types.Pipeline,
-			mutateFn func(pipeline *types.Pipeline) error) (*types.Pipeline, error)
+		UpdateOptLock(
+			ctx context.Context, pipeline *types.Pipeline,
+			mutateFn func(pipeline *types.Pipeline) error,
+		) (*types.Pipeline, error)
 
 		// Delete deletes a pipeline ID from the datastore.
 		Delete(ctx context.Context, id int64) error
 
 		// Count the number of pipelines in a repository matching the given filter.
-		Count(ctx context.Context, repoID int64, filter types.ListQueryFilter) (int64, error)
+		Count(ctx context.Context, repoID int64, filter *types.ListPipelinesFilter) (int64, error)
 
 		// DeleteByIdentifier deletes a pipeline with a given identifier under a repo.
 		DeleteByIdentifier(ctx context.Context, repoID int64, identifier string) error
 
 		// IncrementSeqNum increments the sequence number of the pipeline
 		IncrementSeqNum(ctx context.Context, pipeline *types.Pipeline) (*types.Pipeline, error)
+
+		// ListInSpace lists pipelines in a particular space.
+		ListInSpace(ctx context.Context, spaceID int64, filter types.ListPipelinesFilter) ([]*types.Pipeline, error)
+
+		// CountInSpace counts pipelines in a particular space.
+		CountInSpace(ctx context.Context, spaceID int64, filter types.ListPipelinesFilter) (int64, error)
 	}
 
 	SecretStore interface {
@@ -699,8 +1070,10 @@ type (
 		Count(ctx context.Context, spaceID int64, pagination types.ListQueryFilter) (int64, error)
 
 		// UpdateOptLock updates the secret using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, secret *types.Secret,
-			mutateFn func(secret *types.Secret) error) (*types.Secret, error)
+		UpdateOptLock(
+			ctx context.Context, secret *types.Secret,
+			mutateFn func(secret *types.Secret) error,
+		) (*types.Secret, error)
 
 		// Update tries to update a secret.
 		Update(ctx context.Context, secret *types.Secret) error
@@ -734,11 +1107,23 @@ type (
 		// List lists the executions for a given pipeline ID
 		List(ctx context.Context, pipelineID int64, pagination types.Pagination) ([]*types.Execution, error)
 
+		// ListInSpace lists the executions in a given space.
+		ListInSpace(ctx context.Context, spaceID int64, filter types.ListExecutionsFilter) ([]*types.Execution, error)
+
+		ListByPipelineIDs(
+			ctx context.Context,
+			pipelineIDs []int64,
+			maxRows int64,
+		) (map[int64][]*types.ExecutionInfo, error)
+
 		// Delete deletes an execution given a pipeline ID and an execution number
 		Delete(ctx context.Context, pipelineID int64, num int64) error
 
 		// Count the number of executions in a space
 		Count(ctx context.Context, parentID int64) (int64, error)
+
+		// CountInSpace counts the number of executions in a given space.
+		CountInSpace(ctx context.Context, spaceID int64, filter types.ListExecutionsFilter) (int64, error)
 	}
 
 	StageStore interface {
@@ -793,8 +1178,10 @@ type (
 		Count(ctx context.Context, spaceID int64, pagination types.ListQueryFilter) (int64, error)
 
 		// UpdateOptLock updates the connector using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, connector *types.Connector,
-			mutateFn func(connector *types.Connector) error) (*types.Connector, error)
+		UpdateOptLock(
+			ctx context.Context, connector *types.Connector,
+			mutateFn func(connector *types.Connector) error,
+		) (*types.Connector, error)
 
 		// Update tries to update a connector.
 		Update(ctx context.Context, connector *types.Connector) error
@@ -814,8 +1201,10 @@ type (
 		Find(ctx context.Context, id int64) (*types.Template, error)
 
 		// FindByIdentifierAndType returns a template given a space ID, identifier and a type
-		FindByIdentifierAndType(ctx context.Context, spaceID int64,
-			identifier string, resolverType enum.ResolverType) (*types.Template, error)
+		FindByIdentifierAndType(
+			ctx context.Context, spaceID int64,
+			identifier string, resolverType enum.ResolverType,
+		) (*types.Template, error)
 
 		// Create creates a new template.
 		Create(ctx context.Context, template *types.Template) error
@@ -824,8 +1213,10 @@ type (
 		Count(ctx context.Context, spaceID int64, pagination types.ListQueryFilter) (int64, error)
 
 		// UpdateOptLock updates the template using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, template *types.Template,
-			mutateFn func(template *types.Template) error) (*types.Template, error)
+		UpdateOptLock(
+			ctx context.Context, template *types.Template,
+			mutateFn func(template *types.Template) error,
+		) (*types.Template, error)
 
 		// Update tries to update a template.
 		Update(ctx context.Context, template *types.Template) error
@@ -834,7 +1225,12 @@ type (
 		Delete(ctx context.Context, id int64) error
 
 		// DeleteByIdentifierAndType deletes a template given a space ID, identifier and a type.
-		DeleteByIdentifierAndType(ctx context.Context, spaceID int64, identifier string, resolverType enum.ResolverType) error
+		DeleteByIdentifierAndType(
+			ctx context.Context,
+			spaceID int64,
+			identifier string,
+			resolverType enum.ResolverType,
+		) error
 
 		// List lists the templates in a given space.
 		List(ctx context.Context, spaceID int64, filter types.ListQueryFilter) ([]*types.Template, error)
@@ -851,8 +1247,10 @@ type (
 		Update(ctx context.Context, trigger *types.Trigger) error
 
 		// UpdateOptLock updates the trigger using the optimistic locking mechanism.
-		UpdateOptLock(ctx context.Context, trigger *types.Trigger,
-			mutateFn func(trigger *types.Trigger) error) (*types.Trigger, error)
+		UpdateOptLock(
+			ctx context.Context, trigger *types.Trigger,
+			mutateFn func(trigger *types.Trigger) error,
+		) (*types.Trigger, error)
 
 		// List lists the triggers for a given pipeline ID.
 		List(ctx context.Context, pipelineID int64, filter types.ListQueryFilter) ([]*types.Trigger, error)
@@ -890,8 +1288,36 @@ type (
 	}
 
 	UserGroupStore interface {
+		// Find returns a usergroup given an ID.
+		Find(ctx context.Context, id int64) (*types.UserGroup, error)
+
+		// Map returns a map of usergroups given a list of IDs.
+		Map(ctx context.Context, ids []int64) (map[int64]*types.UserGroup, error)
+
+		// FindManyByIdentifiersAndSpaceID returns a list of usergroups
+		FindManyByIdentifiersAndSpaceID(
+			ctx context.Context,
+			identifiers []string,
+			spaceID int64,
+		) ([]*types.UserGroup, error)
+
+		// FindManyByIDs returns a list of usergroups searching them via ids
+		FindManyByIDs(
+			ctx context.Context,
+			ids []int64,
+		) (map[int64]*types.UserGroup, error)
+
 		// FindByIdentifier returns a types.UserGroup given a space ID and identifier.
 		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.UserGroup, error)
+
+		// Create creates a new usergroup
+		Create(ctx context.Context, spaceID int64, userGroup *types.UserGroup) error
+
+		CreateOrUpdate(
+			ctx context.Context,
+			spaceID int64,
+			userGroup *types.UserGroup,
+		) error
 	}
 
 	PublicKeyStore interface {
@@ -904,6 +1330,9 @@ type (
 		// Create creates a new public key.
 		Create(ctx context.Context, publicKey *types.PublicKey) error
 
+		// Update updates a public key.
+		Update(ctx context.Context, publicKey *types.PublicKey) error
+
 		// DeleteByIdentifier deletes a public key.
 		DeleteByIdentifier(ctx context.Context, principalID int64, identifier string) error
 
@@ -911,21 +1340,71 @@ type (
 		MarkAsVerified(ctx context.Context, id int64, verified int64) error
 
 		// Count returns the number of public keys for the principal that match provided the filter.
-		Count(ctx context.Context, principalID int64, filter *types.PublicKeyFilter) (int, error)
+		Count(ctx context.Context, principalID *int64, filter *types.PublicKeyFilter) (int, error)
 
 		// List returns the public keys for the principal that match provided the filter.
-		List(ctx context.Context, principalID int64, filter *types.PublicKeyFilter) ([]types.PublicKey, error)
+		List(ctx context.Context, principalID *int64, filter *types.PublicKeyFilter) ([]types.PublicKey, error)
 
-		// ListByFingerprint returns public keys given a fingerprint and key usage.
-		ListByFingerprint(ctx context.Context, fingerprint string) ([]types.PublicKey, error)
+		// ListByFingerprint returns public keys given a fingerprint and key usage and scheme.
+		ListByFingerprint(
+			ctx context.Context,
+			fingerprint string,
+			principalID *int64,
+			usages []enum.PublicKeyUsage,
+			schemes []enum.PublicKeyScheme,
+		) ([]types.PublicKey, error)
+
+		// ListBySubKeyID returns public keys that match a sub key ID.
+		ListBySubKeyID(
+			ctx context.Context,
+			subKeyID string,
+			principalID *int64,
+			usages []enum.PublicKeyUsage,
+			schemes []enum.PublicKeyScheme,
+		) ([]types.PublicKey, error)
+	}
+
+	PublicKeySubKeyStore interface {
+		Create(ctx context.Context, publicKeyID int64, subKeyIDs []string) error
+		List(ctx context.Context, publicKeyID int64) ([]string, error)
+	}
+
+	GitSignatureResultStore interface {
+		Map(
+			ctx context.Context,
+			repoID int64,
+			objectSHAs []sha.SHA,
+		) (map[sha.SHA]types.GitSignatureResult, error)
+
+		Create(ctx context.Context, sigResult types.GitSignatureResult) error
+		TryCreateAll(ctx context.Context, sigResult []*types.GitSignatureResult) error
+
+		UpdateAll(
+			ctx context.Context,
+			result enum.GitSignatureResult,
+			principalID int64,
+			keyIDs, keyFingerprints []string,
+		) error
+
+		DeleteByKeyIDs(
+			ctx context.Context,
+			principalID int64,
+			keyIDs []string,
+		) (int64, error)
+
+		DeleteByKeyFingerprints(
+			ctx context.Context,
+			principalID int64,
+			keyFingerprints []string,
+		) (int64, error)
 	}
 
 	GitspaceEventStore interface {
 		// Create creates a new record for the given gitspace event.
 		Create(ctx context.Context, gitspaceEvent *types.GitspaceEvent) error
 
-		// List returns all events for the given query filter.
-		List(ctx context.Context, filter *types.GitspaceEventFilter) ([]*types.GitspaceEvent, error)
+		// List returns all events and count for the given query filter.
+		List(ctx context.Context, filter *types.GitspaceEventFilter) ([]*types.GitspaceEvent, int, error)
 
 		// FindLatestByTypeAndGitspaceConfigID returns the latest gitspace event for the given config ID and event type
 		// where the entity type is gitspace config.
@@ -934,5 +1413,354 @@ type (
 			eventType enum.GitspaceEventType,
 			gitspaceConfigID int64,
 		) (*types.GitspaceEvent, error)
+	}
+
+	GitspaceSettingsStore interface {
+		// Upsert creates a new settings or updates an existing one.
+		Upsert(ctx context.Context, gitspaceSettings *types.GitspaceSettings) error
+
+		// FindByType finds a gitspace settings defined in a specified space with a specified type.
+		FindByType(
+			ctx context.Context,
+			spaceID int64,
+			settingsType enum.GitspaceSettingsType,
+			criteria *types.GitspaceSettingsCriteria,
+		) (*types.GitspaceSettings, error)
+
+		// List finds a gitspace settings defined in a specified space.
+		List(
+			ctx context.Context,
+			spaceID int64,
+			filter *types.GitspaceSettingsFilter,
+		) ([]*types.GitspaceSettings, error)
+	}
+
+	LabelStore interface {
+		// Define defines a label.
+		Define(ctx context.Context, lbl *types.Label) error
+
+		// Update updates a label.
+		Update(ctx context.Context, lbl *types.Label) error
+
+		// Find finds a label defined in a specified space/repo with a specified key.
+		Find(
+			ctx context.Context,
+			spaceID, repoID *int64,
+			key string,
+		) (*types.Label, error)
+
+		// Delete deletes a label defined in a specified space/repo with a specified key.
+		Delete(ctx context.Context, spaceID, repoID *int64, key string) error
+
+		// List list labels defined in a specified space/repo.
+		List(
+			ctx context.Context,
+			spaceID, repoID *int64,
+			filter *types.LabelFilter,
+		) ([]*types.Label, error)
+
+		// FindByID finds label with a specified id.
+		FindByID(ctx context.Context, id int64) (*types.Label, error)
+
+		// FindByIDs finds multiple labels with specified ids.
+		FindByIDs(ctx context.Context, ids []int64) (map[int64]*types.Label, error)
+
+		// FindInfosByIDs finds label infos for multiple labels with specified ids.
+		FindInfosByIDs(ctx context.Context, ids []int64) (map[int64]*types.LabelInfo, error)
+
+		// ListInScopes lists labels defined in specified repo/spaces.
+		ListInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.LabelFilter,
+		) ([]*types.Label, error)
+
+		// ListInfosInScopes lists label infos defined in specified repo/spaces.
+		ListInfosInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.AssignableLabelFilter,
+		) ([]*types.LabelInfo, error)
+
+		// IncrementValueCount increments count of values defined for a specified label.
+		IncrementValueCount(ctx context.Context, labelID int64, increment int) (int64, error)
+
+		// CountInSpace counts the number of labels defined in a specified space.
+		CountInSpace(ctx context.Context, spaceID int64, filter *types.LabelFilter) (int64, error)
+
+		// CountInRepo counts the number of labels defined in a specified repository.
+		CountInRepo(ctx context.Context, repoID int64, filter *types.LabelFilter) (int64, error)
+
+		// CountInScopes counts the number of labels defined in specified repo/spaces.
+		CountInScopes(
+			ctx context.Context,
+			repoID int64,
+			spaceIDs []int64,
+			filter *types.LabelFilter,
+		) (int64, error)
+
+		// UpdateParentSpace updates the parent space of labels.
+		UpdateParentSpace(ctx context.Context, srcParentSpaceID int64, targetParentSpaceID int64) (int64, error)
+	}
+
+	LabelValueStore interface {
+		// Define defines a label value.
+		Define(ctx context.Context, lbl *types.LabelValue) error
+
+		// Update updates a label value.
+		Update(ctx context.Context, lblVal *types.LabelValue) error
+
+		// Delete deletes a label value associated with a specified label.
+		Delete(ctx context.Context, labelID int64, value string) error
+
+		// Delete deletes specified label values associated with a specified label.
+		DeleteMany(ctx context.Context, labelID int64, values []string) error
+
+		// FindByLabelID finds a label value defined for a specified label.
+		FindByLabelID(
+			ctx context.Context,
+			labelID int64,
+			value string,
+		) (*types.LabelValue, error)
+
+		// List lists label values defined for a specified label.
+		List(
+			ctx context.Context,
+			labelID int64,
+			opts types.ListQueryFilter,
+		) ([]*types.LabelValue, error)
+
+		// Count returns a count of label values for a specified label.
+		Count(
+			ctx context.Context,
+			labelID int64,
+			opts types.ListQueryFilter,
+		) (int64, error)
+
+		// FindByID finds label value with a specified id.
+		FindByID(ctx context.Context, id int64) (*types.LabelValue, error)
+
+		// ListInfosByLabelIDs list label infos by a specified label id.
+		ListInfosByLabelIDs(
+			ctx context.Context,
+			labelIDs []int64,
+		) (map[int64][]*types.LabelValueInfo, error)
+	}
+
+	PullReqLabelAssignmentStore interface {
+		// Assign assigns a label to a pullreq.
+		Assign(ctx context.Context, label *types.PullReqLabel) error
+
+		// Unassign removes a label from a pullreq with a specified id.
+		// It reports whether a label assignment was actually removed.
+		Unassign(ctx context.Context, pullreqID int64, labelID int64) (bool, error)
+
+		// ListAssigned list labels assigned to a specified pullreq.
+		ListAssigned(
+			ctx context.Context,
+			pullreqID int64,
+		) (map[int64]*types.LabelAssignment, error)
+
+		// Find finds a label assigned to a pullreq with a specified id.
+		FindByLabelID(
+			ctx context.Context,
+			pullreqID int64,
+			labelID int64,
+		) (*types.PullReqLabel, error)
+
+		// FindValueByLabelID finds a value assigned to a pullreq label.
+		FindValueByLabelID(ctx context.Context, pullreqID int64, labelID int64) (*types.LabelValue, error)
+
+		CountPullreqAssignments(
+			ctx context.Context,
+			labelIDs []int64,
+		) (map[int64]int64, error)
+
+		// ListAssignedByPullreqIDs list labels assigned to specified pullreqs.
+		ListAssignedByPullreqIDs(
+			ctx context.Context,
+			pullreqIDs []int64,
+		) (map[int64][]*types.LabelPullReqAssignmentInfo, error)
+	}
+
+	// PullReqLabelSuggestionStore defines the store for pull request label suggestions.
+	PullReqLabelSuggestionStore interface {
+		// CreateMany creates new label suggestions for a pull request.
+		// It upserts suggestions based on pullreq and label unique constraint.
+		CreateMany(
+			ctx context.Context,
+			suggestions []*types.PullReqLabelSuggestion,
+		) error
+
+		// List lists label suggestions for a pull request.
+		List(
+			ctx context.Context,
+			pullreqID int64,
+			filter types.ListQueryFilter,
+		) ([]*types.PullReqLabelSuggestion, error)
+
+		// Count returns the number of label suggestions for a pull request.
+		Count(
+			ctx context.Context,
+			pullreqID int64,
+		) (int64, error)
+
+		// Find finds a label suggestion for a pull request by label.
+		Find(
+			ctx context.Context,
+			pullreqID int64,
+			labelID int64,
+		) (*types.PullReqLabelSuggestion, error)
+
+		// Delete removes all label suggestions for a pull request label regardless of value.
+		Delete(
+			ctx context.Context,
+			pullreqID int64,
+			labelID int64,
+		) error
+	}
+
+	LFSObjectStore interface {
+		// Find finds an LFS object with a specified oid and repo-id.
+		Find(ctx context.Context, repoID int64, oid string) (*types.LFSObject, error)
+		// FindMany finds LFS objects for a specified repo.
+		FindMany(ctx context.Context, repoID int64, oids []string) ([]*types.LFSObject, error)
+		// Create creates an LFS object.
+		Create(ctx context.Context, lfsObject *types.LFSObject) error
+		// GetSizeInKBByRepoID returns the total size of LFS objects in KiB for a specified repo.
+		GetSizeInKBByRepoID(ctx context.Context, repoID int64) (int64, error)
+	}
+
+	// BranchStore defines operations on git branches.
+	BranchStore interface {
+		// FindBranchesWithoutOpenPRs finds branches without pull requests for a repository
+		FindBranchesWithoutOpenPRs(
+			ctx context.Context,
+			repoID int64,
+			principalID int64,
+			cutOffTime int64,
+			limit uint64,
+			sha string,
+		) ([]types.BranchTable, error)
+
+		// Find finds a branch by repo ID and branch name.
+		Find(ctx context.Context, repoID int64, name string) (*types.BranchTable, error)
+
+		// Delete deletes a branch by repo ID and branch name.
+		Delete(ctx context.Context, repoID int64, name string) error
+
+		// Upsert creates a new branch or updates an existing one.
+		Upsert(ctx context.Context, repoID int64, branch *types.BranchTable) error
+
+		// UpdateLastPR updates the last created pull request ID for a branch.
+		UpdateLastPR(ctx context.Context, repoID int64, branchName string, pullReqID *int64) error
+	}
+
+	RepoActivityStore interface {
+		Create(ctx context.Context, activity *types.RepoActivity) error
+		Count(ctx context.Context, repoID int64, filter *types.RepoActivityFilter) (int, error)
+		List(ctx context.Context, repoID int64, filter *types.RepoActivityFilter) ([]*types.RepoActivity, error)
+	}
+
+	InfraProviderTemplateStore interface {
+		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.InfraProviderTemplate, error)
+		Find(ctx context.Context, id int64) (*types.InfraProviderTemplate, error)
+		Update(ctx context.Context, infraProviderTemplate *types.InfraProviderTemplate) error
+		Create(ctx context.Context, infraProviderTemplate *types.InfraProviderTemplate) error
+		Delete(ctx context.Context, id int64) error
+	}
+
+	InfraProvisionedStore interface {
+		Find(ctx context.Context, id int64) (*types.InfraProvisioned, error)
+		FindAllLatestByGateway(ctx context.Context, gatewayHost string) ([]*types.InfraProvisionedGatewayView, error)
+		FindLatestByGitspaceInstanceID(ctx context.Context, gitspaceInstanceID int64) (*types.InfraProvisioned, error)
+		FindLatestByGitspaceInstanceIdentifier(
+			ctx context.Context,
+			spaceID int64,
+			gitspaceInstanceIdentifier string,
+		) (*types.InfraProvisioned, error)
+		FindStoppedInfraForGitspaceConfigIdentifierByState(
+			ctx context.Context,
+			gitspaceConfigIdentifier string,
+			state enum.GitspaceInstanceStateType,
+		) (*types.InfraProvisioned, error)
+		Create(ctx context.Context, infraProvisioned *types.InfraProvisioned) error
+		Delete(ctx context.Context, id int64) error
+		Update(ctx context.Context, infraProvisioned *types.InfraProvisioned) error
+	}
+
+	UsageMetricStore interface {
+		Upsert(ctx context.Context, in []*types.UsageMetric) error
+		UpsertStorage(ctx context.Context, in []*types.UsageMetric) error
+		GetMetrics(
+			ctx context.Context,
+			rootSpaceID int64,
+			startDate int64,
+			endDate int64,
+		) (*types.UsageMetric, error)
+		// GetLatestStorage returns the most recent stored storage snapshot for a
+		// root space. found is false when no metric row exists yet.
+		GetLatestStorage(
+			ctx context.Context,
+			rootSpaceID int64,
+		) (metric *types.UsageMetric, found bool, err error)
+		List(
+			ctx context.Context,
+			start int64,
+			end int64,
+		) ([]types.UsageMetric, error)
+	}
+
+	CDEGatewayStore interface {
+		Upsert(ctx context.Context, in *types.CDEGateway) error
+		List(ctx context.Context, filter *types.CDEGatewayFilter) ([]*types.CDEGateway, error)
+	}
+
+	FavoriteStore interface {
+		Create(ctx context.Context, principalID int64, in *types.FavoriteResource) error
+		Map(
+			ctx context.Context,
+			principalID int64,
+			resourceType enum.ResourceType,
+			resourceIDs []int64,
+		) (map[int64]bool, error)
+		Delete(ctx context.Context, principalID int64, in *types.FavoriteResource) error
+	}
+
+	AutoLinkStore interface {
+		// Create creates a new autolink.
+		Create(ctx context.Context, autolink *types.AutoLink) error
+
+		// Update updates an existing autolink.
+		Update(ctx context.Context, autolink *types.AutoLink) error
+
+		// Find finds an autolink by id.
+		Find(ctx context.Context, id int64) (*types.AutoLink, error)
+
+		// List lists autolinks defined in a specified space or repo.
+		List(ctx context.Context, spaceID, repoID *int64, filter *types.AutoLinkFilter) ([]*types.AutoLink, error)
+
+		// ListInScopes lists autolinks from repo and all ancestor spaces.
+		ListInScopes(ctx context.Context, repoID int64, spaceIDs []int64,
+			filter *types.AutoLinkFilter) ([]*types.AutoLink, error)
+
+		// Count returns a count of autolinks in a specified space or repo.
+		Count(ctx context.Context, spaceID, repoID *int64, filter *types.AutoLinkFilter) (int64, error)
+
+		// CountInScopes returns a count of autolinks from repo and all ancestor spaces.
+		CountInScopes(ctx context.Context, repoID int64, spaceIDs []int64, filter *types.AutoLinkFilter) (int64, error)
+
+		// Delete deletes an existing autolink.
+		Delete(ctx context.Context, autolinkID int64) error
+	}
+	AITaskStore interface {
+		Create(ctx context.Context, in *types.AITask) error
+		Update(ctx context.Context, in *types.AITask) error
+		Find(ctx context.Context, id int64) (*types.AITask, error)
+		FindByIdentifier(ctx context.Context, spaceID int64, identifier string) (*types.AITask, error)
+		List(ctx context.Context, filter *types.AITaskFilter) ([]*types.AITask, error)
+		Count(ctx context.Context, filter *types.AITaskFilter) (int64, error)
 	}
 )

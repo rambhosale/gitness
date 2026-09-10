@@ -17,8 +17,10 @@ package check
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
+	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/types"
 )
 
@@ -72,6 +74,8 @@ var (
 	ErrIllegalRootSpaceIdentifier = &ValidationError{
 		fmt.Sprintf("The following identifiers are not allowed for a root space: %v", illegalRootSpaceIdentifiers),
 	}
+
+	ErrIllegalRootSpaceIdentifierNumber = &ValidationError{"The identifier of a root space can't be numeric."}
 
 	ErrIllegalRepoSpaceIdentifierSuffix = &ValidationError{
 		fmt.Sprintf("Space and repository identifiers cannot end with %q.", illegalRepoSpaceIdentifierSuffix),
@@ -127,10 +131,10 @@ func Identifier(identifier string) error {
 	return nil
 }
 
-type RepoIdentifier func(identifier string) error
+type RepoIdentifier func(identifier string, session *auth.Session) error
 
 // RepoIdentifierDefault performs the default Identifier check and also blocks illegal repo identifiers.
-func RepoIdentifierDefault(identifier string) error {
+func RepoIdentifierDefault(identifier string, _ *auth.Session) error {
 	if err := Identifier(identifier); err != nil {
 		return err
 	}
@@ -177,10 +181,13 @@ func SpaceIdentifierDefault(identifier string, isRoot bool) error {
 	}
 
 	if isRoot {
-		for _, p := range illegalRootSpaceIdentifiers {
-			if p == identifierLower {
-				return ErrIllegalRootSpaceIdentifier
-			}
+		// root space identifier can't be numeric as it would cause conflicts of space path and space id.
+		if strings.TrimLeftFunc(identifier, func(r rune) bool { return r >= '0' && r <= '9' }) == "" {
+			return ErrIllegalRootSpaceIdentifierNumber
+		}
+
+		if slices.Contains(illegalRootSpaceIdentifiers, identifierLower) {
+			return ErrIllegalRootSpaceIdentifier
 		}
 	}
 

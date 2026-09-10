@@ -18,21 +18,24 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 )
 
-const TypeBranch types.RuleType = "branch"
+const TypeBranch enum.RuleType = "branch"
 
 // Branch implements protection rules for the rule type TypeBranch.
 type Branch struct {
-	Bypass    DefBypass    `json:"bypass"`
-	PullReq   DefPullReq   `json:"pullreq"`
-	Lifecycle DefLifecycle `json:"lifecycle"`
+	Bypass    DefBypass          `json:"bypass"`
+	PullReq   DefPullReq         `json:"pullreq"`
+	Lifecycle DefBranchLifecycle `json:"lifecycle"`
 }
 
 var (
 	// ensures that the Branch type implements Definition interface.
-	_ Definition = (*Branch)(nil)
+	_ Definition       = (*Branch)(nil)
+	_ BranchProtection = (*Branch)(nil)
 )
 
 func (v *Branch) MergeVerify(
@@ -41,10 +44,12 @@ func (v *Branch) MergeVerify(
 ) (out MergeVerifyOutput, violations []types.RuleViolations, err error) {
 	out, violations, err = v.PullReq.MergeVerify(ctx, in)
 	if err != nil {
-		return
+		return out, violations, fmt.Errorf("merge verify error: %w", err)
 	}
 
-	bypassable := v.Bypass.matches(in.Actor, in.IsRepoOwner)
+	out.RequiresBypassMessage = v.PullReq.Merge.RequireBypassMessage
+
+	bypassable := v.Bypass.matches(ctx, in.Actor, in.IsRepoOwner, in.ResolveUserGroupIDs)
 	bypassed := in.AllowBypass && bypassable
 	for i := range violations {
 		violations[i].Bypassable = bypassable
@@ -73,7 +78,7 @@ func (v *Branch) RequiredChecks(
 		bypassableIDs map[string]struct{}
 	)
 
-	if bypassable := v.Bypass.matches(in.Actor, in.IsRepoOwner); bypassable {
+	if bypassable := v.Bypass.matches(ctx, in.Actor, in.IsRepoOwner, in.ResolveUserGroupID); bypassable {
 		bypassableIDs = ids
 	} else {
 		requiredIDs = ids
@@ -85,6 +90,27 @@ func (v *Branch) RequiredChecks(
 	}, nil
 }
 
+func (v *Branch) CreatePullReqVerify(
+	ctx context.Context,
+	in CreatePullReqVerifyInput,
+) (CreatePullReqVerifyOutput, []types.RuleViolations, error) {
+	var out CreatePullReqVerifyOutput
+
+	out, violations, err := v.PullReq.CreatePullReqVerify(ctx, in)
+	if err != nil {
+		return CreatePullReqVerifyOutput{}, nil, err
+	}
+
+	bypassable := v.Bypass.matches(ctx, in.Actor, in.IsRepoOwner, in.ResolveUserGroupID)
+	bypassed := in.AllowBypass && bypassable
+	for i := range violations {
+		violations[i].Bypassable = bypassable
+		violations[i].Bypassed = bypassed
+	}
+
+	return out, violations, nil
+}
+
 func (v *Branch) RefChangeVerify(
 	ctx context.Context,
 	in RefChangeVerifyInput,
@@ -94,19 +120,77 @@ func (v *Branch) RefChangeVerify(
 	}
 
 	violations, err = v.Lifecycle.RefChangeVerify(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle error: %w", err)
+	}
 
-	bypassable := v.Bypass.matches(in.Actor, in.IsRepoOwner)
+	if in.RefAction == RefActionUpdate || in.RefAction == RefActionUpdateForce || in.RefAction == RefActionDelete {
+		for _, refName := range in.RefNames {
+			mqv, err := v.MergeQueueBranchUpdateVerify(MergeQueueBranchUpdateInput{
+				Repo:         in.Repo,
+				TargetBranch: refName,
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			violations = append(violations, mqv...)
+		}
+	}
+
+	bypassable := v.Bypass.matches(ctx, in.Actor, in.IsRepoOwner, in.ResolveUserGroupID)
 	bypassed := in.AllowBypass && bypassable
 	for i := range violations {
 		violations[i].Bypassable = bypassable
 		violations[i].Bypassed = bypassed
 	}
 
-	return
+	return violations, nil
+}
+
+func (v *Branch) MergeQueueBranchUpdateVerify(in MergeQueueBranchUpdateInput) ([]types.RuleViolations, error) {
+	return v.PullReq.MergeQueue.MergeQueueBranchUpdateVerify(in)
+}
+
+func (v *Branch) GetMergeQueueSetup(in MergeQueueSetupInput) (MergeQueueSetup, error) {
+	return v.PullReq.MergeQueue.GetMergeQueueSetup(in)
 }
 
 func (v *Branch) UserIDs() ([]int64, error) {
-	return v.Bypass.UserIDs, nil
+	uniqueUserMap := make(map[int64]struct{}, len(v.Bypass.UserIDs)+len(v.PullReq.Reviewers.DefaultReviewerIDs))
+	for _, id := range v.Bypass.UserIDs {
+		uniqueUserMap[id] = struct{}{}
+	}
+	for _, id := range v.PullReq.Reviewers.DefaultReviewerIDs {
+		uniqueUserMap[id] = struct{}{}
+	}
+
+	ids := make([]int64, 0, len(uniqueUserMap))
+	for id := range uniqueUserMap {
+		ids = append(ids, id)
+	}
+
+	return ids, nil
+}
+
+func (v *Branch) UserGroupIDs() ([]int64, error) {
+	uniqueGroupsMap := make(
+		map[int64]struct{},
+		len(v.Bypass.UserGroupIDs)+len(v.PullReq.Reviewers.DefaultUserGroupReviewerIDs),
+	)
+	for _, id := range v.Bypass.UserGroupIDs {
+		uniqueGroupsMap[id] = struct{}{}
+	}
+	for _, id := range v.PullReq.Reviewers.DefaultUserGroupReviewerIDs {
+		uniqueGroupsMap[id] = struct{}{}
+	}
+
+	ids := make([]int64, 0, len(uniqueGroupsMap))
+	for id := range uniqueGroupsMap {
+		ids = append(ids, id)
+	}
+
+	return ids, nil
 }
 
 func (v *Branch) Sanitize() error {
@@ -120,6 +204,15 @@ func (v *Branch) Sanitize() error {
 
 	if err := v.Lifecycle.Sanitize(); err != nil {
 		return fmt.Errorf("lifecycle: %w", err)
+	}
+
+	return nil
+}
+
+// SupportsParent checks if the branch rule can be defined on the specific parent level.
+func (v *Branch) SupportsParent(parent enum.RuleParent) error {
+	if parent == enum.RuleParentSpace && v.PullReq.MergeQueue != nil {
+		return errors.InvalidArgument("Merge queues can be defined only on repository level branch rules.")
 	}
 
 	return nil

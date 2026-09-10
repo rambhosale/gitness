@@ -15,31 +15,59 @@
 package gitspace
 
 import (
+	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/scm"
+	"github.com/harness/gitness/app/services/gitspace"
+	"github.com/harness/gitness/app/services/gitspacesettings"
+	"github.com/harness/gitness/app/services/infraprovider"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/store/database/dbtx"
 )
 
 type Controller struct {
-	authorizer                 authz.Authorizer
-	infraProviderResourceStore store.InfraProviderResourceStore
-	gitspaceConfigStore        store.GitspaceConfigStore
-	gitspaceInstanceStore      store.GitspaceInstanceStore
-	spaceStore                 store.SpaceStore
+	authorizer         authz.Authorizer
+	infraProviderSvc   *infraprovider.Service
+	spaceStore         store.SpaceStore
+	spaceFinder        refcache.SpaceFinder
+	gitspaceEventStore store.GitspaceEventStore
+	tx                 dbtx.Transactor
+	statefulLogger     *logutil.StatefulLogger
+	scm                *scm.SCM
+	gitspaceSvc        *gitspace.Service
+	gitspaceLimiter    limiter.Gitspace
+	repoFinder         refcache.RepoFinder
+	settingsService    gitspacesettings.Service
 }
 
-// TODO Stubbed Impl
 func NewController(
+	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	infraProviderResourceStore store.InfraProviderResourceStore,
-	gitspaceConfigStore store.GitspaceConfigStore,
-	gitspaceInstanceStore store.GitspaceInstanceStore,
+	infraProviderSvc *infraprovider.Service,
 	spaceStore store.SpaceStore,
+	spaceFinder refcache.SpaceFinder,
+	gitspaceEventStore store.GitspaceEventStore,
+	statefulLogger *logutil.StatefulLogger,
+	scm *scm.SCM,
+	gitspaceSvc *gitspace.Service,
+	gitspaceLimiter limiter.Gitspace,
+	repoFinder refcache.RepoFinder,
+	settingsService gitspacesettings.Service,
 ) *Controller {
 	return &Controller{
-		authorizer:                 authorizer,
-		infraProviderResourceStore: infraProviderResourceStore,
-		gitspaceConfigStore:        gitspaceConfigStore,
-		gitspaceInstanceStore:      gitspaceInstanceStore,
-		spaceStore:                 spaceStore,
+		tx:                 tx,
+		authorizer:         authorizer,
+		infraProviderSvc:   infraProviderSvc,
+		spaceStore:         spaceStore,
+		spaceFinder:        spaceFinder,
+		gitspaceEventStore: gitspaceEventStore,
+		statefulLogger:     statefulLogger,
+		scm:                scm,
+		gitspaceSvc:        gitspaceSvc,
+		gitspaceLimiter:    gitspaceLimiter,
+		repoFinder:         repoFinder,
+		settingsService:    settingsService,
 	}
 }

@@ -31,11 +31,11 @@ const (
 
 type (
 	GitspaceEventPayload struct {
-		EntityID         int64                   `json:"entity_id,omitempty"`
-		EntityIdentifier string                  `json:"entity_identifier,omitempty"`
-		EntityType       enum.GitspaceEntityType `json:"entity_type,omitempty"`
-		EventType        enum.GitspaceEventType  `json:"event_type,omitempty"`
-		Created          int64                   `json:"created,omitempty"`
+		EntityID   int64                   `json:"entity_id,omitempty"`
+		QueryKey   string                  `json:"query_key,omitempty"`
+		EntityType enum.GitspaceEntityType `json:"entity_type,omitempty"`
+		EventType  enum.GitspaceEventType  `json:"event_type,omitempty"`
+		Timestamp  int64                   `json:"timestamp,omitempty"`
 	}
 )
 
@@ -45,11 +45,11 @@ func (r *Reporter) EmitGitspaceEvent(ctx context.Context, event events.EventType
 	}
 	eventID, err := events.ReporterSendEvent(r.innerReporter, ctx, event, payload)
 	if err != nil {
-		log.Ctx(ctx).Err(err).Msgf("failed to send %v event", event)
+		log.Ctx(ctx).Err(err).Msgf("failed to send %s event", event)
 		return
 	}
 
-	log.Ctx(ctx).Debug().Msgf("reported %v event with id '%s'", event, eventID)
+	log.Ctx(ctx).Debug().Msgf("reported %s event with id '%s'", event, eventID)
 }
 
 func (r *Reader) RegisterGitspaceEvent(

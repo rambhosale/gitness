@@ -21,10 +21,15 @@ import (
 
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/paths"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CreateCommitTagInput used for tag creation apis.
@@ -38,6 +43,7 @@ type CreateCommitTagInput struct {
 	// the tag will be lightweight, otherwise it'll be annotated.
 	Message string `json:"message"`
 
+	DryRunRules bool `json:"dry_run_rules"`
 	BypassRules bool `json:"bypass_rules"`
 }
 
@@ -46,10 +52,10 @@ func (c *Controller) CreateCommitTag(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	in *CreateCommitTagInput,
-) (*CommitTag, []types.RuleViolations, error) {
+) (types.CreateCommitTagOutput, []types.RuleViolations, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoPush)
 	if err != nil {
-		return nil, nil, err
+		return types.CreateCommitTagOutput{}, nil, err
 	}
 
 	// set target to default branch in case no branch or commit was provided
@@ -57,30 +63,45 @@ func (c *Controller) CreateCommitTag(ctx context.Context,
 		in.Target = repo.DefaultBranch
 	}
 
-	rules, isRepoOwner, err := c.fetchRules(ctx, session, repo)
+	rules, isRepoOwner, err := c.fetchTagRules(ctx, session, repo)
 	if err != nil {
-		return nil, nil, err
+		return types.CreateCommitTagOutput{}, nil, err
 	}
 
 	violations, err := rules.RefChangeVerify(ctx, protection.RefChangeVerifyInput{
-		Actor:       &session.Principal,
-		AllowBypass: in.BypassRules,
-		IsRepoOwner: isRepoOwner,
-		Repo:        repo,
-		RefAction:   protection.RefActionCreate,
-		RefType:     protection.RefTypeTag,
-		RefNames:    []string{in.Name},
+		ResolveUserGroupID: c.userGroupService.ListUserIDsByGroupIDs,
+		Actor:              &session.Principal,
+		AllowBypass:        in.BypassRules,
+		IsRepoOwner:        isRepoOwner,
+		Repo:               repo,
+		RefAction:          protection.RefActionCreate,
+		RefType:            protection.RefTypeTag,
+		RefNames:           []string{in.Name},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to verify protection rules: %w", err)
-	}
-	if protection.IsCritical(violations) {
-		return nil, violations, nil
+		return types.CreateCommitTagOutput{}, nil, fmt.Errorf("failed to verify protection rules: %w", err)
 	}
 
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	if in.DryRunRules {
+		return types.CreateCommitTagOutput{
+			DryRunRulesOutput: types.DryRunRulesOutput{
+				DryRunRules:    true,
+				RuleViolations: violations,
+			},
+		}, nil, nil
+	}
+
+	if protection.IsCritical(violations) {
+		return types.CreateCommitTagOutput{}, violations, nil
+	}
+
+	// CreateRPCAPIContentWriteParams is technically more exact,
+	// but CreateRPCAPIRefsWriteParams is the better system-level choice
+	// because annotated tag creation does not introduce new blobs or commits,
+	// and the content checks would be mostly irrelevant.
+	writeParams, err := controller.CreateRPCAPIRefsWriteParams(ctx, c.urlProvider, session, repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create RPC write params: %w", err)
+		return types.CreateCommitTagOutput{}, nil, fmt.Errorf("failed to create RPC write params: %w", err)
 	}
 
 	now := time.Now()
@@ -93,13 +114,62 @@ func (c *Controller) CreateCommitTag(ctx context.Context,
 		TaggerDate:  &now,
 	})
 	if err != nil {
-		return nil, nil, err
+		return types.CreateCommitTagOutput{}, nil, err
 	}
 
-	commitTag, err := mapCommitTag(rpcOut.CommitTag)
+	commitTag := controller.MapCommitTag(rpcOut.CommitTag)
+
+	if protection.IsBypassed(violations) {
+		err = c.auditService.Log(ctx,
+			session.Principal,
+			audit.NewResource(
+				audit.ResourceTypeRepository,
+				repo.Identifier,
+				audit.RepoPath,
+				repo.Path,
+				audit.BypassedResourceType,
+				audit.BypassedResourceTypeTag,
+				audit.BypassedResourceName,
+				commitTag.Name,
+				audit.BypassAction,
+				audit.BypassActionCreated,
+				audit.ResourceName,
+				fmt.Sprintf(
+					audit.BypassSHALabelFormat,
+					repo.Identifier,
+					commitTag.Name,
+				),
+			),
+			audit.ActionBypassed,
+			paths.Parent(repo.Path),
+			audit.WithNewObject(audit.CommitTagObject{
+				TagName:        commitTag.Name,
+				RepoPath:       repo.Path,
+				RuleViolations: violations,
+			}),
+		)
+		if err != nil {
+			log.Ctx(ctx).Warn().Msgf("failed to insert audit log for create tag operation: %s", err)
+		}
+	}
+
+	err = c.instrumentation.Track(ctx, instrument.Event{
+		Type:      instrument.EventTypeCreateTag,
+		Principal: session.Principal.ToPrincipalInfo(),
+		Path:      repo.Path,
+		Properties: map[instrument.Property]any{
+			instrument.PropertyRepositoryID:   repo.ID,
+			instrument.PropertyRepositoryName: repo.Identifier,
+		},
+	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to map tag received from service output: %w", err)
+		log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for create tag operation: %s", err)
 	}
 
-	return &commitTag, nil, nil
+	return types.CreateCommitTagOutput{
+		CommitTag: commitTag,
+		DryRunRulesOutput: types.DryRunRulesOutput{
+			RuleViolations: violations,
+		},
+	}, nil, nil
 }

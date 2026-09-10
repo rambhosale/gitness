@@ -17,7 +17,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/harness/gitness/app/store"
@@ -187,7 +186,7 @@ func (s *pipelineStore) Update(ctx context.Context, p *types.Pipeline) error {
 func (s *pipelineStore) List(
 	ctx context.Context,
 	repoID int64,
-	filter types.ListQueryFilter,
+	filter *types.ListPipelinesFilter,
 ) ([]*types.Pipeline, error) {
 	stmt := database.Builder.
 		Select(pipelineColumns).
@@ -195,7 +194,7 @@ func (s *pipelineStore) List(
 		Where("pipeline_repo_id = ?", fmt.Sprint(repoID))
 
 	if filter.Query != "" {
-		stmt = stmt.Where("LOWER(pipeline_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(filter.Query)))
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
 	}
 
 	stmt = stmt.Limit(database.Limit(filter.Size))
@@ -216,12 +215,50 @@ func (s *pipelineStore) List(
 	return dst, nil
 }
 
+// ListInSpace lists all the pipelines for a space.
+func (s *pipelineStore) ListInSpace(
+	ctx context.Context,
+	spaceID int64,
+	filter types.ListPipelinesFilter,
+) ([]*types.Pipeline, error) {
+	const pipelineWithRepoColumns = pipelineColumns + `
+	,repo_id
+	,repo_uid
+	`
+	stmt := database.Builder.
+		Select(pipelineWithRepoColumns).
+		From("pipelines").
+		InnerJoin("repositories ON pipeline_repo_id = repo_id").
+		Where("repo_parent_id = ?", spaceID)
+
+	if filter.Query != "" {
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
+	}
+
+	stmt = stmt.Limit(database.Limit(filter.Size))
+	stmt = stmt.Offset(database.Offset(filter.Page, filter.Size))
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	dst := []*pipelineRepoJoin{}
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
+	}
+
+	return convertPipelineRepoJoins(dst), nil
+}
+
 // ListLatest lists all the pipelines under a repository with information
 // about the latest build if available.
 func (s *pipelineStore) ListLatest(
 	ctx context.Context,
 	repoID int64,
-	filter types.ListQueryFilter,
+	filter *types.ListPipelinesFilter,
 ) ([]*types.Pipeline, error) {
 	const pipelineExecutionColumns = pipelineColumns + `
 	,executions.execution_id
@@ -270,7 +307,7 @@ func (s *pipelineStore) ListLatest(
 		Where("pipeline_repo_id = ?", fmt.Sprint(repoID))
 
 	if filter.Query != "" {
-		stmt = stmt.Where("LOWER(pipeline_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(filter.Query)))
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
 	}
 	stmt = stmt.Limit(database.Limit(filter.Size))
 	stmt = stmt.Offset(database.Offset(filter.Page, filter.Size))
@@ -318,7 +355,11 @@ func (s *pipelineStore) UpdateOptLock(ctx context.Context,
 }
 
 // Count of pipelines under a repo, if repoID is zero it will count all pipelines in the system.
-func (s *pipelineStore) Count(ctx context.Context, repoID int64, filter types.ListQueryFilter) (int64, error) {
+func (s *pipelineStore) Count(
+	ctx context.Context,
+	repoID int64,
+	filter *types.ListPipelinesFilter,
+) (int64, error) {
 	stmt := database.Builder.
 		Select("count(*)").
 		From("pipelines")
@@ -328,7 +369,7 @@ func (s *pipelineStore) Count(ctx context.Context, repoID int64, filter types.Li
 	}
 
 	if filter.Query != "" {
-		stmt = stmt.Where("LOWER(pipeline_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(filter.Query)))
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
 	}
 
 	sql, args, err := stmt.ToSql()
@@ -339,6 +380,37 @@ func (s *pipelineStore) Count(ctx context.Context, repoID int64, filter types.Li
 	db := dbtx.GetAccessor(ctx, s.db)
 
 	var count int64
+	err = db.QueryRowContext(ctx, sql, args...).Scan(&count)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "Failed executing count query")
+	}
+	return count, nil
+}
+
+// CountInSpace counts the number of pipelines in a space.
+func (s *pipelineStore) CountInSpace(
+	ctx context.Context,
+	spaceID int64,
+	filter types.ListPipelinesFilter,
+) (int64, error) {
+	stmt := database.Builder.
+		Select("count(*)").
+		From("pipelines").
+		InnerJoin("repositories ON pipeline_repo_id = repo_id").
+		Where("repo_parent_id = ?", spaceID)
+
+	if filter.Query != "" {
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
+	}
+
+	var count int64
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
 	err = db.QueryRowContext(ctx, sql, args...).Scan(&count)
 	if err != nil {
 		return 0, database.ProcessSQLErrorf(ctx, err, "Failed executing count query")

@@ -19,9 +19,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,9 +31,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harness/gitness/app/api/controller/lfs"
 	"github.com/harness/gitness/app/api/controller/repo"
+	"github.com/harness/gitness/app/api/request"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/services/publickey"
+	"github.com/harness/gitness/app/services/publickey/keyssh"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/types"
@@ -51,6 +56,8 @@ var (
 	allowedCommands = []string{
 		"git-upload-pack",
 		"git-receive-pack",
+		"git-lfs-authenticate",
+		"git-lfs-transfer",
 	}
 	defaultCiphers = []string{
 		"chacha20-poly1305@openssh.com",
@@ -75,8 +82,7 @@ var (
 		"hmac-sha2-256",
 		"hmac-sha2-512",
 	}
-	defaultServerKeyPath = "ssh/gitness.rsa"
-	KeepAliveMsg         = "keepalive@openssh.com"
+	KeepAliveMsg = "keepalive@openssh.com"
 )
 
 type Server struct {
@@ -94,8 +100,11 @@ type Server struct {
 	HostKeys                []string
 	KeepAliveInterval       time.Duration
 
-	Verifier publickey.Service
+	Verifier publickey.SSHAuthService
 	RepoCtrl *repo.Controller
+	LFSCtrl  *lfs.Controller
+
+	ServerKeyPath string
 }
 
 func (s *Server) sanitize() error {
@@ -131,9 +140,17 @@ func (s *Server) ListenAndServe() error {
 		return fmt.Errorf("failed to sanitize server defaults: %w", err)
 	}
 	s.internal = &ssh.Server{
-		Addr:             net.JoinHostPort(s.Host, strconv.Itoa(s.Port)),
-		Handler:          s.sessionHandler,
-		PublicKeyHandler: s.publicKeyHandler,
+		Addr: net.JoinHostPort(s.Host, strconv.Itoa(s.Port)),
+		Handler: ChainMiddleware(
+			s.sessionHandler,
+			PanicRecoverMiddleware,
+			HLogRequestIDHandler,
+			HLogAccessLogHandler,
+		),
+		PublicKeyHandler: ChainPublicKeyMiddleware(
+			s.publicKeyHandler,
+			LogPublicKeyMiddleware,
+		),
 		PtyCallback: func(ssh.Context, ssh.Pty) bool {
 			return false
 		},
@@ -146,7 +163,6 @@ func (s *Server) ListenAndServe() error {
 			return config
 		},
 	}
-
 	err = s.setupHostKeys()
 	if err != nil {
 		return fmt.Errorf("failed to setup host keys: %w", err)
@@ -172,11 +188,11 @@ func (s *Server) setupHostKeys() error {
 
 	if len(keys) == 0 {
 		log.Debug().Msg("no host key provided - setup default key if it doesn't exist yet")
-		err := createKeyIfNotExists(defaultServerKeyPath)
+		err := CreateKeyIfNotExists(s.ServerKeyPath)
 		if err != nil {
-			return fmt.Errorf("failed to setup default key %q: %w", defaultServerKeyPath, err)
+			return fmt.Errorf("failed to setup default key %q: %w", s.ServerKeyPath, err)
 		}
-		keys = append(keys, defaultServerKeyPath)
+		keys = append(keys, s.ServerKeyPath)
 	}
 
 	// set keys to internal ssh server
@@ -215,12 +231,70 @@ func (s *Server) sessionHandler(session ssh.Session) {
 	}
 
 	// first part is git service pack command: git-upload-pack, git-receive-pack
+	// of git-lfs client command: git-lfs-authenticate, git-lfs-transfer
 	gitCommand := parts[0]
 	if !slices.Contains(allowedCommands, gitCommand) {
 		_, _ = fmt.Fprintf(session.Stderr(), "command not supported: %q\n", command)
 		return
 	}
 
+	// handle git-lfs commands
+	//nolint:nestif
+	if strings.HasPrefix(gitCommand, "git-lfs-") {
+		gitLFSservice, err := enum.ParseGitLFSServiceType(gitCommand)
+		if err != nil {
+			_, _ = fmt.Fprintf(session.Stderr(), "failed to parse git-lfs service command: %q\n", gitCommand)
+			return
+		}
+		repoRef := getRepoRefFromCommand(parts[1])
+
+		// when git-lfs-transfer not supported, git-lfs client uses git-lfs-authenticate
+		// to gain a token from server and continue with http transfer APIs
+		if gitLFSservice == enum.GitLFSServiceTypeTransfer {
+			_, _ = fmt.Fprint(session.Stderr(), "git-lfs-transfer is not supported.")
+			return
+		}
+
+		// handling git-lfs-authenticate
+		principal := types.Principal{
+			ID:          principal.ID,
+			UID:         principal.UID,
+			Email:       principal.Email,
+			Type:        principal.Type,
+			DisplayName: principal.DisplayName,
+			Created:     principal.Created,
+			Updated:     principal.Updated,
+		}
+		ctx, cancel := context.WithCancel(session.Context())
+		defer cancel()
+
+		response, err := s.LFSCtrl.Authenticate(
+			ctx,
+			&auth.Session{
+				Principal: principal,
+			},
+			repoRef)
+		if err != nil {
+			log.Error().Err(err).Msg("git lfs authenticate failed")
+			writeErrorToSession(session, err.Error())
+			return
+		}
+
+		responseJSON, err := json.Marshal(response)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to marshal lfs authenticate response")
+			writeErrorToSession(session, err.Error())
+			return
+		}
+
+		if _, err := session.Write(responseJSON); err != nil {
+			log.Error().Err(err).Msg("failed to write response of git lfs authenticate")
+			writeErrorToSession(session, err.Error())
+		}
+		return
+	}
+
+	// handle git service pack commands
 	gitServicePack := strings.TrimPrefix(gitCommand, "git-")
 	service, err := enum.ParseGitServiceType(gitServicePack)
 	if err != nil {
@@ -231,12 +305,7 @@ func (s *Server) sessionHandler(session ssh.Session) {
 	// git command args
 	gitArgs := parts[1:]
 
-	// first git service pack cmd arg is path: 'space/repository.git' so we need to remove
-	// single quotes.
-	repoRef := strings.Trim(gitArgs[0], "'")
-	// remove .git suffix
-	repoRef = strings.TrimSuffix(repoRef, ".git")
-
+	repoRef := getRepoRefFromCommand(gitArgs[0])
 	gitProtocol := ""
 	for _, key := range session.Environ() {
 		if strings.HasPrefix(key, "GIT_PROTOCOL=") {
@@ -246,12 +315,14 @@ func (s *Server) sessionHandler(session ssh.Session) {
 
 	ctx, cancel := context.WithCancel(session.Context())
 	defer cancel()
+	log := log.Logger.With().Logger()
+	ctx = request.WithRequestID(ctx, getRequestID(session.Context().SessionID()))
+	ctx = log.WithContext(ctx)
 
 	// set keep alive connection
 	if s.KeepAliveInterval > 0 {
 		go sendKeepAliveMsg(ctx, session, s.KeepAliveInterval)
 	}
-
 	err = s.RepoCtrl.GitServicePack(
 		ctx,
 		&auth.Session{
@@ -267,18 +338,19 @@ func (s *Server) sessionHandler(session ssh.Session) {
 		},
 		repoRef,
 		api.ServicePackOptions{
-			Service:  service,
-			Stdout:   session,
-			Stdin:    session,
-			Stderr:   session.Stderr(),
-			Protocol: gitProtocol,
+			Service:      service,
+			Stdout:       session,
+			Stdin:        session,
+			Stderr:       session.Stderr(),
+			Protocol:     gitProtocol,
+			StatelessRPC: false,
 		},
 	)
 	if err != nil {
 		log.Error().Err(err).Msg("git service pack failed")
-		_, err = io.Copy(session.Stderr(), strings.NewReader(err.Error()))
-		if err != nil {
-			log.Error().Err(err).Msg("error writing to session stderr")
+		_, writeErr := io.Copy(session.Stderr(), strings.NewReader(err.Error()))
+		if writeErr != nil && !errors.Is(writeErr, io.ErrClosedPipe) {
+			log.Warn().Err(writeErr).Msg("error writing to session stderr")
 		}
 	}
 }
@@ -303,7 +375,10 @@ func sendKeepAliveMsg(ctx context.Context, session ssh.Session, interval time.Du
 }
 
 func (s *Server) publicKeyHandler(ctx ssh.Context, key ssh.PublicKey) bool {
-	if slices.Contains(publickey.DisallowedTypes, key.Type()) {
+	log := getLoggerWithRequestID(ctx.SessionID())
+	request.WithRequestIDSSH(ctx, getRequestID(ctx.SessionID()))
+
+	if slices.Contains(keyssh.DisallowedTypes, key.Type()) {
 		log.Warn().Msgf("public key type not supported: %s", key.Type())
 		return false
 	}
@@ -315,7 +390,7 @@ func (s *Server) publicKeyHandler(ctx ssh.Context, key ssh.PublicKey) bool {
 		return false
 	}
 
-	principal, err := s.Verifier.ValidateKey(ctx, key, enum.PublicKeyUsageAuth)
+	principal, err := s.Verifier.ValidateKey(ctx, ctx.User(), key)
 	if errors.IsNotFound(err) {
 		log.Debug().Err(err).Msg("public key is unknown")
 		return false
@@ -324,6 +399,7 @@ func (s *Server) publicKeyHandler(ctx ssh.Context, key ssh.PublicKey) bool {
 		log.Warn().Err(err).Msg("failed to validate public key")
 		return false
 	}
+	log.Debug().Msg("public key verified")
 
 	// check if we have a certificate
 	if cert, ok := key.(*gossh.Certificate); ok {
@@ -353,13 +429,13 @@ func sshConnectionFailed(conn net.Conn, err error) {
 	log.Err(err).Msgf("failed connection from %s with error: %v", conn.RemoteAddr(), err)
 }
 
-func createKeyIfNotExists(path string) error {
+func CreateKeyIfNotExists(path string) error {
 	_, err := os.Stat(path)
 	if err == nil {
 		// if the path already exists there's nothing we have to do
 		return nil
 	}
-	if !os.IsNotExist(err) {
+	if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to check for for existence of key: %w", err)
 	}
 
@@ -414,4 +490,20 @@ func GenerateKeyPair(keyPath string) error {
 		return fmt.Errorf("failed to write to public key: %w", err)
 	}
 	return nil
+}
+
+func getRepoRefFromCommand(gitArg string) string {
+	// first git service pack cmd arg is path: 'space/repository.git' so we need to remove
+	// single quotes.
+	repoRef := strings.Trim(gitArg, "'")
+	// remove .git suffix
+	repoRef = strings.TrimSuffix(repoRef, ".git")
+
+	return repoRef
+}
+
+func writeErrorToSession(session ssh.Session, message string) {
+	if _, err := io.Copy(session.Stderr(), strings.NewReader(message+"\n")); err != nil {
+		log.Printf("error writing to session stderr: %v", err)
+	}
 }

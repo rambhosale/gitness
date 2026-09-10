@@ -18,14 +18,28 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
 
 const (
-	PathParamPullReqNumber    = "pullreq_number"
-	PathParamPullReqCommentID = "pullreq_comment_id"
-	PathParamReviewerID       = "pullreq_reviewer_id"
+	PathParamPullReqNumber               = "pullreq_number"
+	PathParamPullReqCommentID            = "pullreq_comment_id"
+	PathParamPullReqCommentReactionEmoji = "pullreq_reaction_emoji"
+	PathParamReviewerID                  = "pullreq_reviewer_id"
+	PathParamUserGroupID                 = "user_group_id"
+	PathParamSourceBranch                = "source_branch"
+	PathParamTargetBranch                = "target_branch"
+
+	QueryParamCommenterID        = "commenter_id"
+	QueryParamReviewerID         = "reviewer_id"
+	QueryParamReviewDecision     = "review_decision"
+	QueryParamMentionedID        = "mentioned_id"
+	QueryParamExcludeDescription = "exclude_description"
+	QueryParamSourceRepoRef      = "source_repo_ref"
+	QueryParamSourceBranch       = "source_branch"
+	QueryParamTargetBranch       = "target_branch"
 )
 
 func GetPullReqNumberFromPath(r *http.Request) (int64, error) {
@@ -35,9 +49,32 @@ func GetPullReqNumberFromPath(r *http.Request) (int64, error) {
 func GetReviewerIDFromPath(r *http.Request) (int64, error) {
 	return PathParamAsPositiveInt64(r, PathParamReviewerID)
 }
+func GetUserGroupIDFromPath(r *http.Request) (int64, error) {
+	return PathParamAsPositiveInt64(r, PathParamUserGroupID)
+}
 
 func GetPullReqCommentIDPath(r *http.Request) (int64, error) {
 	return PathParamAsPositiveInt64(r, PathParamPullReqCommentID)
+}
+
+func GetPullReqCommentReactionEmojiFromPath(r *http.Request) (enum.PullReqCommentReactionEmoji, error) {
+	emojiStr, err := PathParamOrError(r, PathParamPullReqCommentReactionEmoji)
+	if err != nil {
+		return "", err
+	}
+	emoji, ok := enum.PullReqCommentReactionEmoji(emojiStr).Sanitize()
+	if !ok {
+		return "", errors.InvalidArgumentf("unsupported emoji %q", emojiStr)
+	}
+	return emoji, nil
+}
+
+func GetPullReqSourceBranchFromPath(r *http.Request) (string, error) {
+	return PathParamOrError(r, PathParamSourceBranch)
+}
+
+func GetPullReqTargetBranchFromPath(r *http.Request) (string, error) {
+	return PathParamOrError(r, PathParamTargetBranch)
 }
 
 // ParseSortPullReq extracts the pull request sort parameter from the url.
@@ -64,6 +101,52 @@ func parsePullReqStates(r *http.Request) []enum.PullReqState {
 	return states
 }
 
+// parseReviewDecisions extracts the pull request reviewer decisions from the url.
+func parseReviewDecisions(r *http.Request) []enum.PullReqReviewDecision {
+	strReviewDecisions, _ := QueryParamList(r, QueryParamReviewDecision)
+	m := make(map[enum.PullReqReviewDecision]struct{}) // use map to eliminate duplicates
+	for _, s := range strReviewDecisions {
+		if state, ok := enum.PullReqReviewDecision(s).Sanitize(); ok {
+			m[state] = struct{}{}
+		}
+	}
+
+	reviewDecisions := make([]enum.PullReqReviewDecision, 0, len(m))
+	for s := range m {
+		reviewDecisions = append(reviewDecisions, s)
+	}
+
+	return reviewDecisions
+}
+
+func ParsePullReqMetadataOptions(r *http.Request) (types.PullReqMetadataOptions, error) {
+	// TODO: Remove the "includeGitStats := true" line and uncomment the following code block.
+	// Because introduction of "include_git_stats" parameter is a breaking API change,
+	// we should remove this line only after other teams, who need PR stats
+	// include the include_git_stats=true in API calls.
+	includeGitStats := true
+	/*includeGitStats, err := GetIncludeGitStatsFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.PullReqMetadataOptions{}, err
+	}*/
+
+	includeChecks, err := GetIncludeChecksFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.PullReqMetadataOptions{}, err
+	}
+
+	includeRules, err := GetIncludeRulesFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.PullReqMetadataOptions{}, err
+	}
+
+	return types.PullReqMetadataOptions{
+		IncludeGitStats: includeGitStats,
+		IncludeChecks:   includeChecks,
+		IncludeRules:    includeRules,
+	}, nil
+}
+
 // ParsePullReqFilter extracts the pull request query parameter from the url.
 func ParsePullReqFilter(r *http.Request) (*types.PullReqFilter, error) {
 	createdBy, err := QueryParamListAsPositiveInt64(r, QueryParamCreatedBy)
@@ -71,23 +154,91 @@ func ParsePullReqFilter(r *http.Request) (*types.PullReqFilter, error) {
 		return nil, fmt.Errorf("encountered error parsing createdby filter: %w", err)
 	}
 
-	createdAtFilter, err := ParseCreated(r)
+	labelID, err := QueryParamListAsPositiveInt64(r, QueryParamLabelID)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing labelid filter: %w", err)
+	}
+	valueID, err := QueryParamListAsPositiveInt64(r, QueryParamValueID)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing valueid filter: %w", err)
+	}
+
+	createdFilter, err := ParseCreated(r)
 	if err != nil {
 		return nil, fmt.Errorf("encountered error parsing pr created filter: %w", err)
 	}
 
+	updatedFilter, err := ParseUpdated(r)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing pr updated filter: %w", err)
+	}
+
+	editedFilter, err := ParseEdited(r)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing pr edited filter: %w", err)
+	}
+
+	excludeDescription, err := QueryParamAsBoolOrDefault(r, QueryParamExcludeDescription, false)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing include description filter: %w", err)
+	}
+
+	authorID, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamAuthorID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing author ID filter: %w", err)
+	}
+
+	commenterID, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamCommenterID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing commenter ID filter: %w", err)
+	}
+
+	reviewerID, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamReviewerID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing reviewer ID filter: %w", err)
+	}
+
+	reviewDecisions := parseReviewDecisions(r)
+	if len(reviewDecisions) > 0 && reviewerID <= 0 {
+		return nil, errors.InvalidArgument("Can't use review decisions without providing a reviewer ID")
+	}
+
+	mentionedID, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamMentionedID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("encountered error parsing mentioned ID filter: %w", err)
+	}
+
+	metadataOptions, err := ParsePullReqMetadataOptions(r)
+	if err != nil {
+		return nil, err
+	}
+
+	if authorID > 0 {
+		createdBy = append(createdBy, authorID)
+	}
+
 	return &types.PullReqFilter{
-		Page:          ParsePage(r),
-		Size:          ParseLimit(r),
-		Query:         ParseQuery(r),
-		CreatedBy:     createdBy,
-		SourceRepoRef: r.URL.Query().Get("source_repo_ref"),
-		SourceBranch:  r.URL.Query().Get("source_branch"),
-		TargetBranch:  r.URL.Query().Get("target_branch"),
-		States:        parsePullReqStates(r),
-		Sort:          ParseSortPullReq(r),
-		Order:         ParseOrder(r),
-		CreatedFilter: createdAtFilter,
+		Page:                   ParsePage(r),
+		Size:                   ParseLimit(r),
+		Query:                  ParseQuery(r),
+		CreatedBy:              createdBy,
+		SourceRepoRef:          r.URL.Query().Get(QueryParamSourceRepoRef),
+		SourceBranch:           r.URL.Query().Get(QueryParamSourceBranch),
+		TargetBranch:           r.URL.Query().Get(QueryParamTargetBranch),
+		States:                 parsePullReqStates(r),
+		Sort:                   ParseSortPullReq(r),
+		Order:                  ParseOrder(r),
+		LabelID:                labelID,
+		ValueID:                valueID,
+		CommenterID:            commenterID,
+		ReviewerID:             reviewerID,
+		ReviewDecisions:        reviewDecisions,
+		MentionedID:            mentionedID,
+		ExcludeDescription:     excludeDescription,
+		CreatedFilter:          createdFilter,
+		UpdatedFilter:          updatedFilter,
+		EditedFilter:           editedFilter,
+		PullReqMetadataOptions: metadataOptions,
 	}, nil
 }
 

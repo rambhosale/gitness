@@ -16,6 +16,7 @@ package sha
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,7 @@ func New(value string) (SHA, error) {
 	value = strings.TrimSpace(value)
 	value = strings.ToLower(value)
 	if !regex.MatchString(value) {
-		return SHA{}, errors.InvalidArgument("the provided commit sha '%s' is of invalid format.", value)
+		return SHA{}, errors.InvalidArgumentf("the provided commit sha '%s' is of invalid format.", value)
 	}
 	return SHA{
 		str: value,
@@ -140,4 +141,8 @@ func (s SHA) JSONSchema() (jsonschema.Schema, error) {
 	schema.WithDescription("Git object hash")
 
 	return schema, nil
+}
+
+func (s SHA) Value() (driver.Value, error) {
+	return s.str, nil
 }

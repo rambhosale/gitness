@@ -18,9 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/store/database"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
@@ -28,7 +28,6 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
 )
 
 var _ store.CheckStore = (*CheckStore)(nil)
@@ -67,7 +66,8 @@ const (
 		,check_payload_kind
 		,check_payload_version
 		,check_started
-		,check_ended`
+		,check_ended
+		,check_bypassed_by`
 
 	//nolint:goconst
 	checkSelectBase = `
@@ -92,6 +92,7 @@ type check struct {
 	PayloadVersion string                `db:"check_payload_version"`
 	Started        int64                 `db:"check_started"`
 	Ended          int64                 `db:"check_ended"`
+	BypassedBy     *int64                `db:"check_bypassed_by"`
 }
 
 // FindByIdentifier returns status check result for given unique key.
@@ -133,6 +134,7 @@ func (s *CheckStore) Upsert(ctx context.Context, check *types.Check) error {
 		,check_payload_version
 		,check_started
 		,check_ended
+		,check_bypassed_by
 	) VALUES (
 		 :check_created_by
 		,:check_created
@@ -149,6 +151,7 @@ func (s *CheckStore) Upsert(ctx context.Context, check *types.Check) error {
 		,:check_payload_version
 		,:check_started
 		,:check_ended
+		,:check_bypassed_by
 	)
 	ON CONFLICT (check_repo_id, check_commit_sha, check_uid) DO
 	UPDATE SET
@@ -162,6 +165,7 @@ func (s *CheckStore) Upsert(ctx context.Context, check *types.Check) error {
 		,check_payload_version = :check_payload_version
 	    	,check_started = :check_started
 	    	,check_ended = :check_ended
+		,check_bypassed_by = :check_bypassed_by
 	RETURNING check_id, check_created_by, check_created`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -194,7 +198,7 @@ func (s *CheckStore) Count(ctx context.Context,
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
-		return 0, errors.Wrap(err, "Failed to convert query to sql")
+		return 0, fmt.Errorf("failed to convert query to sql: %w", err)
 	}
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -229,7 +233,7 @@ func (s *CheckStore) List(ctx context.Context,
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to convert query to sql")
+		return nil, fmt.Errorf("failed to convert query to sql: %w", err)
 	}
 
 	dst := make([]*check, 0)
@@ -249,29 +253,54 @@ func (s *CheckStore) List(ctx context.Context,
 }
 
 // ListRecent returns a list of recently executed status checks in a repository.
-func (s *CheckStore) ListRecent(ctx context.Context,
+func (s *CheckStore) ListRecent(
+	ctx context.Context,
 	repoID int64,
 	opts types.CheckRecentOptions,
 ) ([]string, error) {
 	stmt := database.Builder.
 		Select("distinct check_uid").
 		From("checks").
-		Where("check_repo_id = ?", repoID).
-		Where("check_created > ?", opts.Since)
+		Where("check_created > ?", opts.Since).
+		Where("check_repo_id = ?", repoID)
 
+	return s.listRecent(ctx, stmt, opts)
+}
+
+// ListRecentSpace returns a list of recently executed status checks in
+// repositories in spaces with specified space IDs.
+func (s *CheckStore) ListRecentSpace(
+	ctx context.Context,
+	spaceIDs []int64,
+	opts types.CheckRecentOptions,
+) ([]string, error) {
+	stmt := database.Builder.
+		Select("distinct check_uid").
+		From("checks").
+		Join("repositories ON checks.check_repo_id = repositories.repo_id").
+		Where("check_created > ?", opts.Since).
+		Where(squirrel.Eq{"repositories.repo_parent_id": spaceIDs})
+
+	return s.listRecent(ctx, stmt, opts)
+}
+
+func (s *CheckStore) listRecent(
+	ctx context.Context,
+	stmt squirrel.SelectBuilder,
+	opts types.CheckRecentOptions,
+) ([]string, error) {
 	stmt = s.applyOpts(stmt, opts.Query)
 
 	stmt = stmt.OrderBy("check_uid")
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to convert list recent status checks query to sql")
+		return nil, fmt.Errorf("failed to convert list recent status checks query to sql: %w", err)
 	}
-
-	dst := make([]string, 0)
 
 	db := dbtx.GetAccessor(ctx, s.db)
 
+	dst := make([]string, 0)
 	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
 		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to execute list recent status checks query")
 	}
@@ -284,7 +313,7 @@ func (s *CheckStore) ListResults(ctx context.Context,
 	repoID int64,
 	commitSHA string,
 ) ([]types.CheckResult, error) {
-	const checkColumns = "check_uid, check_status"
+	const checkColumns = "check_uid, check_status, check_bypassed_by"
 	stmt := database.Builder.
 		Select(checkColumns).
 		From("checks").
@@ -293,7 +322,7 @@ func (s *CheckStore) ListResults(ctx context.Context,
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to convert query to sql")
+		return nil, fmt.Errorf("failed to convert query to sql: %w", err)
 	}
 
 	result := make([]types.CheckResult, 0)
@@ -307,9 +336,91 @@ func (s *CheckStore) ListResults(ctx context.Context,
 	return result, nil
 }
 
+// ResultSummary returns a list of status check result summaries for the provided list of commits in a repo.
+func (s *CheckStore) ResultSummary(ctx context.Context,
+	repoID int64,
+	commitSHAs []string,
+) (map[sha.SHA]types.CheckCountSummary, error) {
+	const selectColumns = `
+			check_commit_sha,
+			COUNT(*) FILTER (WHERE check_status = 'pending') as "count_pending",
+			COUNT(*) FILTER (WHERE check_status = 'running') as "count_running",
+			COUNT(*) FILTER (WHERE check_status = 'success') as "count_success",
+			COUNT(*) FILTER (WHERE check_status = 'failure') as "count_failure",
+			COUNT(*) FILTER (WHERE check_status = 'error') as "count_error",
+			COUNT(*) FILTER (WHERE check_status = 'failure_ignored') as "count_failure_ignored"`
+
+	stmt := database.Builder.
+		Select(selectColumns).
+		From("checks").
+		Where("check_repo_id = ?", repoID).
+		Where(squirrel.Eq{"check_commit_sha": commitSHAs}).
+		GroupBy("check_commit_sha")
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert query to sql: %w", err)
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	rows, err := db.QueryxContext(ctx, sql, args...)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to execute status check summary query")
+	}
+
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	result := make(map[sha.SHA]types.CheckCountSummary)
+
+	for rows.Next() {
+		var commitSHAStr string
+		var countPending int
+		var countRunning int
+		var countSuccess int
+		var countFailure int
+		var countError int
+		var countFailureIgnored int
+		err := rows.Scan(
+			&commitSHAStr,
+			&countPending,
+			&countRunning,
+			&countSuccess,
+			&countFailure,
+			&countError,
+			&countFailureIgnored,
+		)
+		if err != nil {
+			return nil, database.ProcessSQLErrorf(ctx, err, "Failed to scan values of status check summary query")
+		}
+
+		commitSHA, err := sha.New(commitSHAStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid commit SHA read from DB: %s", commitSHAStr)
+		}
+
+		result[commitSHA] = types.CheckCountSummary{
+			Pending:        countPending,
+			Running:        countRunning,
+			Success:        countSuccess,
+			Failure:        countFailure,
+			Error:          countError,
+			FailureIgnored: countFailureIgnored,
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to read status chek summary")
+	}
+
+	return result, nil
+}
+
 func (*CheckStore) applyOpts(stmt squirrel.SelectBuilder, query string) squirrel.SelectBuilder {
 	if query != "" {
-		stmt = stmt.Where("LOWER(check_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(query)))
+		stmt = stmt.Where(PartialMatch("check_uid", query))
 	}
 
 	return stmt
@@ -333,6 +444,7 @@ func mapInternalCheck(c *types.Check) *check {
 		PayloadVersion: c.Payload.Version,
 		Started:        c.Started,
 		Ended:          c.Ended,
+		BypassedBy:     c.BypassedByID,
 	}
 
 	return m
@@ -356,17 +468,21 @@ func mapCheck(c *check) types.Check {
 			Kind:    c.PayloadKind,
 			Data:    c.Payload,
 		},
-		ReportedBy: nil,
-		Started:    c.Started,
-		Ended:      c.Ended,
+		ReportedBy:   nil,
+		Started:      c.Started,
+		Ended:        c.Ended,
+		BypassedByID: c.BypassedBy,
 	}
 }
 
 func (s *CheckStore) mapSliceCheck(ctx context.Context, checks []*check) ([]types.Check, error) {
-	// collect all principal IDs
-	ids := make([]int64, len(checks))
-	for i, req := range checks {
-		ids[i] = req.CreatedBy
+	// collect all principal IDs - both the reporter and the (optional) bypasser
+	ids := make([]int64, 0, len(checks)*2)
+	for _, c := range checks {
+		ids = append(ids, c.CreatedBy)
+		if c.BypassedBy != nil {
+			ids = append(ids, *c.BypassedBy)
+		}
 	}
 
 	// pull principal infos from cache
@@ -381,6 +497,11 @@ func (s *CheckStore) mapSliceCheck(ctx context.Context, checks []*check) ([]type
 		m[i] = mapCheck(c)
 		if reportedBy, ok := infoMap[c.CreatedBy]; ok {
 			m[i].ReportedBy = reportedBy
+		}
+		if c.BypassedBy != nil {
+			if bypassedBy, ok := infoMap[*c.BypassedBy]; ok {
+				m[i].BypassedBy = bypassedBy
+			}
 		}
 	}
 

@@ -16,7 +16,7 @@ package enum
 
 type GitspaceInstanceStateType string
 
-func (GitspaceInstanceStateType) Enum() []interface{} {
+func (GitspaceInstanceStateType) Enum() []any {
 	return toInterfaceSlice(gitspaceInstanceStateTypes)
 }
 
@@ -26,21 +26,49 @@ var gitspaceInstanceStateTypes = []GitspaceInstanceStateType{
 	GitspaceInstanceStateUnknown,
 	GitspaceInstanceStateError,
 	GitspaceInstanceStateDeleted,
+	GitspaceInstanceStateStarting,
+	GitspaceInstanceStateStopping,
+	GitSpaceInstanceStateCleaning,
+	GitspaceInstanceStateCleaned,
+	GitSpaceInstanceStateResetting,
+	GitspaceInstanceStatePendingCleanup,
 }
 
 const (
-	GitspaceInstanceStateRunning       GitspaceInstanceStateType = "running"
-	GitspaceInstanceStateUninitialized GitspaceInstanceStateType = "uninitialized"
-	GitspaceInstanceStateUnknown       GitspaceInstanceStateType = "unknown"
-	GitspaceInstanceStateError         GitspaceInstanceStateType = "error"
-	GitspaceInstanceStateDeleted       GitspaceInstanceStateType = "deleted"
+	GitspaceInstanceStateRunning        GitspaceInstanceStateType = "running"
+	GitspaceInstanceStateUninitialized  GitspaceInstanceStateType = "uninitialized"
+	GitspaceInstanceStateUnknown        GitspaceInstanceStateType = "unknown"
+	GitspaceInstanceStateError          GitspaceInstanceStateType = "error"
+	GitspaceInstanceStateStopped        GitspaceInstanceStateType = "stopped"
+	GitspaceInstanceStateDeleted        GitspaceInstanceStateType = "deleted"
+	GitspaceInstanceStateCleaned        GitspaceInstanceStateType = "cleaned"
+	GitspaceInstanceStatePendingCleanup GitspaceInstanceStateType = "pending_cleanup"
+
+	GitspaceInstanceStateStarting  GitspaceInstanceStateType = "starting"
+	GitspaceInstanceStateStopping  GitspaceInstanceStateType = "stopping"
+	GitSpaceInstanceStateCleaning  GitspaceInstanceStateType = "cleaning"
+	GitSpaceInstanceStateResetting GitspaceInstanceStateType = "resetting"
 )
 
-func (gitspaceInstanceState GitspaceInstanceStateType) IsFinalStatus() bool {
+func (g GitspaceInstanceStateType) IsFinalStatus() bool {
 	//nolint:exhaustive
-	switch gitspaceInstanceState {
+	switch g {
 	case GitspaceInstanceStateDeleted,
-		GitspaceInstanceStateError:
+		GitspaceInstanceStateError,
+		GitspaceInstanceStateCleaned:
+		return true
+	default:
+		return false
+	}
+}
+
+func (g GitspaceInstanceStateType) IsBusyStatus() bool {
+	//nolint:exhaustive
+	switch g {
+	case GitspaceInstanceStateStarting,
+		GitspaceInstanceStateStopping,
+		GitSpaceInstanceStateCleaning,
+		GitSpaceInstanceStateResetting:
 		return true
 	default:
 		return false

@@ -43,6 +43,16 @@ type Client interface {
 		recipients []*types.PrincipalInfo,
 		payload *ReviewerAddedPayload,
 	) error
+	SendReviewersAdded(
+		ctx context.Context,
+		recipients []*types.PrincipalInfo,
+		payload *ReviewersAddedPayload,
+	) error
+	SendUserGroupReviewerAdded(
+		ctx context.Context,
+		recipients []*types.PrincipalInfo,
+		payload *ReviewersAddedPayload,
+	) error
 	SendPullReqBranchUpdated(
 		ctx context.Context,
 		recipients []*types.PrincipalInfo,

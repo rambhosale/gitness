@@ -15,16 +15,28 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/git/parser"
 	"github.com/harness/gitness/git/sha"
+	gitness_store "github.com/harness/gitness/store"
+	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
+
+type RawContent struct {
+	Data io.ReadCloser
+	Size int64
+	SHA  sha.SHA
+}
 
 // Raw finds the file of the repo at the given path and returns its raw content.
 // If no gitRef is provided, the content is retrieved from the default branch.
@@ -33,10 +45,10 @@ func (c *Controller) Raw(ctx context.Context,
 	repoRef string,
 	gitRef string,
 	path string,
-) (io.ReadCloser, int64, sha.SHA, error) {
+) (*RawContent, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
 	if err != nil {
-		return nil, 0, sha.Nil, err
+		return nil, err
 	}
 
 	// set gitRef to default branch in case an empty reference was provided
@@ -53,12 +65,12 @@ func (c *Controller) Raw(ctx context.Context,
 		IncludeLatestCommit: false,
 	})
 	if err != nil {
-		return nil, 0, sha.Nil, fmt.Errorf("failed to read tree node: %w", err)
+		return nil, fmt.Errorf("failed to read tree node: %w", err)
 	}
 
 	// viewing Raw content is only supported for blob content
 	if treeNodeOutput.Node.Type != git.TreeNodeTypeBlob {
-		return nil, 0, sha.Nil, usererror.BadRequestf(
+		return nil, usererror.BadRequestf(
 			"Object in '%s' at '/%s' is of type '%s'. Only objects of type %s support raw viewing.",
 			gitRef, path, treeNodeOutput.Node.Type, git.TreeNodeTypeBlob)
 	}
@@ -69,8 +81,55 @@ func (c *Controller) Raw(ctx context.Context,
 		SizeLimit:  0, // no size limit, we stream whatever data there is
 	})
 	if err != nil {
-		return nil, 0, sha.Nil, fmt.Errorf("failed to read blob: %w", err)
+		return nil, fmt.Errorf("failed to read blob: %w", err)
 	}
 
-	return blobReader.Content, blobReader.ContentSize, blobReader.SHA, nil
+	gitLFSEnabled, err := settings.RepoGet(
+		ctx,
+		c.settings,
+		repo.ID,
+		settings.KeyGitLFSEnabled,
+		settings.DefaultGitLFSEnabled,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check settings for Git LFS enabled: %w", err)
+	}
+
+	if !gitLFSEnabled {
+		return &RawContent{
+			Data: blobReader.Content,
+			Size: blobReader.ContentSize,
+			SHA:  blobReader.SHA,
+		}, nil
+	}
+
+	// check if blob is an LFS pointer
+	headerContent, err := io.ReadAll(io.LimitReader(blobReader.Content, parser.LfsPointerMaxSize))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read content: %w", err)
+	}
+
+	lfsInfo, ok := parser.IsLFSPointer(ctx, headerContent, blobReader.Size)
+	if ok {
+		lfsContent, err := c.lfsCtrl.DownloadNoAuth(ctx, repo.ID, lfsInfo.OID)
+		if err == nil {
+			return &RawContent{
+				Data: lfsContent,
+				Size: lfsInfo.Size,
+				SHA:  blobReader.SHA,
+			}, nil
+		}
+		if !errors.Is(err, gitness_store.ErrResourceNotFound) {
+			return nil, fmt.Errorf("failed to download LFS file: %w", err)
+		}
+	}
+
+	return &RawContent{
+		Data: &types.MultiReadCloser{
+			Reader:    io.MultiReader(bytes.NewBuffer(headerContent), blobReader.Content),
+			CloseFunc: blobReader.Content.Close,
+		},
+		Size: blobReader.ContentSize,
+		SHA:  blobReader.SHA,
+	}, nil
 }

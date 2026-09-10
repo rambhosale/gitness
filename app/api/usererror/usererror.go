@@ -16,6 +16,7 @@ package usererror
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 )
 
@@ -57,7 +58,8 @@ var (
 	ErrPathTooLong = New(http.StatusBadRequest, "The resource path is too long")
 
 	// ErrCyclicHierarchy is returned if the action would create a cyclic dependency between spaces.
-	ErrCyclicHierarchy = New(http.StatusBadRequest, "Unable to perform the action as it would lead to a cyclic dependency")
+	ErrCyclicHierarchy = New(http.StatusBadRequest,
+		"Unable to perform the action as it would lead to a cyclic dependency")
 
 	// ErrSpaceWithChildsCantBeDeleted is returned if the principal is trying to delete a space that
 	// still has child resources.
@@ -92,6 +94,13 @@ var (
 	// ErrEmptyRepoNeedsBranch is returned if no branch found on the githook post receieve for empty repositories.
 	ErrEmptyRepoNeedsBranch = New(http.StatusBadRequest,
 		"Pushing to an empty repository requires at least one branch with commits.")
+
+	// ErrGitLFSDisabled is returned if the Git LFS is disabled but LFS endpoint is requested.
+	ErrGitLFSDisabled = New(http.StatusBadRequest, "Git LFS is disabled")
+
+	ErrQuarantinedArtifact = New(http.StatusForbidden, "Artifact is quarantined")
+
+	ErrArtifactBlocked = New(http.StatusForbidden, "Artifact is blocked due to policy violations")
 )
 
 // Error represents a json-encoded API error.
@@ -123,9 +132,7 @@ func NewWithPayload(status int, message string, valueMaps ...map[string]any) *Er
 			values = valueMap
 			continue
 		}
-		for k, v := range valueMap {
-			values[k] = v
-		}
+		maps.Copy(values, valueMap)
 	}
 	return &Error{Status: status, Message: message, Values: values}
 }
@@ -145,6 +152,11 @@ func RequestTooLargef(format string, args ...any) *Error {
 	return Newf(http.StatusRequestEntityTooLarge, format, args...)
 }
 
+// UnprocessableEntity returns a new user facing unprocessable entity error.
+func UnprocessableEntity(message string) *Error {
+	return New(http.StatusUnprocessableEntity, message)
+}
+
 // UnprocessableEntityf returns a new user facing unprocessable entity error.
 func UnprocessableEntityf(format string, args ...any) *Error {
 	return Newf(http.StatusUnprocessableEntity, format, args...)
@@ -158,6 +170,10 @@ func BadRequestWithPayload(message string, values ...map[string]any) *Error {
 // Forbidden returns a new user facing forbidden error.
 func Forbidden(message string) *Error {
 	return New(http.StatusForbidden, message)
+}
+
+func MethodNotAllowed(message string) *Error {
+	return New(http.StatusMethodNotAllowed, message)
 }
 
 // NotFound returns a new user facing not found error.

@@ -18,124 +18,205 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"os"
+	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/harness/gitness/git/command"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"github.com/tidwall/jsonc"
 )
 
-var _ SCM = (*scm)(nil)
+var (
+	ErrNoDefaultBranch = errors.New("no default branch")
+)
 
-type SCM interface {
-	// DevcontainerConfig fetches devcontainer config file from the given repo and branch.
-	DevcontainerConfig(ctx context.Context, gitspaceConfig *types.GitspaceConfig) (*types.DevcontainerConfig, error)
+const devcontainerDefaultPath = ".devcontainer/devcontainer.json"
+
+type SCM struct {
+	scmProviderFactory Factory
 }
 
-type scm struct{}
-
-func NewSCM() SCM {
-	return &scm{}
+func NewSCM(factory Factory) *SCM {
+	return &SCM{scmProviderFactory: factory}
 }
 
-func (s scm) DevcontainerConfig(
+// CheckValidCodeRepo checks if the current URL is a valid and accessible code repo,
+// input can be connector info, user token etc.
+func (s *SCM) CheckValidCodeRepo(
 	ctx context.Context,
-	gitspaceConfig *types.GitspaceConfig,
-) (*types.DevcontainerConfig, error) {
-	gitWorkingDirectory := "/tmp/git/"
-	cloneDir := gitWorkingDirectory + uuid.New().String()
-	err := os.MkdirAll(cloneDir, os.ModePerm)
-	if err != nil {
-		return nil, fmt.Errorf("error creating directory %s: %w", cloneDir, err)
-	}
-	defer func() {
-		err = os.RemoveAll(cloneDir)
-		if err != nil {
-			log.Ctx(ctx).Warn().Err(err).Msg("Unable to remove working directory")
-		}
-	}()
-	filePath := ".devcontainer/devcontainer.json"
-	err = validateArgs(gitspaceConfig)
-	if err != nil {
-		return nil, fmt.Errorf("invalid branch or url: %w", err)
+	codeRepositoryRequest CodeRepositoryRequest,
+) (*CodeRepositoryResponse, error) {
+	codeRepositoryResponse := &CodeRepositoryResponse{
+		URL:               codeRepositoryRequest.URL,
+		CodeRepoIsPrivate: true,
 	}
 
-	log.Info().Msg("Cloning the repository...")
-	cmd := command.New("clone",
-		command.WithFlag("--branch", gitspaceConfig.Branch),
-		command.WithFlag("--no-checkout"),
-		command.WithFlag("--depth", "1"),
-		command.WithArg(gitspaceConfig.CodeRepoURL),
-		command.WithArg(cloneDir),
-	)
-	err = cmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to clone repository %s: %w", gitspaceConfig.CodeRepoURL, err)
+	branch, err := s.detectBranch(ctx, codeRepositoryRequest.URL)
+	if err == nil {
+		codeRepositoryResponse.Branch = branch
+		codeRepositoryResponse.CodeRepoIsPrivate = false
+		return codeRepositoryResponse, nil
 	}
 
-	var lsTreeOutput bytes.Buffer
-	lsTreeCmd := command.New("ls-tree",
+	authAndFileContentProvider, err := s.getSCMAuthAndFileProvider(codeRepositoryRequest.RepoType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve SCM provider: %w", err)
+	}
+
+	resolvedCreds, err := s.resolveRepoCredentials(ctx, authAndFileContentProvider, codeRepositoryRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve repo credentials and URL: %w", err)
+	}
+
+	if branch, err = s.detectBranch(ctx, resolvedCreds.CloneURL.Value()); err == nil {
+		codeRepositoryResponse.Branch = branch
+	}
+	return codeRepositoryResponse, nil
+}
+
+// GetSCMRepoDetails fetches repository name, credentials & devcontainer config file from the given repo and branch.
+func (s *SCM) GetSCMRepoDetails(
+	ctx context.Context,
+	gitspaceConfig types.GitspaceConfig,
+) (*ResolvedDetails, error) {
+	scmAuthAndFileContentProvider, err := s.getSCMAuthAndFileProvider(gitspaceConfig.CodeRepo.Type)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve SCM Auth and File COntent provider: %w", err)
+	}
+
+	resolvedCredentials, err := scmAuthAndFileContentProvider.ResolveCredentials(ctx, gitspaceConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve repo credentials and url: %w", err)
+	}
+
+	scmAuthAndFileProvider, err := s.getSCMAuthAndFileProvider(gitspaceConfig.CodeRepo.Type)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve SCM Auth and File content provider: %w", err)
+	}
+	devcontainerConfig, err := s.getDevcontainerConfig(ctx, scmAuthAndFileProvider, gitspaceConfig, resolvedCredentials)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read or parse devcontainer config: %w", err)
+	}
+	var resolvedDetails = &ResolvedDetails{
+		ResolvedCredentials: *resolvedCredentials,
+		DevcontainerConfig:  devcontainerConfig,
+	}
+	return resolvedDetails, nil
+}
+
+func detectDefaultGitBranch(ctx context.Context, gitRepoDir string) (string, error) {
+	cmd := command.New("ls-remote",
+		command.WithFlag("--symref"),
+		command.WithFlag("-q"),
+		command.WithArg(gitRepoDir),
 		command.WithArg("HEAD"),
-		command.WithArg(filePath),
 	)
-	err = lsTreeCmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-		command.WithStdout(&lsTreeOutput),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list files in repository %s: %w", cloneDir, err)
+	output := &bytes.Buffer{}
+	if err := cmd.Run(ctx, command.WithStdout(output)); err != nil {
+		return "", fmt.Errorf("failed to ls remote repo: %w", err)
 	}
-
-	if lsTreeOutput.Len() == 0 {
-		log.Info().Msg("File not found, returning empty devcontainerConfig")
-		emptyConfig := &types.DevcontainerConfig{}
-		return emptyConfig, nil
+	var lsRemoteHeadRegexp = regexp.MustCompile(`ref: refs/heads/([^\s]+)\s+HEAD`)
+	match := lsRemoteHeadRegexp.FindStringSubmatch(strings.TrimSpace(output.String()))
+	if match == nil {
+		return "", ErrNoDefaultBranch
 	}
-
-	fields := strings.Fields(lsTreeOutput.String())
-	blobSHA := fields[2]
-
-	var catFileOutput bytes.Buffer
-	catFileCmd := command.New("cat-file", command.WithFlag("-p"), command.WithArg(blobSHA))
-	err = catFileCmd.Run(
-		ctx,
-		command.WithDir(cloneDir),
-		command.WithStderr(io.Discard),
-		command.WithStdout(&catFileOutput),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to checkout devcontainer file from path %s: %w", filePath, err)
-	}
-
-	sanitizedJSON := removeComments(catFileOutput.Bytes())
-
-	var config types.DevcontainerConfig
-	err = json.Unmarshal(sanitizedJSON, &config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse devcontainer json: %w", err)
-	}
-
-	return &config, nil
+	return match[1], nil
 }
 
-func removeComments(input []byte) []byte {
-	blockCommentRegex := regexp.MustCompile(`(?s)/\*.*?\*/`)
-	input = blockCommentRegex.ReplaceAll(input, nil)
-	lineCommentRegex := regexp.MustCompile(`//.*`)
-	return lineCommentRegex.ReplaceAll(input, nil)
+func (s *SCM) GetBranchURL(
+	spacePath string,
+	repoType enum.GitspaceCodeRepoType,
+	repoURL string,
+	branch string,
+) (string, error) {
+	scmProvider, err := s.getSCMAuthAndFileProvider(repoType)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve scm provider while generating branch url: %w", err)
+	}
+	return scmProvider.GetBranchURL(spacePath, repoURL, branch)
 }
 
-func validateArgs(_ *types.GitspaceConfig) error {
-	// TODO Validate the args
-	return nil
+// detectBranch tries to detect the default Git branch for a given URL.
+func (s *SCM) detectBranch(ctx context.Context, repoURL string) (string, error) {
+	defaultBranch, err := detectDefaultGitBranch(ctx, repoURL)
+	if err != nil {
+		return "", err
+	}
+	if defaultBranch == "" {
+		return "main", nil
+	}
+	return defaultBranch, nil
+}
+
+func (s *SCM) getSCMAuthAndFileProvider(repoType enum.GitspaceCodeRepoType) (AuthAndFileContentProvider, error) {
+	if repoType == "" {
+		repoType = enum.CodeRepoTypeUnknown
+	}
+	return s.scmProviderFactory.GetSCMAuthAndFileProvider(repoType)
+}
+
+func (s *SCM) resolveRepoCredentials(
+	ctx context.Context,
+	authAndFileContentProvider AuthAndFileContentProvider,
+	codeRepositoryRequest CodeRepositoryRequest,
+) (*ResolvedCredentials, error) {
+	codeRepo := types.CodeRepo{URL: codeRepositoryRequest.URL}
+	gitspaceUser := types.GitspaceUser{Identifier: codeRepositoryRequest.UserIdentifier}
+	gitspaceConfig := types.GitspaceConfig{
+		CodeRepo:     codeRepo,
+		SpacePath:    codeRepositoryRequest.SpacePath,
+		GitspaceUser: gitspaceUser,
+	}
+	return authAndFileContentProvider.ResolveCredentials(ctx, gitspaceConfig)
+}
+
+func (s *SCM) getDevcontainerConfig(
+	ctx context.Context,
+	scmAuthAndFileContentProvider AuthAndFileContentProvider,
+	gitspaceConfig types.GitspaceConfig,
+	resolvedCredentials *ResolvedCredentials,
+) (types.DevcontainerConfig, error) {
+	config := types.DevcontainerConfig{}
+	filePath := devcontainerDefaultPath
+	catFileOutputBytes, err := scmAuthAndFileContentProvider.GetFileContent(
+		ctx, gitspaceConfig, filePath, resolvedCredentials)
+	if err != nil {
+		return config, fmt.Errorf("failed to read devcontainer file: %w", err)
+	}
+
+	if len(catFileOutputBytes) == 0 {
+		return config, nil // Return an empty config if the file is empty
+	}
+
+	if err = json.Unmarshal(jsonc.ToJSON(catFileOutputBytes), &config); err != nil {
+		return config, fmt.Errorf("failed to parse devcontainer JSON: %w", err)
+	}
+
+	return config, nil
+}
+
+func BuildAuthenticatedCloneURL(repoURL *url.URL, accessToken string, codeRepoType enum.GitspaceCodeRepoType) *url.URL {
+	switch codeRepoType {
+	case enum.CodeRepoTypeGithubEnterprise, enum.CodeRepoTypeGithub:
+		repoURL.User = url.UserPassword(accessToken, "x-oauth-basic")
+	case enum.CodeRepoTypeGitlab, enum.CodeRepoTypeGitlabOnPrem:
+		repoURL.User = url.UserPassword("oauth2", accessToken)
+	case enum.CodeRepoTypeBitbucket, enum.CodeRepoTypeBitbucketServer:
+		repoURL.User = url.UserPassword("x-token-auth", accessToken)
+	case enum.CodeRepoTypeGitness:
+		repoURL.User = url.UserPassword("harness", accessToken)
+	case enum.CodeRepoTypeHarnessCode:
+		repoURL.User = url.UserPassword("Basic", accessToken)
+	case enum.CodeRepoTypeUnknown:
+		log.Warn().Msgf("unknown repo type, cannot set credentials")
+	default:
+		log.Warn().Msgf("Unsupported repo type: %s", codeRepoType)
+	}
+	return repoURL
 }

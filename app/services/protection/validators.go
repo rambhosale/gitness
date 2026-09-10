@@ -14,18 +14,22 @@
 
 package protection
 
-import "errors"
+import (
+	"slices"
+
+	"github.com/harness/gitness/errors"
+)
 
 const maxElements = 100
 
 func validateIDSlice(ids []int64) error {
 	if len(ids) > maxElements {
-		return errors.New("too many IDs provided")
+		return errors.InvalidArgument("Too many IDs provided.")
 	}
 
 	for _, id := range ids {
 		if id <= 0 {
-			return errors.New("ID must be a positive integer")
+			return errors.InvalidArgument("ID must be a positive integer.")
 		}
 	}
 
@@ -34,13 +38,11 @@ func validateIDSlice(ids []int64) error {
 
 func validateIdentifierSlice(identifiers []string) error {
 	if len(identifiers) > maxElements {
-		return errors.New("too many Identifiers provided")
+		return errors.InvalidArgument("Too many Identifiers provided.")
 	}
 
-	for _, identifier := range identifiers {
-		if identifier == "" {
-			return errors.New("identifier mustn't be an empty string")
-		}
+	if slices.Contains(identifiers, "") {
+		return errors.InvalidArgument("Identifier mustn't be an empty string.")
 	}
 
 	return nil

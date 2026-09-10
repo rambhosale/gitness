@@ -18,11 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/harness/gitness/app/api/usererror"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 )
 
 // GetCookie tries to retrieve the cookie from the request or returns false if it doesn't exist.
@@ -64,8 +65,11 @@ func GetHeader(r *http.Request, headerName string) (string, bool) {
 // PathParamOrError tries to retrieve the parameter from the request and
 // returns the parameter if it exists and is not empty, otherwise returns an error.
 func PathParamOrError(r *http.Request, paramName string) (string, error) {
-	val, ok := PathParam(r, paramName)
-	if !ok {
+	val, err := PathParam(r, paramName)
+	if err != nil {
+		return "", err
+	}
+	if val == "" {
 		return "", usererror.BadRequestf("Parameter '%s' not found in request path.", paramName)
 	}
 
@@ -74,8 +78,8 @@ func PathParamOrError(r *http.Request, paramName string) (string, error) {
 
 // PathParamOrEmpty retrieves the path parameter or returns an empty string otherwise.
 func PathParamOrEmpty(r *http.Request, paramName string) string {
-	val, ok := PathParam(r, paramName)
-	if !ok {
+	val, err := PathParam(r, paramName)
+	if err != nil {
 		return ""
 	}
 
@@ -83,13 +87,18 @@ func PathParamOrEmpty(r *http.Request, paramName string) string {
 }
 
 // PathParam retrieves the path parameter or returns false if it exists.
-func PathParam(r *http.Request, paramName string) (string, bool) {
+func PathParam(r *http.Request, paramName string) (string, error) {
 	val := chi.URLParam(r, paramName)
 	if val == "" {
-		return "", false
+		return "", nil
 	}
 
-	return val, true
+	val, err := url.PathUnescape(val)
+	if err != nil {
+		return "", usererror.BadRequestf("Failed to decode path parameter '%s'.", paramName)
+	}
+
+	return val, nil
 }
 
 // QueryParam returns the parameter if it exists.
@@ -134,7 +143,7 @@ func QueryParamOrError(r *http.Request, paramName string) (string, error) {
 	return val, nil
 }
 
-// QueryParamAsPositiveInt64 extracts an integer parameter from the request query.
+// QueryParamAsPositiveInt64OrDefault extracts an integer parameter from the request query.
 // If the parameter doesn't exist the provided default value is returned.
 func QueryParamAsPositiveInt64OrDefault(r *http.Request, paramName string, deflt int64) (int64, error) {
 	value, ok := QueryParam(r, paramName)

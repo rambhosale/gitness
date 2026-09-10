@@ -30,17 +30,43 @@ var (
 	ErrSpacePathIsRequired          = errors.New("space path is required")
 )
 
+const (
+	ResourceName                    = "resourceName"
+	RepoName                        = "repoName"
+	SpaceName                       = "spaceName"
+	RegistryName                    = "registryName"
+	BypassedResourceType            = "bypassedResourceType"
+	BypassedResourceName            = "bypassedResourceName"
+	RepoPath                        = "repoPath"
+	BypassedResourceTypePullRequest = "pull_request"
+	BypassedResourceTypeBranch      = "branch"
+	BypassedResourceTypeTag         = "tag"
+	BypassedResourceTypeCommit      = "commit"
+	BypassAction                    = "bypass_action"
+	BypassActionDeleted             = "deleted"
+	BypassActionCreated             = "created"
+	BypassActionCommitted           = "committed"
+	BypassActionMerged              = "merged"
+	BypassMessage                   = "bypass_message"
+	BypassSHALabelFormat            = "%s @%s"
+	BypassPullReqLabelFormat        = "%s #%s"
+)
+
 type Action string
 
 const (
-	ActionCreated Action = "created"
-	ActionUpdated Action = "updated" // update default branch, switching default branch, updating description
-	ActionDeleted Action = "deleted"
+	ActionCreated    Action = "created"
+	ActionUpdated    Action = "updated" // update default branch, switching default branch, updating description
+	ActionDeleted    Action = "deleted"
+	ActionUploaded   Action = "uploaded"   // artifact upload
+	ActionDownloaded Action = "downloaded" // artifact download
+	ActionBypassed   Action = "bypassed"
+	ActionForcePush  Action = "forcePush"
 )
 
 func (a Action) Validate() error {
 	switch a {
-	case ActionCreated, ActionUpdated, ActionDeleted:
+	case ActionCreated, ActionUpdated, ActionDeleted, ActionUploaded, ActionDownloaded, ActionBypassed, ActionForcePush:
 		return nil
 	default:
 		return ErrActionUndefined
@@ -50,17 +76,40 @@ func (a Action) Validate() error {
 type ResourceType string
 
 const (
-	ResourceTypeRepository         ResourceType = "repository"
-	ResourceTypeBranchRule         ResourceType = "branch_rule"
-	ResourceTypeRepositorySettings ResourceType = "repository_settings"
+	ResourceTypeRepository            ResourceType = "repository"
+	ResourceTypeBranchRule            ResourceType = "branch_rule"
+	ResourceTypeBranch                ResourceType = "branch"
+	ResourceTypeTag                   ResourceType = "tag"
+	ResourceTypeTagRule               ResourceType = "tag_rule"
+	ResourceTypePushRule              ResourceType = "push_rule"
+	ResourceTypePullRequest           ResourceType = "pull_request"
+	ResourceTypeRepositorySettings    ResourceType = "repository_settings"
+	ResourceTypeSpaceSettings         ResourceType = "space_settings"
+	ResourceTypeCodeWebhook           ResourceType = "code_webhook"
+	ResourceTypeRegistry              ResourceType = "registry"
+	ResourceTypeRegistryUpstreamProxy ResourceType = "registry_upstream_proxy"
+	ResourceTypeRegistryWebhook       ResourceType = "registry_webhook"
+	ResourceTypeRegistryArtifact      ResourceType = "registry_artifact"
 )
 
 func (a ResourceType) Validate() error {
 	switch a {
 	case ResourceTypeRepository,
 		ResourceTypeBranchRule,
-		ResourceTypeRepositorySettings:
+		ResourceTypeBranch,
+		ResourceTypeTag,
+		ResourceTypeTagRule,
+		ResourceTypePushRule,
+		ResourceTypePullRequest,
+		ResourceTypeRepositorySettings,
+		ResourceTypeSpaceSettings,
+		ResourceTypeCodeWebhook,
+		ResourceTypeRegistry,
+		ResourceTypeRegistryUpstreamProxy,
+		ResourceTypeRegistryWebhook,
+		ResourceTypeRegistryArtifact:
 		return nil
+
 	default:
 		return ErrResourceTypeUndefined
 	}
@@ -69,13 +118,20 @@ func (a ResourceType) Validate() error {
 type Resource struct {
 	Type       ResourceType
 	Identifier string
+	Data       map[string]string
 }
 
-func NewResource(rtype ResourceType, identifier string) Resource {
-	return Resource{
+func NewResource(rtype ResourceType, identifier string, keyValues ...string) Resource {
+	r := Resource{
 		Type:       rtype,
 		Identifier: identifier,
+		Data:       make(map[string]string, len(keyValues)),
 	}
+	for i := 0; i < len(keyValues); i += 2 {
+		k, v := keyValues[i], keyValues[i+1]
+		r.Data[k] = v
+	}
+	return r
 }
 
 func (r Resource) Validate() error {
@@ -86,6 +142,14 @@ func (r Resource) Validate() error {
 		return ErrResourceIdentifierIsRequired
 	}
 	return nil
+}
+
+func (r Resource) DataAsSlice() []string {
+	slice := make([]string, 0, len(r.Data)*2)
+	for k, v := range r.Data {
+		slice = append(slice, k, v)
+	}
+	return slice
 }
 
 type DiffObject struct {

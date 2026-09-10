@@ -14,13 +14,39 @@
 
 package scm
 
-import "github.com/google/wire"
+import (
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/store"
+	urlprovider "github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/git"
+
+	"github.com/google/wire"
+)
 
 // WireSet provides a wire set for this package.
 var WireSet = wire.NewSet(
-	ProvideSCM,
+	ProvideGitnessSCM, ProvideGenericSCM, ProvideFactory, ProvideSCM,
 )
 
-func ProvideSCM() SCM {
-	return NewSCM()
+func ProvideGitnessSCM(
+	repoStore store.RepoStore,
+	repoFinder refcache.RepoFinder,
+	rpcClient git.Interface,
+	tokenStore store.TokenStore,
+	principalStore store.PrincipalStore,
+	urlProvider urlprovider.Provider,
+) *GitnessSCM {
+	return NewGitnessSCM(repoStore, repoFinder, rpcClient, tokenStore, principalStore, urlProvider)
+}
+
+func ProvideGenericSCM() *GenericSCM {
+	return NewGenericSCM()
+}
+
+func ProvideFactory(gitness *GitnessSCM, genericSCM *GenericSCM) Factory {
+	return NewFactory(gitness, genericSCM)
+}
+
+func ProvideSCM(factory Factory) *SCM {
+	return NewSCM(factory)
 }

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/harness/gitness/app/services/settings"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/git/hook"
 	"github.com/harness/gitness/logging"
@@ -37,23 +36,13 @@ type secretFinding struct {
 func (c *Controller) scanSecrets(
 	ctx context.Context,
 	rgit RestrictedGIT,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
+	scanningEnabled bool,
 	in types.GithookPreReceiveInput,
 	output *hook.Output,
-) error {
-	// check if scanning is enabled on the repo
-	scanningEnabled, err := settings.RepoGet(
-		ctx,
-		c.settings,
-		repo.ID,
-		settings.KeySecretScanningEnabled,
-		settings.DefaultSecretScanningEnabled,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to check settings whether secret scanning is enabled: %w", err)
-	}
+) (int, error) {
 	if !scanningEnabled {
-		return nil
+		return 0, nil
 	}
 
 	// scan for secrets
@@ -65,23 +54,18 @@ func (c *Controller) scanSecrets(
 		in,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to scan for git leaks: %w", err)
+		return 0, fmt.Errorf("failed to scan for git leaks: %w", err)
 	}
 
 	// always print result (handles both no results and results found)
 	printScanSecretsFindings(output, findings, len(in.RefUpdates) > 1, time.Since(startTime))
 
-	// block the push if any secrets were found
-	if len(findings) > 0 {
-		output.Error = ptr.String("Changes blocked by security scan results")
-	}
-
-	return nil
+	return len(findings), nil
 }
 
 func scanSecretsInternal(ctx context.Context,
 	rgit RestrictedGIT,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	in types.GithookPreReceiveInput,
 ) ([]secretFinding, error) {
 	var baseRevFallBack *string

@@ -30,12 +30,12 @@ func newService(git git.Interface) Service {
 	return &service{git: git}
 }
 
-// FindRef finds information about a commit in gitness for the git ref.
+// FindRef finds information about a commit in Harness for the git ref.
 // This is using the branch only as the ref at the moment, can be changed
 // when needed to take any ref (like sha, tag).
 func (f *service) FindRef(
 	ctx context.Context,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	branch string,
 ) (*types.Commit, error) {
 	readParams := git.ReadParams{
@@ -50,13 +50,13 @@ func (f *service) FindRef(
 	}
 
 	// convert the RPC commit output to a types.Commit.
-	return controller.MapCommit(branchOutput.Branch.Commit)
+	return controller.MapCommit(branchOutput.Branch.Commit), nil
 }
 
-// FindCommit finds information about a commit in gitness for the git SHA.
+// FindCommit finds information about a commit in Harness for the git SHA.
 func (f *service) FindCommit(
 	ctx context.Context,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	rawSHA string,
 ) (*types.Commit, error) {
 	readParams := git.ReadParams{
@@ -71,5 +71,5 @@ func (f *service) FindCommit(
 	}
 
 	// convert the RPC commit output to a types.Commit.
-	return controller.MapCommit(&commitOutput.Commit)
+	return controller.MapCommit(&commitOutput.Commit), nil
 }

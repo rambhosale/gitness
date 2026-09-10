@@ -1,6 +1,16 @@
-// Copyright 2021 Harness Inc. All rights reserved.
-// Use of this source code is governed by the Polyform Free Trial License
-// that can be found in the LICENSE.md file for this repository.
+// Copyright 2023 Harness, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //go:build wireinject
 // +build wireinject
@@ -14,8 +24,10 @@ import (
 	"github.com/harness/gitness/app/api/controller/connector"
 	"github.com/harness/gitness/app/api/controller/execution"
 	githookCtrl "github.com/harness/gitness/app/api/controller/githook"
-	gitspacecontroller "github.com/harness/gitness/app/api/controller/gitspace"
+	gitspaceCtrl "github.com/harness/gitness/app/api/controller/gitspace"
+	infraproviderCtrl "github.com/harness/gitness/app/api/controller/infraprovider"
 	controllerkeywordsearch "github.com/harness/gitness/app/api/controller/keywordsearch"
+	"github.com/harness/gitness/app/api/controller/lfs"
 	"github.com/harness/gitness/app/api/controller/limiter"
 	controllerlogs "github.com/harness/gitness/app/api/controller/logs"
 	"github.com/harness/gitness/app/api/controller/migrate"
@@ -34,14 +46,36 @@ import (
 	controllertrigger "github.com/harness/gitness/app/api/controller/trigger"
 	"github.com/harness/gitness/app/api/controller/upload"
 	"github.com/harness/gitness/app/api/controller/user"
+	"github.com/harness/gitness/app/api/controller/usergroup"
 	controllerwebhook "github.com/harness/gitness/app/api/controller/webhook"
 	"github.com/harness/gitness/app/api/openapi"
 	"github.com/harness/gitness/app/auth/authn"
 	"github.com/harness/gitness/app/auth/authz"
 	"github.com/harness/gitness/app/bootstrap"
+	connectorservice "github.com/harness/gitness/app/connector"
+	aitaskevent "github.com/harness/gitness/app/events/aitask"
+	checkevents "github.com/harness/gitness/app/events/check"
 	gitevents "github.com/harness/gitness/app/events/git"
+	gitspaceevents "github.com/harness/gitness/app/events/gitspace"
+	gitspacedeleteevents "github.com/harness/gitness/app/events/gitspacedelete"
+	gitspaceinfraevents "github.com/harness/gitness/app/events/gitspaceinfra"
+	gitspaceoperationsevents "github.com/harness/gitness/app/events/gitspaceoperations"
+	mergequeueevents "github.com/harness/gitness/app/events/mergequeue"
+	pipelineevents "github.com/harness/gitness/app/events/pipeline"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	repoevents "github.com/harness/gitness/app/events/repo"
+	ruleevents "github.com/harness/gitness/app/events/rule"
+	userevents "github.com/harness/gitness/app/events/user"
+	"github.com/harness/gitness/app/gitspace/infrastructure"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/orchestrator"
+	containerorchestrator "github.com/harness/gitness/app/gitspace/orchestrator/container"
+	"github.com/harness/gitness/app/gitspace/orchestrator/ide"
+	"github.com/harness/gitness/app/gitspace/orchestrator/runarg"
+	"github.com/harness/gitness/app/gitspace/platformconnector"
+	"github.com/harness/gitness/app/gitspace/platformsecret"
+	"github.com/harness/gitness/app/gitspace/scm"
+	gitspacesecret "github.com/harness/gitness/app/gitspace/secret"
 	"github.com/harness/gitness/app/pipeline/canceler"
 	"github.com/harness/gitness/app/pipeline/commit"
 	"github.com/harness/gitness/app/pipeline/converter"
@@ -54,24 +88,51 @@ import (
 	"github.com/harness/gitness/app/router"
 	"github.com/harness/gitness/app/server"
 	"github.com/harness/gitness/app/services"
+	aitaskeventservice "github.com/harness/gitness/app/services/aitaskevent"
+	"github.com/harness/gitness/app/services/autolink"
+	"github.com/harness/gitness/app/services/automerge"
+	"github.com/harness/gitness/app/services/branch"
+	"github.com/harness/gitness/app/services/checkreq"
 	"github.com/harness/gitness/app/services/cleanup"
 	"github.com/harness/gitness/app/services/codecomments"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/dotrange"
 	"github.com/harness/gitness/app/services/exporter"
+	gitspacedeleteeventservice "github.com/harness/gitness/app/services/gitspacedeleteevent"
+	"github.com/harness/gitness/app/services/gitspaceevent"
+	gitspaceinfraeventservice "github.com/harness/gitness/app/services/gitspaceinfraevent"
+	gitspaceoperationseventservice "github.com/harness/gitness/app/services/gitspaceoperationsevent"
+	"github.com/harness/gitness/app/services/gitspaceservice"
+	"github.com/harness/gitness/app/services/gitspacesettings"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/instrument"
+	"github.com/harness/gitness/app/services/keyfetcher"
 	"github.com/harness/gitness/app/services/keywordsearch"
-	locker "github.com/harness/gitness/app/services/locker"
+	svclabel "github.com/harness/gitness/app/services/label"
+	"github.com/harness/gitness/app/services/languageanalyzer"
+	"github.com/harness/gitness/app/services/locker"
+	"github.com/harness/gitness/app/services/merge"
+	"github.com/harness/gitness/app/services/mergequeue"
 	"github.com/harness/gitness/app/services/metric"
+	migrateservice "github.com/harness/gitness/app/services/migrate"
 	"github.com/harness/gitness/app/services/notification"
 	"github.com/harness/gitness/app/services/notification/mailer"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/app/services/publicaccess"
 	"github.com/harness/gitness/app/services/publickey"
 	pullreqservice "github.com/harness/gitness/app/services/pullreq"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/remoteauth"
 	reposervice "github.com/harness/gitness/app/services/repo"
+	"github.com/harness/gitness/app/services/repoactivity"
+	"github.com/harness/gitness/app/services/rules"
+	secretservice "github.com/harness/gitness/app/services/secret"
 	"github.com/harness/gitness/app/services/settings"
+	spaceSvc "github.com/harness/gitness/app/services/space"
+	"github.com/harness/gitness/app/services/tokengenerator"
 	"github.com/harness/gitness/app/services/trigger"
-	"github.com/harness/gitness/app/services/usergroup"
+	"github.com/harness/gitness/app/services/usage"
+	usergroupservice "github.com/harness/gitness/app/services/usergroup"
 	"github.com/harness/gitness/app/services/webhook"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
@@ -82,15 +143,27 @@ import (
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/blob"
 	cliserver "github.com/harness/gitness/cli/operations/server"
+	"github.com/harness/gitness/cli/operations/server/gitspaceconfig"
 	"github.com/harness/gitness/encrypt"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/git/storage"
+	infraproviderpkg "github.com/harness/gitness/infraprovider"
 	"github.com/harness/gitness/job"
 	"github.com/harness/gitness/livelog"
 	"github.com/harness/gitness/lock"
 	"github.com/harness/gitness/pubsub"
+	registryevents "github.com/harness/gitness/registry/app/events/artifact"
+	registrypostporcessingevents "github.com/harness/gitness/registry/app/events/asyncprocessing"
+	replicationevents "github.com/harness/gitness/registry/app/events/replication"
+	"github.com/harness/gitness/registry/app/pkg/docker"
+	"github.com/harness/gitness/registry/app/services/reindexing"
+	cargoutils "github.com/harness/gitness/registry/app/utils/cargo"
+	gopackageutils "github.com/harness/gitness/registry/app/utils/gopackage"
+	registryhandlers "github.com/harness/gitness/registry/job"
+	registryindex "github.com/harness/gitness/registry/services/asyncprocessing"
+	registrywebhooks "github.com/harness/gitness/registry/services/webhook"
 	"github.com/harness/gitness/ssh"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
@@ -111,30 +184,54 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		notification.WireSet,
 		blob.WireSet,
 		dbtx.WireSet,
-		cache.WireSet,
+		cache.WireSetSpace,
+		cache.WireSetRepo,
+		refcache.WireSet,
 		router.WireSet,
 		pullreqservice.WireSet,
 		services.WireSet,
+		services.ProvideGitspaceServices,
 		server.WireSet,
+		cliserver.ProvideNoOpMetricServer,
 		url.WireSet,
+		spaceSvc.ProvideNoopResourceMover,
+		spaceSvc.WireSet,
 		space.WireSet,
 		limiter.WireSet,
 		publicaccess.WireSet,
 		repo.WireSet,
 		reposettings.WireSet,
 		pullreq.WireSet,
+		merge.WireSet,
+		checkreq.WireSet,
+		automerge.WireSet,
+		mergequeue.WireSet,
+		mergequeueevents.WireSet,
 		controllerwebhook.WireSet,
+		controllerwebhook.ProvidePreprocessor,
+		svclabel.WireSet,
 		serviceaccount.WireSet,
 		user.WireSet,
 		upload.WireSet,
 		service.WireSet,
 		principal.WireSet,
+		usergroupservice.WireSet,
 		system.WireSet,
 		authn.WireSet,
 		authz.WireSet,
+		infrastructure.WireSet,
+		infraproviderpkg.WireSet,
+		gitspaceevents.WireSet,
+		pipelineevents.WireSet,
+		infraproviderCtrl.WireSet,
+		gitspaceCtrl.WireSet,
+		registryevents.WireSet,
+		reindexing.WireSet,
 		gitevents.WireSet,
 		pullreqevents.WireSet,
 		repoevents.WireSet,
+		ruleevents.WireSet,
+		userevents.WireSet,
 		storage.WireSet,
 		api.WireSet,
 		cliserver.ProvideGitConfig,
@@ -144,11 +241,14 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		encrypt.WireSet,
 		cliserver.ProvideEventsConfig,
 		events.WireSet,
+		events.ProvideNoopCollector,
 		cliserver.ProvideWebhookConfig,
 		cliserver.ProvideNotificationConfig,
 		webhook.WireSet,
+		languageanalyzer.WireSet,
 		cliserver.ProvideTriggerConfig,
 		trigger.WireSet,
+		tokengenerator.WireSet,
 		githookCtrl.ExtenderWireSet,
 		githookCtrl.WireSet,
 		cliserver.ProvideLockConfig,
@@ -170,6 +270,7 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		controllerlogs.WireSet,
 		secret.WireSet,
 		connector.WireSet,
+		connectorservice.WireSet,
 		template.WireSet,
 		manager.WireSet,
 		triggerer.WireSet,
@@ -183,14 +284,20 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		plugin.WireSet,
 		resolver.WireSet,
 		importer.WireSet,
+		importer.ProvideConnectorService,
+		importer.ProvideWebhookService,
+		migrateservice.WireSet,
 		canceler.WireSet,
 		exporter.WireSet,
 		metric.WireSet,
 		reposervice.WireSet,
 		cliserver.ProvideCodeOwnerConfig,
 		codeowners.WireSet,
+		gitspaceevent.WireSet,
 		cliserver.ProvideKeywordSearchConfig,
 		keywordsearch.WireSet,
+		rules.WireSet,
+		rules.ProvideValidator,
 		controllerkeywordsearch.WireSet,
 		settings.WireSet,
 		usergroup.WireSet,
@@ -199,8 +306,63 @@ func initSystem(ctx context.Context, config *types.Config) (*cliserver.System, e
 		audit.WireSet,
 		ssh.WireSet,
 		publickey.WireSet,
+		keyfetcher.ProvideService,
+		remoteauth.WireSet,
 		migrate.WireSet,
-		gitspacecontroller.WireSet,
+		scm.WireSet,
+		platformconnector.WireSet,
+		platformsecret.WireSet,
+		gitspacesecret.WireSet,
+		orchestrator.WireSet,
+		// Bind the concrete orchestrator to the narrow, per-consumer Orchestrator
+		// interfaces declared by the gitspace event services (in their deps.go).
+		// The bind lives here, alongside orchestrator.WireSet, so the concrete
+		// (docker/oras-heavy) orchestrator stays out of the event services' own
+		// import graphs.
+		wire.Bind(new(gitspaceinfraeventservice.Orchestrator), new(orchestrator.Orchestrator)),
+		wire.Bind(new(gitspaceoperationseventservice.Orchestrator), new(orchestrator.Orchestrator)),
+		wire.Bind(new(aitaskeventservice.Orchestrator), new(orchestrator.Orchestrator)),
+		containerorchestrator.WireSet,
+		gitspaceconfig.ProvideIDEVSCodeWebConfig,
+		gitspaceconfig.ProvideDockerConfig,
+		cliserver.ProvideGitspaceEventConfig,
+		cliserver.ProvideGitspaceDeleteEventConfig,
+		logutil.WireSet,
+		gitspaceconfig.ProvideGitspaceOrchestratorConfig,
+		ide.WireSet,
+		gitspaceinfraevents.WireSet,
+		aitaskevent.WireSet,
+		gitspaceservice.WireSet,
+		gitspacesettings.WireSet,
+		gitspaceoperationsevents.WireSet,
+		gitspaceconfig.ProvideGitspaceInfraProvisionerConfig,
+		gitspaceconfig.ProvideIDEVSCodeConfig,
+		gitspaceconfig.ProvideIDECursorConfig,
+		gitspaceconfig.ProvideIDEWindsurfConfig,
+		gitspaceconfig.ProvideIDEJetBrainsConfig,
+		instrument.WireSet,
+		docker.ProvideReporter,
+		secretservice.WireSet,
+		runarg.WireSet,
+		lfs.WireSet,
+		usage.WireSet,
+		registrywebhooks.WireSet,
+		gitspacedeleteevents.WireSet,
+		gitspacedeleteeventservice.WireSet,
+		registryindex.WireSet,
+		cliserver.ProvideBranchConfig,
+		branch.WireSet,
+		cliserver.ProvideRepoActivityConfig,
+		repoactivity.WireSet,
+		autolink.WireSet,
+		dotrange.WireSet,
+		cargoutils.WireSet,
+		gopackageutils.WireSet,
+		registrypostporcessingevents.ProvideAsyncProcessingReporter,
+		registrypostporcessingevents.ProvideReaderFactory,
+		checkevents.WireSet,
+		replicationevents.ProvideNoOpReplicationReporter,
+		registryhandlers.WireSet,
 	)
 	return &cliserver.System{}, nil
 }

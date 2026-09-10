@@ -15,8 +15,16 @@
 package gitspace
 
 import (
+	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/scm"
+	"github.com/harness/gitness/app/services/gitspace"
+	"github.com/harness/gitness/app/services/gitspacesettings"
+	"github.com/harness/gitness/app/services/infraprovider"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/store/database/dbtx"
 
 	"github.com/google/wire"
 )
@@ -27,11 +35,31 @@ var WireSet = wire.NewSet(
 )
 
 func ProvideController(
+	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	resourceStore store.InfraProviderResourceStore,
-	configStore store.GitspaceConfigStore,
-	instanceStore store.GitspaceInstanceStore,
+	infraProviderSvc *infraprovider.Service,
 	spaceStore store.SpaceStore,
+	spaceFinder refcache.SpaceFinder,
+	eventStore store.GitspaceEventStore,
+	statefulLogger *logutil.StatefulLogger,
+	scm *scm.SCM,
+	gitspaceSvc *gitspace.Service,
+	gitspaceLimiter limiter.Gitspace,
+	repoFinder refcache.RepoFinder,
+	settingsService gitspacesettings.Service,
 ) *Controller {
-	return NewController(authorizer, resourceStore, configStore, instanceStore, spaceStore)
+	return NewController(
+		tx,
+		authorizer,
+		infraProviderSvc,
+		spaceStore,
+		spaceFinder,
+		eventStore,
+		statefulLogger,
+		scm,
+		gitspaceSvc,
+		gitspaceLimiter,
+		repoFinder,
+		settingsService,
+	)
 }

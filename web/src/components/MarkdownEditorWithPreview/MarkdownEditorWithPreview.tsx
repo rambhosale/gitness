@@ -46,10 +46,10 @@ import {
   handlePaste,
   removeSpecificTextOptimized
 } from 'utils/Utils'
-import { decodeGitContent, handleUpload, normalizeGitRef } from 'utils/GitUtils'
+import { CodeIcon, decodeGitContent, handleUpload, normalizeGitRef } from 'utils/GitUtils'
 import { defaultUsefulOrNot } from 'components/DefaultUsefulOrNot/UsefulOrNot'
 import { AidaClient } from 'utils/types'
-import type { RepoRepositoryOutput } from 'services/code'
+import type { RepoRepositoryOutput, TypesPrincipalInfo } from 'services/code'
 import { useEventListener } from 'hooks/useEventListener'
 import type { SuggestionBlock } from 'components/SuggestionBlock/SuggestionBlock'
 import css from './MarkdownEditorWithPreview.module.scss'
@@ -138,6 +138,14 @@ interface MarkdownEditorWithPreviewProps {
   standalone: boolean
   routingId: string
   suggestionBlock?: SuggestionBlock
+  setMentionsMap?: React.Dispatch<
+    React.SetStateAction<{
+      [key: string]: TypesPrincipalInfo
+    }>
+  >
+  mentionsMap?: {
+    [key: string]: TypesPrincipalInfo
+  }
 }
 
 export function MarkdownEditorWithPreview({
@@ -165,11 +173,14 @@ export function MarkdownEditorWithPreview({
   flag,
   sourceGitRef,
   targetGitRef,
-  suggestionBlock
+  suggestionBlock,
+  setMentionsMap,
+  mentionsMap
 }: MarkdownEditorWithPreviewProps) {
   const { getString } = useStrings()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedTab, setSelectedTab] = useState(MarkdownEditorTab.WRITE)
+  const [fetchedUsers, setFetchedUsers] = useState<TypesPrincipalInfo[]>([])
   const viewRef = useRef<EditorView>()
   const feedbackRef = useRef<HTMLDivElement>()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -535,7 +546,20 @@ export function MarkdownEditorWithPreview({
   const handleFileChange = (event: any) => {
     setFile(event?.target?.files[0])
   }
-  const onSaveHandler = useCallback(() => onSave?.(viewRef.current?.state.doc.toString() || ''), [onSave])
+
+  useEffect(() => {
+    setMentionsMap?.(prevMap => {
+      const newMap = { ...prevMap }
+      fetchedUsers.forEach(user => {
+        if (user.email) newMap[user.email] = user
+      })
+      return newMap
+    })
+  }, [fetchedUsers])
+
+  const onSaveHandler = useCallback(() => {
+    onSave?.(viewRef.current?.state.doc.toString() || '')
+  }, [onSave])
 
   return (
     <Container ref={containerRef} className={cx(css.container, { [css.noBorder]: noBorder }, className)}>
@@ -571,7 +595,7 @@ export function MarkdownEditorWithPreview({
                 <Text>{formatBytes(file.size)}</Text>
               </Layout.Horizontal>
               <FlexExpander />
-              <Text icon={'tick'} iconProps={{ color: Color.GREEN_800 }} color={Color.GREEN_800}>
+              <Text icon={CodeIcon.Tick} iconProps={{ color: Color.GREEN_800 }} color={Color.GREEN_800}>
                 {getString('imageUpload.readyToUpload')}
               </Text>
             </Layout.Horizontal>
@@ -594,7 +618,7 @@ export function MarkdownEditorWithPreview({
               type="submit"
               text={getString('imageUpload.upload')}
               variation={ButtonVariation.PRIMARY}
-              disabled={false}
+              disabled={!file}
               onClick={() => {
                 if (file !== undefined) {
                   handleUpload(file as File, setMarkdownContent, repoMetadata, showError, standalone, routingId)
@@ -672,12 +696,16 @@ export function MarkdownEditorWithPreview({
               onChange?.(doc.toString())
             }
           }}
+          setFetchedUsers={setFetchedUsers}
+          fetchedUsers={fetchedUsers}
         />
         {selectedTab === MarkdownEditorTab.PREVIEW && (
           <MarkdownViewer
             source={viewRef.current?.state.doc.toString() || ''}
+            mentions={mentionsMap}
             maxHeight={800}
             suggestionBlock={suggestionBlock}
+            repoMetadata={repoMetadata}
           />
         )}
         {!standalone && showFeedback && (

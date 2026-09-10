@@ -16,11 +16,14 @@ package space
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/harness/gitness/app/api/controller/space"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
 )
+
+const HeaderTotalWithoutFilter = "x-total-no-filter"
 
 func HandleListGitspaces(spacesCtrl *space.Controller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -31,13 +34,14 @@ func HandleListGitspaces(spacesCtrl *space.Controller) http.HandlerFunc {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
-		filter := request.ParseListQueryFilterFromRequest(r)
-		repos, totalCount, err := spacesCtrl.ListGitspaces(ctx, session, spaceRef, filter)
+		filter := request.ParseGitspaceFilter(r)
+		repos, filterCount, totalCount, err := spacesCtrl.ListGitspaces(ctx, session, spaceRef, filter)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
-		render.Pagination(r, w, filter.Page, filter.Size, int(totalCount))
+		w.Header().Set(HeaderTotalWithoutFilter, strconv.FormatInt(totalCount, 10))
+		render.Pagination(r, w, filter.QueryFilter.Page, filter.QueryFilter.Size, int(filterCount))
 		render.JSON(w, http.StatusOK, repos)
 	}
 }

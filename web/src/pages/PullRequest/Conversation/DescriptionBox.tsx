@@ -35,9 +35,13 @@ import { useAppContext } from 'AppContext'
 import type { ConversationProps } from './Conversation'
 import css from './Conversation.module.scss'
 
-interface DescriptionBoxProps extends Omit<ConversationProps, 'onCancelEditDescription' | 'pullReqCommits'> {
+interface DescriptionBoxProps
+  extends Omit<
+    ConversationProps,
+    'onCancelEditDescription' | 'pullReqCommits' | 'refetchActivities' | 'refetchPullReq'
+  > {
   onCancelEditDescription: () => void
-  pullReqCommits: TypesListCommitResponse | undefined
+  pullReqCommits?: TypesListCommitResponse
 }
 
 export const DescriptionBox: React.FC<DescriptionBoxProps> = ({
@@ -247,7 +251,7 @@ export const DescriptionBox: React.FC<DescriptionBoxProps> = ({
         )) || (
           <React.Fragment key={originalContent}>
             <Container className={css.mdWrapper} ref={viewerDOMRef}>
-              <MarkdownViewer source={content} />
+              <MarkdownViewer source={content} repoMetadata={repoMetadata} />
               <Container className={css.menuWrapper}>
                 <OptionsMenuButton
                   isDark={true}

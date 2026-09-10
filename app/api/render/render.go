@@ -17,12 +17,17 @@ package render
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 
+	"github.com/harness/gitness/app/api/usererror"
+	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/app/url"
 	"github.com/harness/gitness/errors"
+	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/types"
 
 	"github.com/rs/zerolog/log"
@@ -44,7 +49,7 @@ func DeleteSuccessful(w http.ResponseWriter) {
 
 // JSON writes the json-encoded value to the response
 // with the provides status.
-func JSON(w http.ResponseWriter, code int, v interface{}) {
+func JSON(w http.ResponseWriter, code int, v any) {
 	setCommonHeaders(w)
 	w.WriteHeader(code)
 	writeJSON(w, v)
@@ -75,6 +80,15 @@ func JSONArrayDynamic[T comparable](ctx context.Context, w http.ResponseWriter, 
 		}
 
 		if err != nil {
+			// based on discussion unrelated histories error should return
+			// StatusOK on diff.
+			if uErr := api.AsUnrelatedHistoriesError(err); uErr != nil {
+				JSON(w, http.StatusOK, &usererror.Error{
+					Message: uErr.Error(),
+					Values:  uErr.Map(),
+				})
+				return
+			}
 			// User canceled the request - no need to do anything
 			if errors.Is(err, context.Canceled) {
 				return
@@ -119,8 +133,17 @@ func Unprocessable(w http.ResponseWriter, v any) {
 
 func Violations(w http.ResponseWriter, violations []types.RuleViolations) {
 	Unprocessable(w, types.RulesViolations{
+		Message:    protection.GenerateErrorMessageForBlockingViolations(violations),
 		Violations: violations,
 	})
+}
+
+// GitBasicAuth renders a response that indicates that the client (GIT) requires basic authentication.
+// This is required in order to tell git CLI to query user credentials.
+func GitBasicAuth(ctx context.Context, w http.ResponseWriter, urlProvider url.Provider) {
+	// Git doesn't seem to handle "realm" - so it doesn't seem to matter for basic user CLI interactions.
+	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, urlProvider.GetAPIHostname(ctx)))
+	w.WriteHeader(http.StatusUnauthorized)
 }
 
 func setCommonHeaders(w http.ResponseWriter) {

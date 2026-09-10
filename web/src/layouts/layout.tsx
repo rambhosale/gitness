@@ -15,14 +15,15 @@
  */
 
 import React from 'react'
-import { Avatar, Container, FlexExpander, Layout } from '@harnessio/uicore'
+import { useHistory } from 'react-router-dom'
+import { Avatar, Button, ButtonVariation, Container, FlexExpander, Layout } from '@harnessio/uicore'
 import { Render } from 'react-jsx-match'
 import { ProfileCircle } from 'iconoir-react'
 import { useAppContext } from 'AppContext'
 import { useStrings } from 'framework/strings'
 import { useDocumentTitle } from 'hooks/useDocumentTitle'
 import { NavMenuItem } from './menu/NavMenuItem'
-import { GitnessLogo } from '../components/GitnessLogo/GitnessLogo'
+import { HarnessLogo } from '../components/HarnessLogo/HarnessLogo'
 import { DefaultMenu } from './menu/DefaultMenu'
 import css from './layout.module.scss'
 
@@ -32,10 +33,9 @@ interface LayoutWithSideNavProps {
 }
 
 export const LayoutWithSideNav: React.FC<LayoutWithSideNavProps> = ({ title, children, menu = <DefaultMenu /> }) => {
-  const { routes } = useAppContext()
-  const { currentUser } = useAppContext()
+  const { routes, currentUser, isCurrentSessionPublic } = useAppContext()
+  const history = useHistory()
   const { getString } = useStrings()
-
   useDocumentTitle(title)
 
   return (
@@ -43,7 +43,7 @@ export const LayoutWithSideNav: React.FC<LayoutWithSideNavProps> = ({ title, chi
       <Layout.Horizontal className={css.layout}>
         <Container className={css.menu}>
           <Layout.Vertical spacing="small">
-            <GitnessLogo />
+            <HarnessLogo />
             <Container>{menu}</Container>
           </Layout.Vertical>
 
@@ -60,13 +60,27 @@ export const LayoutWithSideNav: React.FC<LayoutWithSideNavProps> = ({ title, chi
           </Render>
 
           <Render when={currentUser?.uid}>
-            <Container className={css.profile}>
+            <Container className={css.navContainer}>
               <NavMenuItem
                 label={currentUser?.display_name || currentUser?.email}
                 to={routes.toCODEUserProfile()}
                 textProps={{ tag: 'span' }}>
                 <Avatar name={currentUser?.display_name || currentUser?.email} size="small" hoverCard={false} />
               </NavMenuItem>
+            </Container>
+          </Render>
+
+          <Render when={isCurrentSessionPublic}>
+            <Container className={css.navContainer}>
+              <Button
+                onClick={() => history.push(routes.toSignIn())}
+                variation={ButtonVariation.PRIMARY}
+                intent="primary"
+                loading={false}
+                disabled={false}
+                width="100%">
+                {getString('signIn')}
+              </Button>
             </Container>
           </Render>
         </Container>

@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	events "github.com/harness/gitness/app/events/pipeline"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/check"
 	"github.com/harness/gitness/types/enum"
@@ -56,14 +56,9 @@ func (c *Controller) Create(
 		return nil, fmt.Errorf("failed to sanitize input: %w", err)
 	}
 
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.getRepoCheckPipelineAccess(ctx, session, repoRef, "", enum.PermissionPipelineEdit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find repo by ref: %w", err)
-	}
-
-	err = apiauth.CheckPipeline(ctx, c.authorizer, session, repo.Path, "", enum.PermissionPipelineEdit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to authorize pipeline: %w", err)
+		return nil, err
 	}
 
 	var pipeline *types.Pipeline
@@ -106,6 +101,9 @@ func (c *Controller) Create(
 	if err != nil {
 		log.Ctx(ctx).Err(err).Msg("failed to create auto trigger on pipeline creation")
 	}
+
+	// send pipeline create event
+	c.reporter.Created(ctx, &events.CreatedPayload{PipelineID: pipeline.ID, RepoID: pipeline.RepoID})
 
 	return pipeline, nil
 }

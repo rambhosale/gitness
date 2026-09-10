@@ -17,12 +17,14 @@ package pullreq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	events "github.com/harness/gitness/app/events/pullreq"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/store"
@@ -55,31 +57,35 @@ func (in *CommentCreateInput) IsCodeComment() bool {
 	return in.SourceCommitSHA != ""
 }
 
-func (in *CommentCreateInput) Validate() error {
-	// TODO: Validate Text size.
+func (in *CommentCreateInput) Sanitize() error {
+	in.Text = strings.TrimSpace(in.Text)
+
+	if err := validateComment(in.Text); err != nil {
+		return err
+	}
 
 	if in.SourceCommitSHA == "" && in.TargetCommitSHA == "" {
 		return nil // not a code comment
 	}
 
 	if in.SourceCommitSHA == "" || in.TargetCommitSHA == "" {
-		return usererror.BadRequest("for code comments source commit SHA and target commit SHA must be provided")
+		return usererror.BadRequest("For code comments source commit SHA and target commit SHA must be provided")
 	}
 
 	if in.ParentID != 0 {
-		return usererror.BadRequest("can't create a reply that is a code comment")
+		return usererror.BadRequest("Can't create a reply that is a code comment")
 	}
 
 	if in.Path == "" {
-		return usererror.BadRequest("code comment requires file path")
+		return usererror.BadRequest("Code comment requires file path")
 	}
 
 	if in.LineStart <= 0 || in.LineEnd <= 0 {
-		return usererror.BadRequest("code comments require line numbers")
+		return usererror.BadRequest("Code comments require line numbers")
 	}
 
 	if in.LineStartNew && !in.LineEndNew || !in.LineStartNew && in.LineEndNew {
-		return usererror.BadRequest("code block must start and end on the same side")
+		return usererror.BadRequest("Code block must start and end on the same side")
 	}
 
 	return nil
@@ -95,13 +101,13 @@ func (c *Controller) CommentCreate(
 	prNum int64,
 	in *CommentCreateInput,
 ) (*types.PullReqActivity, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
+	if err := in.Sanitize(); err != nil {
+		return nil, err
 	}
 
-	if errValidate := in.Validate(); errValidate != nil {
-		return nil, errValidate
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
 
 	var pr *types.PullReq
@@ -210,13 +216,32 @@ func (c *Controller) CommentCreate(
 		c.migrateCodeComment(ctx, repo, pr, in, act.AsCodeComment(), cut)
 	}
 
-	if err = c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-		log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullReqUpdated, pr)
+
+	// publish event for all comments
+	if act.Type == enum.PullReqActivityTypeComment || act.Type == enum.PullReqActivityTypeCodeComment {
+		c.reportCommentCreated(
+			ctx,
+			pr,
+			session.Principal.ID,
+			act.ID, act.IsReply(),
+		)
 	}
 
-	// if it's a regular comment publish a comment create event
-	if act.Type == enum.PullReqActivityTypeComment && act.Kind == enum.PullReqActivityKindComment {
-		c.reportCommentCreated(ctx, pr, session.Principal.ID, act.ID, act.IsReply())
+	err = c.instrumentation.Track(ctx, instrument.Event{
+		Type:      instrument.EventTypeCreatePRComment,
+		Principal: session.Principal.ToPrincipalInfo(),
+		Path:      repo.Path,
+		Properties: map[instrument.Property]any{
+			instrument.PropertyRepositoryID:              repo.ID,
+			instrument.PropertyRepositoryName:            repo.Identifier,
+			instrument.PropertyPullRequestID:             pr.Number,
+			instrument.PropertyCommentIsReplied:          in.IsReply(),
+			instrument.PropertyCommentContainsSuggestion: len(parseSuggestions(in.Text)) > 0,
+		},
+	})
+	if err != nil {
+		log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for create pull request comment operation: %s", err)
 	}
 
 	return act, nil
@@ -346,7 +371,7 @@ func setAsCodeComment(a *types.PullReqActivity, cut git.DiffCutOutput, path, sou
 
 func (c *Controller) fetchDiffCut(
 	ctx context.Context,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	in *CommentCreateInput,
 ) (git.DiffCutOutput, error) {
 	// maxDiffLineCount restricts the total length of a code comment diff to 1000 lines.
@@ -376,7 +401,7 @@ func (c *Controller) fetchDiffCut(
 
 func (c *Controller) migrateCodeComment(
 	ctx context.Context,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	pr *types.PullReq,
 	in *CommentCreateInput,
 	cc *types.CodeComment,

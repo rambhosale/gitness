@@ -18,6 +18,8 @@ import (
 	"context"
 
 	"github.com/harness/gitness/app/auth/authz"
+	userevents "github.com/harness/gitness/app/events/user"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
@@ -28,13 +30,18 @@ import (
 )
 
 type Controller struct {
-	tx                dbtx.Transactor
-	principalUIDCheck check.PrincipalUID
-	authorizer        authz.Authorizer
-	principalStore    store.PrincipalStore
-	tokenStore        store.TokenStore
-	membershipStore   store.MembershipStore
-	publicKeyStore    store.PublicKeyStore
+	tx                      dbtx.Transactor
+	principalUIDCheck       check.PrincipalUID
+	authorizer              authz.Authorizer
+	principalStore          store.PrincipalStore
+	tokenStore              store.TokenStore
+	membershipStore         store.MembershipStore
+	publicKeyStore          store.PublicKeyStore
+	publicKeySubKeyStore    store.PublicKeySubKeyStore
+	gitSignatureResultStore store.GitSignatureResultStore
+	eventReporter           *userevents.Reporter
+	repoFinder              refcache.RepoFinder
+	favoriteStore           store.FavoriteStore
 }
 
 func NewController(
@@ -45,15 +52,25 @@ func NewController(
 	tokenStore store.TokenStore,
 	membershipStore store.MembershipStore,
 	publicKeyStore store.PublicKeyStore,
+	publicKeySubKeyStore store.PublicKeySubKeyStore,
+	gitSignatureResultStore store.GitSignatureResultStore,
+	eventReporter *userevents.Reporter,
+	repoFinder refcache.RepoFinder,
+	favoriteStore store.FavoriteStore,
 ) *Controller {
 	return &Controller{
-		tx:                tx,
-		principalUIDCheck: principalUIDCheck,
-		authorizer:        authorizer,
-		principalStore:    principalStore,
-		tokenStore:        tokenStore,
-		membershipStore:   membershipStore,
-		publicKeyStore:    publicKeyStore,
+		tx:                      tx,
+		principalUIDCheck:       principalUIDCheck,
+		authorizer:              authorizer,
+		principalStore:          principalStore,
+		tokenStore:              tokenStore,
+		membershipStore:         membershipStore,
+		publicKeyStore:          publicKeyStore,
+		publicKeySubKeyStore:    publicKeySubKeyStore,
+		gitSignatureResultStore: gitSignatureResultStore,
+		eventReporter:           eventReporter,
+		repoFinder:              repoFinder,
+		favoriteStore:           favoriteStore,
 	}
 }
 

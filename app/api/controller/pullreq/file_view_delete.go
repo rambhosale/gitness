@@ -31,7 +31,7 @@ func (c *Controller) FileViewDelete(
 	prNum int64,
 	filePath string,
 ) error {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
 	if err != nil {
 		return fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
@@ -42,7 +42,7 @@ func (c *Controller) FileViewDelete(
 	}
 
 	if filePath == "" {
-		return usererror.BadRequest("file path can't be empty")
+		return usererror.BadRequest("File path can't be empty")
 	}
 
 	err = c.fileViewStore.DeleteByFileForPrincipal(ctx, pr.ID, session.Principal.ID, filePath)

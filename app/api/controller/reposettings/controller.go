@@ -16,12 +16,14 @@ package reposettings
 
 import (
 	"context"
+	"fmt"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/services/settings"
-	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
@@ -29,39 +31,75 @@ import (
 
 type Controller struct {
 	authorizer   authz.Authorizer
-	repoStore    store.RepoStore
+	repoFinder   refcache.RepoFinder
+	spaceFinder  refcache.SpaceFinder
 	settings     *settings.Service
 	auditService audit.Service
 }
 
 func NewController(
 	authorizer authz.Authorizer,
-	repoStore store.RepoStore,
+	repoFinder refcache.RepoFinder,
+	spaceFinder refcache.SpaceFinder,
 	settings *settings.Service,
 	auditService audit.Service,
 ) *Controller {
 	return &Controller{
 		authorizer:   authorizer,
-		repoStore:    repoStore,
+		repoFinder:   repoFinder,
+		spaceFinder:  spaceFinder,
 		settings:     settings,
 		auditService: auditService,
 	}
 }
 
-// getRepoCheckAccess fetches an active repo (not one that is currently being imported)
+// getRepoCheckAccess fetches a repo, checks if operation is allowed given the repo state
 // and checks if the current user has permission to access it.
 func (c *Controller) getRepoCheckAccess(
 	ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	reqPermission enum.Permission,
-) (*types.Repository, error) {
-	return repo.GetRepoCheckAccess(
+	allowedRepoStates ...enum.RepoState,
+) (*types.RepositoryCore, error) {
+	repo, err := repo.GetRepo(ctx, c.repoFinder, repoRef)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := apiauth.CheckRepoState(ctx, session, repo, reqPermission, allowedRepoStates...); err != nil {
+		return nil, err
+	}
+
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
+		return nil, fmt.Errorf("access check failed: %w", err)
+	}
+
+	return repo, nil
+}
+
+func (c *Controller) getSpaceCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	parentRef string,
+	reqPermission enum.Permission,
+) (*types.SpaceCore, error) {
+	space, err := c.spaceFinder.FindByRef(ctx, parentRef)
+	if err != nil {
+		return nil, fmt.Errorf("parent space not found: %w", err)
+	}
+
+	err = apiauth.CheckSpaceScope(
 		ctx,
-		c.repoStore,
 		c.authorizer,
 		session,
-		repoRef,
+		space,
+		enum.ResourceTypeSpace,
 		reqPermission,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("auth check failed: %w", err)
+	}
+
+	return space, nil
 }

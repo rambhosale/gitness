@@ -14,11 +14,79 @@
 
 package audit
 
-import "github.com/harness/gitness/types"
+import (
+	"time"
+
+	registrytypes "github.com/harness/gitness/registry/types"
+	"github.com/harness/gitness/types"
+)
 
 // RepositoryObject is the object used for emitting repository related audits.
 // TODO: ensure audit only takes audit related objects?
 type RepositoryObject struct {
 	types.Repository
 	IsPublic bool `yaml:"is_public"`
+}
+
+type RegistryObject struct {
+	registrytypes.Registry
+}
+
+type PullRequestObject struct {
+	PullReq        types.PullReq
+	RepoPath       string                 `yaml:"repo_path"`
+	RuleViolations []types.RuleViolations `yaml:"rule_violations"`
+	BypassMessage  string                 `yaml:"bypass_message,omitempty"`
+}
+
+type CommitObject struct {
+	CommitSHA      string                 `yaml:"commit_sha"`
+	RepoPath       string                 `yaml:"repo_path"`
+	RuleViolations []types.RuleViolations `yaml:"rule_violations"`
+}
+
+type CommitTagObject struct {
+	TagName        string                 `yaml:"tag_name"`
+	RepoPath       string                 `yaml:"repo_path"`
+	RuleViolations []types.RuleViolations `yaml:"rule_violations"`
+}
+
+type BranchObject struct {
+	BranchName     string                 `yaml:"branch_name"`
+	RepoPath       string                 `yaml:"repo_path"`
+	RuleViolations []types.RuleViolations `yaml:"rule_violations"`
+}
+
+type RegistryUpstreamProxyConfigObject struct {
+	ID         int64
+	RegistryID int64
+	Source     string
+	URL        string
+	AuthType   string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	CreatedBy  int64
+	UpdatedBy  int64
+}
+
+type RegistryUpstreamProxyConfigObjectEnhanced struct {
+	UUID            string
+	Name            string
+	ParentID        int64
+	RootParentID    int64
+	Description     string
+	Type            string
+	PackageType     string
+	UpstreamProxies []int64
+	AllowedPattern  []string
+	BlockedPattern  []string
+	Labels          []string
+	Source          string
+	URL             string
+	AuthType        string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	CreatedBy       int64
+	UpdatedBy       int64
+	IsPublic        bool
 }

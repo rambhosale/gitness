@@ -16,43 +16,68 @@ package types
 
 import "github.com/harness/gitness/types/enum"
 
+// ExecutionFilter stores execution query parameters.
+type ListExecutionsFilter struct {
+	ListQueryFilter
+	PipelineIdentifier string             `json:"pipeline_identifier"`
+	Sort               enum.ExecutionSort `json:"sort"`
+	Order              enum.Order         `json:"order"`
+}
+
 // Execution represents an instance of a pipeline execution.
 type Execution struct {
-	ID           int64             `json:"-"`
-	PipelineID   int64             `json:"pipeline_id"`
-	CreatedBy    int64             `json:"created_by"`
-	RepoID       int64             `json:"repo_id"`
-	Trigger      string            `json:"trigger,omitempty"`
-	Number       int64             `json:"number"`
-	Parent       int64             `json:"parent,omitempty"`
-	Status       enum.CIStatus     `json:"status"`
-	Error        string            `json:"error,omitempty"`
-	Event        string            `json:"event,omitempty"`
-	Action       string            `json:"action,omitempty"`
-	Link         string            `json:"link,omitempty"`
-	Timestamp    int64             `json:"timestamp,omitempty"`
-	Title        string            `json:"title,omitempty"`
-	Message      string            `json:"message,omitempty"`
-	Before       string            `json:"before,omitempty"`
-	After        string            `json:"after,omitempty"`
-	Ref          string            `json:"ref,omitempty"`
-	Fork         string            `json:"source_repo,omitempty"`
-	Source       string            `json:"source,omitempty"`
-	Target       string            `json:"target,omitempty"`
-	Author       string            `json:"author_login,omitempty"`
-	AuthorName   string            `json:"author_name,omitempty"`
-	AuthorEmail  string            `json:"author_email,omitempty"`
-	AuthorAvatar string            `json:"author_avatar,omitempty"`
-	Sender       string            `json:"sender,omitempty"`
-	Params       map[string]string `json:"params,omitempty"`
-	Cron         string            `json:"cron,omitempty"`
-	Deploy       string            `json:"deploy_to,omitempty"`
-	DeployID     int64             `json:"deploy_id,omitempty"`
-	Debug        bool              `json:"debug,omitempty"`
-	Started      int64             `json:"started,omitempty"`
-	Finished     int64             `json:"finished,omitempty"`
-	Created      int64             `json:"created"`
-	Updated      int64             `json:"updated"`
-	Version      int64             `json:"-"`
-	Stages       []*Stage          `json:"stages,omitempty"`
+	ID           int64              `json:"-"`
+	PipelineID   int64              `json:"pipeline_id"`
+	CreatedBy    int64              `json:"created_by"`
+	RepoID       int64              `json:"repo_id"`
+	Trigger      string             `json:"trigger,omitempty"`
+	Number       int64              `json:"number"`
+	Parent       int64              `json:"parent,omitempty"`
+	Status       enum.CIStatus      `json:"status"`
+	Error        string             `json:"error,omitempty"`
+	Event        enum.TriggerEvent  `json:"event,omitempty"`
+	Action       enum.TriggerAction `json:"action,omitempty"`
+	Link         string             `json:"link,omitempty"`
+	Timestamp    int64              `json:"timestamp,omitempty"`
+	Title        string             `json:"title,omitempty"`
+	Message      string             `json:"message,omitempty"`
+	Before       string             `json:"before,omitempty"`
+	After        string             `json:"after,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	Fork         string             `json:"source_repo,omitempty"`
+	Source       string             `json:"source,omitempty"`
+	Target       string             `json:"target,omitempty"`
+	Author       string             `json:"author_login,omitempty"`
+	AuthorName   string             `json:"author_name,omitempty"`
+	AuthorEmail  string             `json:"author_email,omitempty"`
+	AuthorAvatar string             `json:"author_avatar,omitempty"`
+	Sender       string             `json:"sender,omitempty"`
+	Params       map[string]string  `json:"params,omitempty"`
+	Cron         string             `json:"cron,omitempty"`
+	Deploy       string             `json:"deploy_to,omitempty"`
+	DeployID     int64              `json:"deploy_id,omitempty"`
+	Debug        bool               `json:"debug,omitempty"`
+	Started      int64              `json:"started,omitempty"`
+	Finished     int64              `json:"finished,omitempty"`
+	Created      int64              `json:"created"`
+	Updated      int64              `json:"updated"`
+	Version      int64              `json:"-"`
+	Stages       []*Stage           `json:"stages,omitempty"`
+
+	// Pipeline specific information not stored with executions
+	PipelineUID string `json:"pipeline_uid,omitempty"`
+
+	// Repo specific information not stored with executions
+	RepoUID string `json:"repo_uid,omitempty"`
+}
+
+type ExecutionInfo struct {
+	Number     int64             `db:"execution_number"      json:"number"`
+	PipelineID int64             `db:"execution_pipeline_id" json:"pipeline_id"`
+	Status     enum.CIStatus     `db:"execution_status"      json:"status"`
+	CreatedBy  int64             `db:"execution_created_by"  json:"created_by"`
+	Trigger    string            `db:"execution_trigger"     json:"trigger,omitempty"`
+	Event      enum.TriggerEvent `db:"execution_event"       json:"event,omitempty"`
+	Started    int64             `db:"execution_started"     json:"started,omitempty"`
+	Finished   int64             `db:"execution_finished"    json:"finished,omitempty"`
 }

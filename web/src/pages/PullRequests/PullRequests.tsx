@@ -15,25 +15,50 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Container, PageBody, Text, TableV2, Layout, StringSubstitute, FlexExpander, Utils } from '@harnessio/uicore'
+import {
+  Container,
+  PageBody,
+  Text,
+  TableV2,
+  Layout,
+  StringSubstitute,
+  FlexExpander,
+  Utils,
+  stringSubstitute
+} from '@harnessio/uicore'
 import { Icon } from '@harnessio/icons'
 import { Color, FontVariation } from '@harnessio/design-system'
 import { Link, useHistory } from 'react-router-dom'
 import { useGet } from 'restful-react'
 import type { CellProps, Column } from 'react-table'
 import { Case, Match, Render, Truthy } from 'react-jsx-match'
-import { defaultTo, noop } from 'lodash-es'
+import { defaultTo, isEmpty, noop } from 'lodash-es'
 import { makeDiffRefs, PullRequestFilterOption } from 'utils/GitUtils'
 import { useAppContext } from 'AppContext'
 import { useGetRepositoryMetadata } from 'hooks/useGetRepositoryMetadata'
 import { useStrings } from 'framework/strings'
 import { RepositoryPageHeader } from 'components/RepositoryPageHeader/RepositoryPageHeader'
-import { voidFn, getErrorMessage, LIST_FETCHING_LIMIT, permissionProps, PageBrowserProps } from 'utils/Utils'
+import {
+  voidFn,
+  getErrorMessage,
+  LIST_FETCHING_LIMIT,
+  permissionProps,
+  PageBrowserProps,
+  ColorName,
+  LabelFilterObj,
+  LabelFilterType,
+  OrderSortDate
+} from 'utils/Utils'
 import { usePageIndex } from 'hooks/usePageIndex'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import { useUpdateQueryParams } from 'hooks/useUpdateQueryParams'
 import { useQueryParams } from 'hooks/useQueryParams'
-import type { TypesPullReq, RepoRepositoryOutput } from 'services/code'
+import type {
+  TypesPullReq,
+  RepoRepositoryOutput,
+  TypesLabelPullReqAssignmentInfo,
+  TypesPrincipalInfo
+} from 'services/code'
 import { ResourceListingPagination } from 'components/ResourceListingPagination/ResourceListingPagination'
 import { NoResultCard } from 'components/NoResultCard/NoResultCard'
 import { PipeSeparator } from 'components/PipeSeparator/PipeSeparator'
@@ -42,6 +67,8 @@ import { PullRequestStateLabel } from 'components/PullRequestStateLabel/PullRequ
 import { LoadingSpinner } from 'components/LoadingSpinner/LoadingSpinner'
 import useSpaceSSE from 'hooks/useSpaceSSE'
 import { TimePopoverWithLocal } from 'utils/timePopoverLocal/TimePopoverWithLocal'
+import { Label } from 'components/Label/Label'
+import { getConfig } from 'services/config'
 import { PullRequestsContentHeader } from './PullRequestsContentHeader/PullRequestsContentHeader'
 import css from './PullRequests.module.scss'
 
@@ -50,18 +77,27 @@ const SSE_EVENTS = ['pullreq_updated']
 export default function PullRequests() {
   const { getString } = useStrings()
   const history = useHistory()
-  const { routes } = useAppContext()
+  const { routes, hooks, standalone } = useAppContext()
   const [searchTerm, setSearchTerm] = useState<string | undefined>()
   const browserParams = useQueryParams<PageBrowserProps>()
   const [filter, setFilter] = useState(browserParams?.state || (PullRequestFilterOption.OPEN as string))
-  const [authorFilter, setAuthorFilter] = useState<string>()
+  const [authorFilter, setAuthorFilter] = useState<string>(browserParams?.author ?? '')
+  const [labelFilter, setLabelFilter] = useState<LabelFilterObj[]>([])
   const space = useGetSpaceParam()
   const { updateQueryParams, replaceQueryParams } = useUpdateQueryParams()
   const pageInit = browserParams.page ? parseInt(browserParams.page) : 1
   const [page, setPage] = usePageIndex(pageInit)
+
+  const { data: principal, refetch: refetchPrincipal } = useGet<TypesPrincipalInfo>({
+    base: getConfig('code/api/v1'),
+    path: `/principals/${browserParams.author}`,
+    lazy: true
+  })
+
   useEffect(() => {
     const params = {
       ...browserParams,
+      ...(Boolean(authorFilter) && { author: authorFilter }),
       ...(page > 1 && { page: page.toString() }),
       ...(filter && { state: filter })
     }
@@ -72,7 +108,18 @@ export default function PullRequests() {
       delete updateParams.page
       replaceQueryParams(updateParams, undefined, true)
     }
-  }, [page, filter]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    if (!authorFilter && browserParams.author) {
+      const paramList = { ...params }
+      delete paramList.author
+      replaceQueryParams(paramList, undefined, true)
+    }
+
+    if (browserParams.author) {
+      refetchPrincipal()
+    }
+  }, [page, filter, authorFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const { repoMetadata, error, loading, refetch } = useGetRepositoryMetadata()
   const {
     data,
@@ -84,12 +131,26 @@ export default function PullRequests() {
     path: `/api/v1/repos/${repoMetadata?.path}/+/pullreq`,
     queryParams: {
       limit: String(LIST_FETCHING_LIMIT),
+      exclude_description: true,
       page: browserParams.page,
       sort: filter == PullRequestFilterOption.MERGED ? 'merged' : 'number',
-      order: 'desc',
+      order: OrderSortDate.DESC,
       query: searchTerm,
       state: browserParams.state ? browserParams.state : filter == PullRequestFilterOption.ALL ? '' : filter,
-      ...(authorFilter && { created_by: Number(authorFilter) })
+      ...(authorFilter && { created_by: Number(authorFilter) }),
+      ...(labelFilter.filter(({ type, valueId }) => type === LabelFilterType.LABEL || valueId === -1).length && {
+        label_id: labelFilter
+          .filter(({ type, valueId }) => type === LabelFilterType.LABEL || valueId === -1)
+          .map(({ labelId }) => labelId)
+      }),
+      ...(labelFilter.filter(({ type }) => type === LabelFilterType.VALUE).length && {
+        value_id: labelFilter
+          .filter(({ type, valueId }) => type === LabelFilterType.VALUE && valueId !== -1)
+          .map(({ valueId }) => valueId)
+      })
+    },
+    queryParamStringifyOptions: {
+      arrayFormat: 'repeat'
     },
     debounce: 500,
     lazy: !repoMetadata
@@ -112,8 +173,6 @@ export default function PullRequests() {
     onEvent: eventHandler
   })
 
-  const { standalone } = useAppContext()
-  const { hooks } = useAppContext()
   const permPushResult = hooks?.usePermissionTranslate?.(
     {
       resource: {
@@ -124,6 +183,76 @@ export default function PullRequests() {
     },
     [space]
   )
+
+  const handleLabelClick = (labelFilterArr: LabelFilterObj[], clickedLabel: TypesLabelPullReqAssignmentInfo) => {
+    // if not present - add :
+    const isLabelAlreadyAdded = labelFilterArr.map(({ labelId }) => labelId).includes(clickedLabel.id || -1)
+    const updatedLabelsList = [...labelFilterArr]
+    if (!isLabelAlreadyAdded && clickedLabel?.id) {
+      if (clickedLabel.value && clickedLabel.value_id) {
+        updatedLabelsList.push({
+          labelId: clickedLabel.id,
+          type: LabelFilterType.VALUE,
+          valueId: clickedLabel.value_id,
+          labelObj: clickedLabel,
+          valueObj: {
+            id: clickedLabel.value_id,
+            color: clickedLabel.value_color,
+            label_id: clickedLabel.id,
+            value: clickedLabel.value
+          }
+        })
+      } else if (clickedLabel.value_count && !clickedLabel.value_id) {
+        updatedLabelsList.push({
+          labelId: clickedLabel.id,
+          type: LabelFilterType.VALUE,
+          valueId: -1,
+          labelObj: clickedLabel,
+          valueObj: {
+            id: -1,
+            color: clickedLabel.value_color,
+            label_id: clickedLabel.id,
+            value: getString('labels.anyValueOption')
+          }
+        })
+      } else {
+        updatedLabelsList.push({
+          labelId: clickedLabel.id,
+          type: LabelFilterType.LABEL,
+          valueId: undefined,
+          labelObj: clickedLabel,
+          valueObj: undefined
+        })
+      }
+      setLabelFilter(updatedLabelsList)
+    }
+
+    // if 'any value' label present - replace :
+    const replacedAnyValueIfPresent = updatedLabelsList.map(filterObj => {
+      if (
+        filterObj.valueId === -1 &&
+        filterObj.labelId === clickedLabel.id &&
+        clickedLabel.value_id &&
+        clickedLabel.value
+      ) {
+        return {
+          ...filterObj,
+          valueId: clickedLabel.value_id,
+          valueObj: {
+            id: clickedLabel.value_id,
+            color: clickedLabel.value_color,
+            label_id: clickedLabel.id,
+            value: clickedLabel.value
+          }
+        }
+      }
+      return filterObj
+    })
+    const isUpdated = !updatedLabelsList.every((obj, index) => obj === replacedAnyValueIfPresent[index])
+    if (isUpdated) {
+      setLabelFilter(replacedAnyValueIfPresent)
+    }
+  }
 
   const columns: Column<TypesPullReq>[] = useMemo(
     () => [
@@ -141,23 +270,43 @@ export default function PullRequests() {
               <Layout.Horizontal className={css.titleRow} spacing="medium">
                 <PullRequestStateLabel iconSize={22} data={row.original} iconOnly />
                 <Container padding={{ left: 'small' }}>
-                  <Layout.Vertical spacing="xsmall">
+                  <Layout.Vertical spacing="small">
                     <Container>
-                      <Layout.Horizontal>
-                        <Text color={Color.GREY_800} className={css.title} lineClamp={1}>
-                          {row.original.title}
-                        </Text>
-                        <Container className={css.convo}>
-                          <Icon
-                            className={css.convoIcon}
-                            padding={{ left: 'medium', right: 'xsmall' }}
-                            name="code-chat"
-                            size={15}
-                          />
-                          <Text font={{ variation: FontVariation.SMALL }} color={Color.GREY_500} tag="span">
-                            {row.original.stats?.conversations}
+                      <Layout.Horizontal flex={{ alignItems: 'center' }} className={css.prLabels}>
+                        <Layout.Horizontal spacing={'xsmall'}>
+                          <Text color={Color.GREY_800} className={css.title} lineClamp={1}>
+                            {row.original.title}
                           </Text>
-                        </Container>
+
+                          <Container className={css.convo}>
+                            <Icon
+                              className={css.convoIcon}
+                              padding={{ left: 'small', right: 'small' }}
+                              name="code-chat"
+                              size={15}
+                            />
+                            <Text font={{ variation: FontVariation.SMALL }} color={Color.GREY_500} tag="span">
+                              {row.original.stats?.conversations}
+                            </Text>
+                          </Container>
+                        </Layout.Horizontal>
+                        <Render when={row.original && row.original.labels && row.original.labels.length !== 0}>
+                          {row.original?.labels?.map((label, index) => (
+                            <Label
+                              key={index}
+                              name={label.key as string}
+                              label_color={label.color as ColorName}
+                              label_value={{
+                                name: label.value as string,
+                                color: label.value_color as ColorName
+                              }}
+                              scope={label.scope}
+                              onClick={() => {
+                                handleLabelClick(labelFilter, label)
+                              }}
+                            />
+                          ))}
+                        </Render>
                       </Layout.Horizontal>
                     </Container>
                     <Container>
@@ -230,7 +379,6 @@ export default function PullRequests() {
     ],
     [getString] // eslint-disable-line react-hooks/exhaustive-deps
   )
-
   return (
     <Container className={css.main}>
       <RepositoryPageHeader
@@ -255,13 +403,69 @@ export default function PullRequests() {
                 setSearchTerm(value)
                 setPage(1)
               }}
+              activePullRequestAuthorObj={principal}
               activePullRequestAuthorFilterOption={authorFilter}
+              activePullRequestLabelFilterOption={labelFilter}
               onPullRequestAuthorFilterChanged={_authorFilter => {
                 setAuthorFilter(_authorFilter)
                 setPage(1)
               }}
+              onPullRequestLabelFilterChanged={_labelFilter => {
+                setLabelFilter(_labelFilter)
+                setPage(1)
+              }}
             />
             <Container padding="xlarge">
+              <Container padding={{ bottom: 'large' }}>
+                <Layout.Horizontal
+                  flex={{ alignItems: 'center', justifyContent: 'flex-start' }}
+                  style={{ flexWrap: 'wrap', gap: '5px' }}>
+                  <Render when={!isEmpty(labelFilter) || !prLoading}>
+                    <Text color={Color.GREY_400}>
+                      {isEmpty(data)
+                        ? !isEmpty(labelFilter) && getString('labels.noResults')
+                        : (stringSubstitute(getString('labels.prCount'), {
+                            count: data?.length
+                          }) as string)}
+                    </Text>
+                  </Render>
+
+                  {!isEmpty(labelFilter) &&
+                    labelFilter?.map((label, index) => (
+                      <Label
+                        key={index}
+                        name={label.labelObj.key as string}
+                        label_color={label.labelObj.color as ColorName}
+                        label_value={{
+                          name: label.valueObj?.value as string,
+                          color: label.valueObj?.color as ColorName
+                        }}
+                        scope={label.labelObj.scope}
+                        removeLabelBtn={true}
+                        handleRemoveClick={() => {
+                          if (label.type === LabelFilterType.VALUE) {
+                            const updateFilterObjArr = labelFilter.filter(filterObj => {
+                              if (!(filterObj.labelId === label.labelId && filterObj.type === LabelFilterType.VALUE)) {
+                                return filterObj
+                              }
+                            })
+                            setLabelFilter(updateFilterObjArr)
+                            setPage(1)
+                          } else if (label.type === LabelFilterType.LABEL) {
+                            const updateFilterObjArr = labelFilter.filter(filterObj => {
+                              if (!(filterObj.labelId === label.labelId && filterObj.type === LabelFilterType.LABEL)) {
+                                return filterObj
+                              }
+                            })
+                            setLabelFilter(updateFilterObjArr)
+                            setPage(1)
+                          }
+                        }}
+                        disableRemoveBtnTooltip={true}
+                      />
+                    ))}
+                </Layout.Horizontal>
+              </Container>
               <Match expr={data?.length}>
                 <Truthy>
                   <>
@@ -279,6 +483,8 @@ export default function PullRequests() {
                 <Case val={0}>
                   <NoResultCard
                     forSearch={!!searchTerm}
+                    forFilter={!isEmpty(labelFilter) || !isEmpty(authorFilter) || !isEmpty(filter)}
+                    emptyFilterMessage={getString('pullRequestNotFoundforFilter')}
                     message={getString('pullRequestEmpty')}
                     buttonText={getString('newPullRequest')}
                     onButtonClick={() =>

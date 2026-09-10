@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
 	"regexp"
+	"sync"
 )
 
 var (
@@ -32,6 +34,10 @@ var (
 
 // Command contains options for running a git command.
 type Command struct {
+	// Globals is the number of optional flags to pass before command name.
+	// example: git --shallow-file pack-objects ...
+	Globals []string
+
 	// Name is the name of the Git command to run, e.g. "log", "cat-file" or "worktree".
 	Name string
 
@@ -61,6 +67,8 @@ type Command struct {
 	// internal counter for GIT_CONFIG_COUNT environment variable.
 	// more info: [link](https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT)
 	configEnvCounter int
+
+	mux sync.RWMutex
 }
 
 // New creates new command for interacting with the git process.
@@ -70,15 +78,19 @@ func New(name string, options ...CmdOptionFunc) *Command {
 		Envs: make(Envs),
 	}
 
-	for _, opt := range options {
-		opt(c)
-	}
+	c.Add(options...)
 
 	return c
 }
 
 // Clone clones the command object.
 func (c *Command) Clone() *Command {
+	c.mux.RLock()
+	defer c.mux.RUnlock()
+
+	globals := make([]string, len(c.Globals))
+	copy(globals, c.Globals)
+
 	flags := make([]string, len(c.Flags))
 	copy(flags, c.Flags)
 
@@ -89,9 +101,7 @@ func (c *Command) Clone() *Command {
 	copy(postSepArgs, c.Flags)
 
 	envs := make(Envs, len(c.Envs))
-	for key, val := range c.Envs {
-		envs[key] = val
-	}
+	maps.Copy(envs, c.Envs)
 
 	return &Command{
 		Name:             c.Name,
@@ -106,6 +116,9 @@ func (c *Command) Clone() *Command {
 
 // Add appends given options to the command.
 func (c *Command) Add(options ...CmdOptionFunc) *Command {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+
 	for _, opt := range options {
 		opt(c)
 	}
@@ -174,12 +187,28 @@ func (c *Command) Run(ctx context.Context, opts ...RunOptionFunc) (err error) {
 }
 
 func (c *Command) makeArgs() ([]string, error) {
+	c.mux.RLock()
+	defer c.mux.RUnlock()
+
 	var safeArgs []string
 
 	commandDescription, ok := descriptions[c.Name]
 	if !ok {
 		return nil, fmt.Errorf("invalid sub command name %q: %w", c.Name, ErrInvalidArg)
 	}
+
+	if commandDescription.options != nil {
+		options := commandDescription.options()
+		for _, option := range options {
+			option(c)
+		}
+	}
+
+	// add globals
+	if len(c.Globals) > 0 {
+		safeArgs = append(safeArgs, c.Globals...)
+	}
+
 	safeArgs = append(safeArgs, c.Name)
 
 	if c.Action != "" {

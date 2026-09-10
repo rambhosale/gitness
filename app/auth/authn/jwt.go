@@ -27,27 +27,36 @@ import (
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/types"
 
-	gojwt "github.com/golang-jwt/jwt"
+	gojwt "github.com/golang-jwt/jwt/v5"
+)
+
+const (
+	headerTokenPrefixBearer = "Bearer "
+	//nolint:gosec // wrong flagging
+	HeaderTokenPrefixRemoteAuth = "RemoteAuth "
 )
 
 var _ Authenticator = (*JWTAuthenticator)(nil)
 
 // JWTAuthenticator uses the provided JWT to authenticate the caller.
 type JWTAuthenticator struct {
-	cookieName     string
-	principalStore store.PrincipalStore
-	tokenStore     store.TokenStore
+	cookieName          string
+	principalStore      store.PrincipalStore
+	tokenStore          store.TokenStore
+	anonymousUserSecret string
 }
 
 func NewTokenAuthenticator(
 	principalStore store.PrincipalStore,
 	tokenStore store.TokenStore,
 	cookieName string,
+	anonymousUserSecret string,
 ) *JWTAuthenticator {
 	return &JWTAuthenticator{
-		cookieName:     cookieName,
-		principalStore: principalStore,
-		tokenStore:     tokenStore,
+		cookieName:          cookieName,
+		principalStore:      principalStore,
+		tokenStore:          tokenStore,
+		anonymousUserSecret: anonymousUserSecret,
 	}
 }
 
@@ -59,45 +68,64 @@ func (a *JWTAuthenticator) Authenticate(r *http.Request) (*auth.Session, error) 
 		return nil, ErrNoAuthData
 	}
 
-	var principal *types.Principal
-	var err error
+	// First, parse claims just to get the principal ID (minimal parsing)
 	claims := &jwt.Claims{}
-	parsed, err := gojwt.ParseWithClaims(str, claims, func(_ *gojwt.Token) (interface{}, error) {
+	token, _, err := new(gojwt.Parser).ParseUnverified(str, claims)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse token format: %w", err)
+	}
+
+	// Check if it's the expected token format before proceeding
+	if _, ok := token.Method.(*gojwt.SigningMethodHMAC); !ok {
+		return nil, errors.New("invalid signature method for JWT")
+	}
+
+	// Fetch the principal
+	var principal *types.Principal
+	if claims.PrincipalID == -1 {
+		principal = &types.Principal{
+			ID:   auth.AnonymousPrincipal.ID,
+			UID:  auth.AnonymousPrincipal.UID,
+			Salt: a.anonymousUserSecret,
+		}
+	} else {
 		principal, err = a.principalStore.Find(ctx, claims.PrincipalID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get principal for token: %w", err)
 		}
-		return []byte(principal.Salt), nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("parsing of JWT claims failed: %w", err)
 	}
 
-	if !parsed.Valid {
-		return nil, errors.New("parsed JWT token is invalid")
-	}
+	// Support for multiple secrets (comma-separated)
+	saltValues := strings.Split(principal.Salt, ",")
+	var lastErr error
 
-	if _, ok := parsed.Method.(*gojwt.SigningMethodHMAC); !ok {
-		return nil, errors.New("invalid HMAC signature for JWT")
-	}
+	// Try each salt value until one works
+	for _, salt := range saltValues {
+		salt = strings.TrimSpace(salt)
+		// Parse with this salt
+		verifiedClaims := &jwt.Claims{}
+		parsedToken, err := gojwt.ParseWithClaims(
+			str,
+			verifiedClaims,
+			func(_ *gojwt.Token) (any, error) {
+				return []byte(salt), nil
+			},
+		)
 
-	var metadata auth.Metadata
-	switch {
-	case claims.Token != nil:
-		metadata, err = a.metadataFromTokenClaims(ctx, principal, claims.Token)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get metadata from token claims: %w", err)
+		if err == nil && parsedToken.Valid {
+			// Use the helper function to create the session
+			return createSessionFromClaims(ctx, a, principal, verifiedClaims)
 		}
-	case claims.Membership != nil:
-		metadata = a.metadataFromMembershipClaims(claims.Membership)
-	default:
-		return nil, fmt.Errorf("jwt is missing sub-claims")
+
+		lastErr = err
 	}
 
-	return &auth.Session{
-		Principal: *principal,
-		Metadata:  metadata,
-	}, nil
+	// All verification attempts failed
+	if lastErr != nil {
+		return nil, fmt.Errorf("JWT verification failed: %w", lastErr)
+	}
+
+	return nil, errors.New("JWT verification failed with all provided salts")
 }
 
 func (a *JWTAuthenticator) metadataFromTokenClaims(
@@ -113,8 +141,10 @@ func (a *JWTAuthenticator) metadataFromTokenClaims(
 
 	// protect against faked JWTs for other principals in case of single salt leak
 	if principal.ID != tkn.PrincipalID {
-		return nil, fmt.Errorf("JWT was for principal %d while db token was for principal %d",
-			principal.ID, tkn.PrincipalID)
+		return nil, fmt.Errorf(
+			"JWT was for principal %d while db token was for principal %d",
+			principal.ID, tkn.PrincipalID,
+		)
 	}
 
 	return &auth.TokenMetadata{
@@ -133,6 +163,14 @@ func (a *JWTAuthenticator) metadataFromMembershipClaims(
 	}
 }
 
+func (a *JWTAuthenticator) metadataFromAccessPermissions(
+	s *jwt.SubClaimsAccessPermissions,
+) auth.Metadata {
+	return &auth.AccessPermissionMetadata{
+		AccessPermissions: s,
+	}
+}
+
 func extractToken(r *http.Request, cookieName string) string {
 	// Check query param first (as that's most immediately visible to caller)
 	if queryToken, ok := request.GetAccessTokenFromQuery(r); ok {
@@ -148,8 +186,11 @@ func extractToken(r *http.Request, cookieName string) string {
 		_, pwd, _ := r.BasicAuth()
 		return pwd
 	// strip bearer prefix if present
-	case strings.HasPrefix(headerToken, "Bearer "):
-		return headerToken[7:]
+	case strings.HasPrefix(headerToken, headerTokenPrefixBearer):
+		return headerToken[len(headerTokenPrefixBearer):]
+	// for ssh git-lfs-authenticate the returned token prefix would be RemoteAuth of type JWT
+	case strings.HasPrefix(headerToken, HeaderTokenPrefixRemoteAuth):
+		return headerToken[len(HeaderTokenPrefixRemoteAuth):]
 	// otherwise use value as is
 	case headerToken != "":
 		return headerToken
@@ -162,4 +203,37 @@ func extractToken(r *http.Request, cookieName string) string {
 
 	// no token found
 	return ""
+}
+
+// createSessionFromClaims creates an auth session from verified JWT claims.
+func createSessionFromClaims(
+	ctx context.Context,
+	a *JWTAuthenticator,
+	principal *types.Principal,
+	claims *jwt.Claims,
+) (*auth.Session, error) {
+	var metadata auth.Metadata
+	switch {
+	case claims.Token != nil:
+		tokenMetadata, err := a.metadataFromTokenClaims(ctx, principal, claims.Token)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get metadata from token claims: %w", err)
+		}
+
+		return &auth.Session{
+			Principal: *principal,
+			Metadata:  tokenMetadata,
+		}, nil
+	case claims.Membership != nil:
+		metadata = a.metadataFromMembershipClaims(claims.Membership)
+	case claims.AccessPermissions != nil:
+		metadata = a.metadataFromAccessPermissions(claims.AccessPermissions)
+	default:
+		return nil, fmt.Errorf("jwt is missing sub-claims")
+	}
+
+	return &auth.Session{
+		Principal: *principal,
+		Metadata:  metadata,
+	}, nil
 }

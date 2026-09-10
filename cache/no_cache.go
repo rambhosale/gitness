@@ -35,3 +35,5 @@ func (c NoCache[K, V]) Stats() (int64, int64) {
 func (c NoCache[K, V]) Get(ctx context.Context, key K) (V, error) {
 	return c.getter.Find(ctx, key)
 }
+
+func (c NoCache[K, V]) Evict(context.Context, K) {}

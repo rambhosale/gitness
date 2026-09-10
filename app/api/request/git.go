@@ -27,20 +27,35 @@ import (
 )
 
 const (
+	HeaderParamGitProtocol = "Git-Protocol"
+
+	PathParamCommitSHA = "commit_sha"
+
 	QueryParamGitRef             = "git_ref"
 	QueryParamIncludeCommit      = "include_commit"
 	QueryParamIncludeDirectories = "include_directories"
-	PathParamCommitSHA           = "commit_sha"
+	QueryParamFlattenDirectories = "flatten_directories"
 	QueryParamLineFrom           = "line_from"
 	QueryParamLineTo             = "line_to"
 	QueryParamPath               = "path"
 	QueryParamSince              = "since"
 	QueryParamUntil              = "until"
 	QueryParamCommitter          = "committer"
-	QueryParamIncludeStats       = "include_stats"
-	QueryParamInternal           = "internal"
-	QueryParamService            = "service"
-	HeaderParamGitProtocol       = "Git-Protocol"
+	QueryParamCommitterID        = "committer_id"
+	QueryParamAuthor             = "author"
+	QueryParamAuthorID           = "author_id"
+
+	QueryParamIncludeStats = "include_stats"
+	QueryParamInternal     = "internal"
+	QueryParamService      = "service"
+	QueryParamCommitSHA    = "commit_sha"
+
+	QueryParamIncludeGitStats   = "include_git_stats"
+	QueryParamIncludeChecks     = "include_checks"
+	QueryParamIncludeRules      = "include_rules"
+	QueryParamIncludePullReqs   = "include_pullreqs"
+	QueryParamIncludeMergeQueue = "include_merge_queue"
+	QueryParamMaxDivergence     = "max_divergence"
 )
 
 func GetGitRefFromQueryOrDefault(r *http.Request, deflt string) string {
@@ -51,8 +66,40 @@ func GetIncludeCommitFromQueryOrDefault(r *http.Request, deflt bool) (bool, erro
 	return QueryParamAsBoolOrDefault(r, QueryParamIncludeCommit, deflt)
 }
 
+func GetIncludeStatsFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeStats, deflt)
+}
+
+func GetIncludeGitStatsFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeGitStats, deflt)
+}
+
+func GetIncludeChecksFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeChecks, deflt)
+}
+
+func GetIncludeRulesFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeRules, deflt)
+}
+
+func GetIncludePullReqsFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludePullReqs, deflt)
+}
+
+func GetIncludeMergeQueueFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeMergeQueue, deflt)
+}
+
+func GetMaxDivergenceFromQueryOrDefault(r *http.Request, deflt int64) (int64, error) {
+	return QueryParamAsPositiveInt64OrDefault(r, QueryParamMaxDivergence, deflt)
+}
+
 func GetIncludeDirectoriesFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
 	return QueryParamAsBoolOrDefault(r, QueryParamIncludeDirectories, deflt)
+}
+
+func GetFlattenDirectoriesFromQueryOrDefault(r *http.Request, deflt bool) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamFlattenDirectories, deflt)
 }
 
 func GetCommitSHAFromPath(r *http.Request) (string, error) {
@@ -66,15 +113,62 @@ func ParseSortBranch(r *http.Request) enum.BranchSortOption {
 	)
 }
 
-// ParseBranchFilter extracts the branch filter from the url.
-func ParseBranchFilter(r *http.Request) *types.BranchFilter {
-	return &types.BranchFilter{
-		Query: ParseQuery(r),
-		Sort:  ParseSortBranch(r),
-		Order: ParseOrder(r),
-		Page:  ParsePage(r),
-		Size:  ParseLimit(r),
+func ParseBranchMetadataOptions(r *http.Request) (types.BranchMetadataOptions, error) {
+	includeChecks, err := GetIncludeChecksFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.BranchMetadataOptions{}, err
 	}
+
+	includeRules, err := GetIncludeRulesFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.BranchMetadataOptions{}, err
+	}
+
+	includePullReqs, err := GetIncludePullReqsFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.BranchMetadataOptions{}, err
+	}
+
+	includeMergeQueue, err := GetIncludeMergeQueueFromQueryOrDefault(r, false)
+	if err != nil {
+		return types.BranchMetadataOptions{}, err
+	}
+
+	maxDivergence, err := GetMaxDivergenceFromQueryOrDefault(r, 0)
+	if err != nil {
+		return types.BranchMetadataOptions{}, err
+	}
+
+	return types.BranchMetadataOptions{
+		IncludeChecks:     includeChecks,
+		IncludeRules:      includeRules,
+		IncludePullReqs:   includePullReqs,
+		IncludeMergeQueue: includeMergeQueue,
+		MaxDivergence:     int(maxDivergence),
+	}, nil
+}
+
+// ParseBranchFilter extracts the branch filter from the url.
+func ParseBranchFilter(r *http.Request) (*types.BranchFilter, error) {
+	includeCommit, err := GetIncludeCommitFromQueryOrDefault(r, false)
+	if err != nil {
+		return nil, err
+	}
+
+	metadataOptions, err := ParseBranchMetadataOptions(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.BranchFilter{
+		Query:                 ParseQuery(r),
+		Sort:                  ParseSortBranch(r),
+		Order:                 ParseOrder(r),
+		Page:                  ParsePage(r),
+		Size:                  ParseLimit(r),
+		IncludeCommit:         includeCommit,
+		BranchMetadataOptions: metadataOptions,
+	}, nil
 }
 
 // ParseSortTag extracts the tag sort parameter from the url.
@@ -107,7 +201,17 @@ func ParseCommitFilter(r *http.Request) (*types.CommitFilter, error) {
 	if err != nil {
 		return nil, err
 	}
-	includeStats, err := QueryParamAsBoolOrDefault(r, QueryParamIncludeStats, false)
+	includeStats, err := GetIncludeStatsFromQueryOrDefault(r, false)
+	if err != nil {
+		return nil, err
+	}
+
+	committerIDs, err := QueryParamListAsPositiveInt64(r, QueryParamCommitterID)
+	if err != nil {
+		return nil, err
+	}
+
+	authorIDs, err := QueryParamListAsPositiveInt64(r, QueryParamAuthorID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +226,9 @@ func ParseCommitFilter(r *http.Request) (*types.CommitFilter, error) {
 		Since:        since,
 		Until:        until,
 		Committer:    QueryParamOrDefault(r, QueryParamCommitter, ""),
+		CommitterIDs: committerIDs,
+		Author:       QueryParamOrDefault(r, QueryParamAuthor, ""),
+		AuthorIDs:    authorIDs,
 		IncludeStats: includeStats,
 	}, nil
 }
@@ -141,7 +248,7 @@ func GetGitServiceTypeFromQuery(r *http.Request) (enum.GitServiceType, error) {
 		return "", fmt.Errorf("failed to get param from query: %w", err)
 	}
 	if !strings.HasPrefix(val, gitPrefix) {
-		return "", usererror.BadRequestf("not a git service type: %q", val)
+		return "", usererror.BadRequestf("Not a git service type: %q", val)
 	}
 
 	return enum.ParseGitServiceType(val[len(gitPrefix):])
@@ -171,4 +278,8 @@ func GetFileDiffFromQuery(r *http.Request) (files gittypes.FileDiffRequests) {
 		})
 	}
 	return
+}
+
+func GetCommitSHAFromQueryOrDefault(r *http.Request) string {
+	return QueryParamOrDefault(r, QueryParamCommitSHA, "")
 }

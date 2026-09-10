@@ -40,7 +40,7 @@ type service struct {
 // Canceler cancels a build.
 type Canceler interface {
 	// Cancel cancels the provided execution.
-	Cancel(ctx context.Context, repo *types.Repository, execution *types.Execution) error
+	Cancel(ctx context.Context, repo *types.RepositoryCore, execution *types.Execution) error
 }
 
 // New returns a cancellation service that encapsulates
@@ -64,7 +64,7 @@ func New(
 }
 
 //nolint:gocognit // refactor if needed.
-func (s *service) Cancel(ctx context.Context, repo *types.Repository, execution *types.Execution) error {
+func (s *service) Cancel(ctx context.Context, repo *types.RepositoryCore, execution *types.Execution) error {
 	log := log.With().
 		Int64("execution.id", execution.ID).
 		Str("execution.status", string(execution.Status)).
@@ -146,12 +146,7 @@ func (s *service) Cancel(ctx context.Context, repo *types.Repository, execution 
 	execution.Stages = stages
 	log.Info().Msg("canceler: successfully cancelled build")
 
-	// trigger a SSE to notify subscribers that
-	// the execution was cancelled.
-	err = s.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypeExecutionCanceled, execution)
-	if err != nil {
-		log.Debug().Err(err).Msg("canceler: failed to publish server-sent event")
-	}
+	s.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypeExecutionCanceled, execution)
 
 	return nil
 }

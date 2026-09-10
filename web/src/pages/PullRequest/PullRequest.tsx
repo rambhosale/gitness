@@ -28,7 +28,7 @@ import { CodeIcon } from 'utils/GitUtils'
 import type { TypesPullReq, RepoRepositoryOutput } from 'services/code'
 import { LoadingSpinner } from 'components/LoadingSpinner/LoadingSpinner'
 import { TabTitleWithCount, tabContainerCSS } from 'components/TabTitleWithCount/TabTitleWithCount'
-import { ExecutionStatus } from 'components/ExecutionStatus/ExecutionStatus'
+import { ExecutionStatus, ExecutionState } from 'components/ExecutionStatus/ExecutionStatus'
 import { useSetPageContainerWidthVar } from 'hooks/useSetPageContainerWidthVar'
 import { useScrollTop } from 'hooks/useScrollTop'
 import { PullRequestMetaLine } from './PullRequestMetaLine'
@@ -59,8 +59,11 @@ export default function PullRequest() {
     commitSHA,
     refetchActivities,
     refetchCommits,
+    refetchPullReq,
     retryOnErrorFunc
   } = useGetPullRequestInfo()
+  const [edit, setEdit] = useState(false)
+  const [currentRef, setCurrentRef] = useState('')
 
   const onAddDescriptionClick = useCallback(() => {
     setShowEditDescription(true)
@@ -97,6 +100,9 @@ export default function PullRequest() {
               repoMetadata={repoMetadata}
               {...pullReqMetadata}
               onAddDescriptionClick={onAddDescriptionClick}
+              currentRef={currentRef as string}
+              edit={edit}
+              setEdit={setEdit}
             />
           ) : (
             ''
@@ -117,7 +123,13 @@ export default function PullRequest() {
 
         <Render when={repoMetadata && pullReqMetadata}>
           <>
-            <PullRequestMetaLine repoMetadata={repoMetadata as RepoRepositoryOutput} {...pullReqMetadata} />
+            <PullRequestMetaLine
+              repoMetadata={repoMetadata as RepoRepositoryOutput}
+              {...pullReqMetadata}
+              edit={edit}
+              currentRef={currentRef as string}
+              setCurrentRef={setCurrentRef}
+            />
 
             <Container className={tabContainerCSS.tabsContainer}>
               <Tabs
@@ -158,6 +170,8 @@ export default function PullRequest() {
                         prStats={pullReqStats}
                         showEditDescription={showEditDescription}
                         onCancelEditDescription={() => setShowEditDescription(false)}
+                        refetchPullReq={refetchPullReq}
+                        refetchActivities={refetchActivities}
                       />
                     )
                   },
@@ -238,7 +252,9 @@ export default function PullRequest() {
                                   padding={{ left: 'xsmall' }}
                                   tag="span"
                                   font={{ variation: FontVariation.FORM_MESSAGE_WARNING }}>
-                                  {pullReqChecksDecision?.count[pullReqChecksDecision?.overallStatus]}
+                                  {pullReqChecksDecision?.overallStatus === ExecutionState.IGNORE_FAILED
+                                    ? pullReqChecksDecision?.count?.failure_ignored || 0
+                                    : pullReqChecksDecision?.count?.[pullReqChecksDecision?.overallStatus] || 0}
                                 </Text>
                               </Layout.Horizontal>
                             </Container>

@@ -15,18 +15,31 @@
 package publickey
 
 import (
+	"github.com/harness/gitness/app/services/keyfetcher"
 	"github.com/harness/gitness/app/store"
 
 	"github.com/google/wire"
 )
 
 var WireSet = wire.NewSet(
-	ProvidePublicKey,
+	ProvideSSHAuthService,
+	ProvideSignatureVerifyService,
 )
 
-func ProvidePublicKey(
+func ProvideSSHAuthService(
 	publicKeyStore store.PublicKeyStore,
 	pCache store.PrincipalInfoCache,
-) Service {
-	return NewService(publicKeyStore, pCache)
+) SSHAuthService {
+	return NewSSHAuthService(publicKeyStore, pCache)
+}
+
+func ProvideSignatureVerifyService(
+	principalStore store.PrincipalStore,
+	keyFetcher keyfetcher.Service,
+	gitSignatureResultStore store.GitSignatureResultStore,
+) SignatureVerifyService {
+	return NewSignatureVerifyService(
+		principalStore,
+		keyFetcher,
+		gitSignatureResultStore)
 }

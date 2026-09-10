@@ -18,17 +18,20 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/bootstrap"
+	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/githook"
 	"github.com/harness/gitness/app/paths"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/resources"
@@ -48,22 +51,26 @@ var (
 type CreateInput struct {
 	ParentRef string `json:"parent_ref"`
 	// TODO [CODE-1363]: remove after identifier migration.
-	UID           string `json:"uid" deprecated:"true"`
-	Identifier    string `json:"identifier"`
-	DefaultBranch string `json:"default_branch"`
-	Description   string `json:"description"`
-	IsPublic      bool   `json:"is_public"`
-	ForkID        int64  `json:"fork_id"`
-	Readme        bool   `json:"readme"`
-	License       string `json:"license"`
-	GitIgnore     string `json:"git_ignore"`
+	UID           string         `json:"uid" deprecated:"true"`
+	Identifier    string         `json:"identifier"`
+	DefaultBranch string         `json:"default_branch"`
+	Description   string         `json:"description"`
+	IsPublic      bool           `json:"is_public"`
+	Tags          types.RepoTags `json:"tags"`
+	CreateFileOptions
+}
+
+type CreateFileOptions struct {
+	Readme    bool   `json:"readme"`
+	License   string `json:"license"`
+	GitIgnore string `json:"git_ignore"`
 }
 
 // Create creates a new repository.
 //
 //nolint:gocognit
 func (c *Controller) Create(ctx context.Context, session *auth.Session, in *CreateInput) (*RepositoryOutput, error) {
-	if err := c.sanitizeCreateInput(in); err != nil {
+	if err := c.sanitizeCreateInput(in, session); err != nil {
 		return nil, fmt.Errorf("failed to sanitize input: %w", err)
 	}
 
@@ -72,7 +79,8 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 		return nil, err
 	}
 
-	isPublicAccessSupported, err := c.publicAccess.IsPublicAccessSupported(ctx, parentSpace.Path)
+	isPublicAccessSupported, err := c.publicAccess.
+		IsPublicAccessSupported(ctx, enum.PublicResourceTypeRepo, parentSpace.Path)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to check if public access is supported for parent space %q: %w",
@@ -84,12 +92,32 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 		return nil, errPublicRepoCreationDisabled
 	}
 
-	err = c.repoCheck.Create(ctx, session, in)
+	err = c.repoCheck.Create(ctx, session, &CheckInput{
+		ParentRef:         parentSpace.Path,
+		Identifier:        in.Identifier,
+		DefaultBranch:     in.DefaultBranch,
+		Description:       in.Description,
+		IsPublic:          in.IsPublic,
+		IsFork:            false,
+		CreateFileOptions: in.CreateFileOptions,
+		Tags:              in.Tags,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	gitResp, isEmpty, err := c.createGitRepository(ctx, session, in)
+	// a repository whose import failed occupies the identifier without holding any data - remove it.
+	if err := c.EnsureIdentifierAvailable(ctx, session, parentSpace.ID, in.Identifier); err != nil {
+		return nil, err
+	}
+
+	gitResp, isEmpty, err := c.createGitRepository(
+		ctx,
+		session,
+		in.Identifier,
+		in.Description,
+		in.DefaultBranch,
+		in.CreateFileOptions)
 	if err != nil {
 		return nil, fmt.Errorf("error creating repository on git: %w", err)
 	}
@@ -100,25 +128,36 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 			return fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
 		}
 
+		// A space that is over an enforced storage limit takes no new repository - the
+		// first push into it would be rejected anyway.
+		if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, parentSpace.ID); err != nil {
+			return err
+		}
+
 		// lock the space for update during repo creation to prevent racing conditions with space soft delete.
-		parentSpace, err = c.spaceStore.FindForUpdate(ctx, parentSpace.ID)
+		parentSpaceFull, err := c.spaceStore.FindForUpdate(ctx, parentSpace.ID)
 		if err != nil {
 			return fmt.Errorf("failed to find the parent space: %w", err)
 		}
 
 		now := time.Now().UnixMilli()
+		tags, _ := json.Marshal(in.Tags) // should never fail as we sanitize the input type
 		repo = &types.Repository{
-			Version:       0,
-			ParentID:      parentSpace.ID,
-			Identifier:    in.Identifier,
-			GitUID:        gitResp.UID,
-			Description:   in.Description,
-			CreatedBy:     session.Principal.ID,
-			Created:       now,
-			Updated:       now,
-			ForkID:        in.ForkID,
-			DefaultBranch: in.DefaultBranch,
-			IsEmpty:       isEmpty,
+			Version:             0,
+			ParentID:            parentSpace.ID,
+			RootSpaceID:         parentSpaceFull.RootSpaceID,
+			RootSpaceIdentifier: parentSpaceFull.RootSpaceIdentifier,
+			Identifier:          in.Identifier,
+			GitUID:              gitResp.UID,
+			Description:         in.Description,
+			CreatedBy:           session.Principal.ID,
+			Created:             now,
+			Updated:             now,
+			LastGITPush:         now, // even in case of an empty repo, the git repo got created.
+			ForkID:              0,
+			DefaultBranch:       in.DefaultBranch,
+			IsEmpty:             isEmpty,
+			Tags:                tags,
 		}
 
 		return c.repoStore.Create(ctx, repo)
@@ -142,16 +181,16 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 			return nil, fmt.Errorf("failed to set repo public access (and repo purge: %w): %w", dErr, err)
 		}
 
-		return nil, fmt.Errorf("failed to set repo public access (succesfull cleanup): %w", err)
+		return nil, fmt.Errorf("failed to set repo public access (successful cleanup): %w", err)
 	}
 
 	// backfil GitURL
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
-	repoOutput := &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   in.IsPublic,
+	repoOutput, err := GetRepoOutputWithAccess(ctx, c.repoFinder, in.IsPublic, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo output: %w", err)
 	}
 
 	err = c.auditService.Log(ctx,
@@ -168,6 +207,25 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 		log.Ctx(ctx).Warn().Msgf("failed to insert audit log for create repository operation: %s", err)
 	}
 
+	err = c.instrumentation.Track(ctx, instrument.Event{
+		Type:      instrument.EventTypeRepositoryCreate,
+		Principal: session.Principal.ToPrincipalInfo(),
+		Path:      repo.Path,
+		Properties: map[instrument.Property]any{
+			instrument.PropertyRepositoryID:           repo.ID,
+			instrument.PropertyRepositoryName:         repo.Identifier,
+			instrument.PropertyRepositoryCreationType: instrument.CreationTypeCreate,
+		},
+	})
+	if err != nil {
+		log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for create repository operation: %s", err)
+	}
+
+	c.eventReporter.Created(ctx, &repoevents.CreatedPayload{
+		Base:     eventBase(repo.Core(), &session.Principal),
+		IsPublic: in.IsPublic,
+	})
+
 	// index repository if files are created
 	if !repo.IsEmpty {
 		err = c.indexer.Index(ctx, repo)
@@ -179,43 +237,17 @@ func (c *Controller) Create(ctx context.Context, session *auth.Session, in *Crea
 	return repoOutput, nil
 }
 
-func (c *Controller) getSpaceCheckAuthRepoCreation(
-	ctx context.Context,
-	session *auth.Session,
-	parentRef string,
-) (*types.Space, error) {
-	space, err := c.spaceStore.FindByRef(ctx, parentRef)
-	if err != nil {
-		return nil, fmt.Errorf("parent space not found: %w", err)
-	}
-
-	// create is a special case - check permission without specific resource
-	err = apiauth.CheckSpaceScope(
-		ctx,
-		c.authorizer,
-		session,
-		space,
-		enum.ResourceTypeRepo,
-		enum.PermissionRepoEdit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("auth check failed: %w", err)
-	}
-
-	return space, nil
-}
-
-func (c *Controller) sanitizeCreateInput(in *CreateInput) error {
+func (c *Controller) sanitizeCreateInput(in *CreateInput, session *auth.Session) error {
 	// TODO [CODE-1363]: remove after identifier migration.
 	if in.Identifier == "" {
 		in.Identifier = in.UID
 	}
 
-	if err := c.validateParentRef(in.ParentRef); err != nil {
+	if err := ValidateParentRef(in.ParentRef); err != nil {
 		return err
 	}
 
-	if err := c.identifierCheck(in.Identifier); err != nil {
+	if err := c.identifierCheck(in.Identifier, session); err != nil {
 		return err
 	}
 
@@ -228,37 +260,54 @@ func (c *Controller) sanitizeCreateInput(in *CreateInput) error {
 		in.DefaultBranch = c.defaultBranch
 	}
 
+	err := in.Tags.Sanitize()
+	if err != nil {
+		return fmt.Errorf("failed to sanitize tags: %w", err)
+	}
+
 	return nil
 }
 
-func (c *Controller) createGitRepository(ctx context.Context, session *auth.Session,
-	in *CreateInput) (*git.CreateRepositoryOutput, bool, error) {
+func (c *Controller) createGitRepository(
+	ctx context.Context,
+	session *auth.Session,
+	identifier string,
+	description string,
+	defaultBranch string,
+	options CreateFileOptions,
+) (*git.CreateRepositoryOutput, bool, error) {
 	var (
 		err     error
 		content []byte
 	)
 	files := make([]git.File, 0, 3) // readme, gitignore, licence
-	if in.Readme {
-		content = createReadme(in.Identifier, in.Description)
+	if options.Readme {
+		content = createReadme(identifier, description)
 		files = append(files, git.File{
 			Path:    "README.md",
 			Content: content,
 		})
 	}
-	if in.License != "" && in.License != "none" {
-		content, err = resources.ReadLicense(in.License)
+	if options.License != "" && options.License != "none" {
+		content, err = resources.ReadLicense(options.License)
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to read license '%s': %w", in.License, err)
+			if os.IsNotExist(err) {
+				return nil, false, usererror.BadRequestf("Unsupported license template %q.", options.License)
+			}
+			return nil, false, fmt.Errorf("failed to read license %q: %w", options.License, err)
 		}
 		files = append(files, git.File{
 			Path:    "LICENSE",
 			Content: content,
 		})
 	}
-	if in.GitIgnore != "" {
-		content, err = resources.ReadGitIgnore(in.GitIgnore)
+	if options.GitIgnore != "" {
+		content, err = resources.ReadGitIgnore(options.GitIgnore)
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to read git ignore '%s': %w", in.GitIgnore, err)
+			if os.IsNotExist(err) {
+				return nil, false, usererror.BadRequestf("Unsupported gitignore template %q.", options.GitIgnore)
+			}
+			return nil, false, fmt.Errorf("failed to read gitignore %q: %w", options.GitIgnore, err)
 		}
 		files = append(files, git.File{
 			Path:    ".gitignore",
@@ -267,13 +316,13 @@ func (c *Controller) createGitRepository(ctx context.Context, session *auth.Sess
 	}
 
 	// generate envars (add everything githook CLI needs for execution)
-	envVars, err := githook.GenerateEnvironmentVariables(
+	envVars, err := githook.GenerateEnvironmentVariablesForOperation(
 		ctx,
-		c.urlProvider.GetInternalAPIURL(),
+		c.urlProvider.GetInternalAPIURL(ctx),
 		0,
 		session.Principal.ID,
 		true,
-		true,
+		enum.GitOpTypeManageRepo,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to generate git hook environment variables: %w", err)
@@ -285,7 +334,7 @@ func (c *Controller) createGitRepository(ctx context.Context, session *auth.Sess
 	resp, err := c.git.CreateRepository(ctx, &git.CreateRepositoryParams{
 		Actor:         *actor,
 		EnvVars:       envVars,
-		DefaultBranch: in.DefaultBranch,
+		DefaultBranch: defaultBranch,
 		Files:         files,
 		Author:        actor,
 		AuthorDate:    &now,

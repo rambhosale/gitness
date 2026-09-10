@@ -16,6 +16,7 @@ package blob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,8 +40,14 @@ type GCSStore struct {
 }
 
 func NewGCSStore(ctx context.Context, cfg Config) (Store, error) {
-	// Use service account [Development and Non-GCP environments]
-	if cfg.KeyPath != "" {
+	// Validate bucket name is provided
+	if cfg.Bucket == "" {
+		return nil, errors.New("bucket name is required")
+	}
+
+	switch {
+	case cfg.KeyPath != "":
+		// Use service account key file [Development and Non-GCP environments]
 		client, err := storage.NewClient(ctx, option.WithCredentialsFile(cfg.KeyPath))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create GCS client with service account key: %w", err)
@@ -50,22 +57,34 @@ func NewGCSStore(ctx context.Context, cfg Config) (Store, error) {
 			cachedClient:        client,
 			tokenExpirationTime: time.Now().Add(cfg.ImpersonationLifetime),
 		}, nil
+	case cfg.TargetPrincipal == "":
+		// Use direct Workload Identity [GKE environments with direct SA access]
+		client, err := storage.NewClient(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCS client with default credentials: %w", err)
+		}
+		return &GCSStore{
+			config:       cfg,
+			cachedClient: client,
+			// No token expiration for default credentials - managed by GCP
+			tokenExpirationTime: time.Time{}, // Zero time - never expires
+		}, nil
+	default:
+		// Use Workload Identity with impersonation [GKE environments with SA impersonation]
+		client, err := createNewImpersonatedClient(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCS client with workload identity impersonation: %w", err)
+		}
+		return &GCSStore{
+			config:              cfg,
+			cachedClient:        client,
+			tokenExpirationTime: time.Now().Add(cfg.ImpersonationLifetime),
+		}, nil
 	}
-
-	client, err := createNewImpersonatedClient(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCS client with workload identity impersonation: %w", err)
-	}
-
-	return &GCSStore{
-		config:              cfg,
-		cachedClient:        client,
-		tokenExpirationTime: time.Now().Add(cfg.ImpersonationLifetime),
-	}, nil
 }
 
 func (c *GCSStore) Upload(ctx context.Context, file io.Reader, filePath string) error {
-	gcsClient, err := c.getLatestClient(ctx)
+	gcsClient, err := c.getClient(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve latest client: %w", err)
 	}
@@ -75,15 +94,17 @@ func (c *GCSStore) Upload(ctx context.Context, file io.Reader, filePath string) 
 	defer func() {
 		cErr := wc.Close()
 		if cErr != nil {
-			log.Ctx(ctx).Err(cErr).
-				Msgf("failed to close gcs blob writer for file '%s' in bucket '%s'", filePath, c.config.Bucket)
+			log.Ctx(ctx).Warn().Err(cErr).
+				Msgf("failed to close gcs blob writer for file %q in bucket %q", filePath, c.config.Bucket)
 		}
 	}()
 	if _, err := io.Copy(wc, file); err != nil {
-		// Remove the file if it was created.
+		// Best effort attempt to delete the file on upload failure.
 		deleteErr := gcsClient.Bucket(c.config.Bucket).Object(filePath).Delete(ctx)
 		if deleteErr != nil {
-			return fmt.Errorf("failed to delete file: %s from bucket: %s %w", filePath, c.config.Bucket, deleteErr)
+			log.Ctx(ctx).Warn().Err(deleteErr).Msgf(
+				"failed to cleanup file %q from bucket %q after write to gcs failed with %s",
+				filePath, c.config.Bucket, err)
 		}
 		return fmt.Errorf("failed to write file to GCS: %w", err)
 	}
@@ -91,25 +112,96 @@ func (c *GCSStore) Upload(ctx context.Context, file io.Reader, filePath string) 
 	return nil
 }
 
-func (c *GCSStore) GetSignedURL(ctx context.Context, filePath string) (string, error) {
-	gcsClient, err := c.getLatestClient(ctx)
+func (c *GCSStore) GetSignedURL(
+	ctx context.Context,
+	filePath string,
+	expire time.Time,
+	opts ...SignURLOption) (string, error) {
+	gcsClient, err := c.getClient(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to retrieve latest client: %w", err)
 	}
 
+	config := SignURLConfig{
+		Method: http.MethodGet,
+	}
+
+	for _, opt := range opts {
+		opt.Apply(&config)
+	}
+
 	bkt := gcsClient.Bucket(c.config.Bucket)
 	signedURL, err := bkt.SignedURL(filePath, &storage.SignedURLOptions{
-		Method:  http.MethodGet,
-		Expires: time.Now().Add(1 * time.Hour),
+		Method:          config.Method,
+		Expires:         expire,
+		ContentType:     config.ContentType,
+		Headers:         config.Headers,
+		QueryParameters: config.QueryParameters,
+		Insecure:        config.Insecure,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create signed URL for file: %s %w", filePath, err)
+		return "", fmt.Errorf("failed to create signed URL for file %q: %w", filePath, err)
 	}
 	return signedURL, nil
 }
 
-func (c *GCSStore) Download(_ context.Context, _ string) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("not implemented")
+func (c *GCSStore) Download(ctx context.Context, filePath string) (io.ReadCloser, error) {
+	gcsClient, err := c.getClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve latest client: %w", err)
+	}
+
+	bkt := gcsClient.Bucket(c.config.Bucket)
+	rc, err := bkt.Object(filePath).NewReader(ctx)
+	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to create reader for file %q in bucket %q: %w", filePath, c.config.Bucket, err)
+	}
+
+	return rc, nil
+}
+
+func (c *GCSStore) Move(ctx context.Context, srcPath, dstPath string) error {
+	gcsClient, err := c.getClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve latest client: %w", err)
+	}
+
+	bkt := gcsClient.Bucket(c.config.Bucket)
+	srcObj := bkt.Object(srcPath)
+	dstObj := bkt.Object(dstPath)
+
+	if _, err := dstObj.CopierFrom(srcObj).Run(ctx); err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to copy file from %q to %q: %w", srcPath, dstPath, err)
+	}
+
+	if err := srcObj.Delete(ctx); err != nil {
+		log.Ctx(ctx).Warn().Err(err).Msgf(
+			"failed to delete source file %q after successful copy to %q", srcPath, dstPath)
+	}
+
+	return nil
+}
+
+func (c *GCSStore) Delete(ctx context.Context, filePath string) error {
+	gcsClient, err := c.getClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve latest client: %w", err)
+	}
+
+	bkt := gcsClient.Bucket(c.config.Bucket)
+	if err := bkt.Object(filePath).Delete(ctx); err != nil {
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to delete file %q: %w", filePath, err)
+	}
+	return nil
 }
 
 func createNewImpersonatedClient(ctx context.Context, cfg Config) (*storage.Client, error) {
@@ -120,7 +212,7 @@ func createNewImpersonatedClient(ctx context.Context, cfg Config) (*storage.Clie
 		Lifetime:        cfg.ImpersonationLifetime,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to impersonate the client service account %s : %w", cfg.TargetPrincipal, err)
+		return nil, fmt.Errorf("failed to impersonate the client service account %q: %w", cfg.TargetPrincipal, err)
 	}
 
 	// Generate a new token
@@ -136,7 +228,12 @@ func createNewImpersonatedClient(ctx context.Context, cfg Config) (*storage.Clie
 	return client, nil
 }
 
-func (c *GCSStore) getLatestClient(ctx context.Context) (*storage.Client, error) {
+func (c *GCSStore) getClient(ctx context.Context) (*storage.Client, error) {
+	// Skip token refresh for direct Workload Identity (no impersonation)
+	if c.config.KeyPath == "" && c.config.TargetPrincipal == "" {
+		return c.cachedClient, nil
+	}
+
 	err := c.checkAndRefreshToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh token: %w", err)

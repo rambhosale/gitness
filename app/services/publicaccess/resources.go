@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/harness/gitness/app/paths"
+	"github.com/harness/gitness/registry/types"
 	"github.com/harness/gitness/types/enum"
 )
 
@@ -33,6 +35,8 @@ func (s *service) getResourceID(
 		id, err = s.getResourceRepo(ctx, resourcePath)
 	case enum.PublicResourceTypeSpace:
 		id, err = s.getResourceSpace(ctx, resourcePath)
+	case enum.PublicResourceTypeRegistry:
+		id, err = s.getResourceRegistry(ctx, resourcePath)
 	default:
 		return 0, fmt.Errorf("invalid public resource type")
 	}
@@ -48,7 +52,7 @@ func (s *service) getResourceRepo(
 	ctx context.Context,
 	path string,
 ) (int64, error) {
-	repo, err := s.repoStore.FindByRef(ctx, path)
+	repo, err := s.repoFinder.FindByRef(ctx, path)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find repo: %w", err)
 	}
@@ -60,10 +64,32 @@ func (s *service) getResourceSpace(
 	ctx context.Context,
 	path string,
 ) (int64, error) {
-	space, err := s.spaceStore.FindByRef(ctx, path)
+	space, err := s.spaceFinder.FindByRef(ctx, path)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find space: %w", err)
 	}
 
 	return space.ID, nil
+}
+
+func (s *service) getResourceRegistry(
+	ctx context.Context,
+	path string,
+) (int64, error) {
+	rootRef, _, err := paths.DisectRoot(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to disect root from path: %w", err)
+	}
+	_, registryIdentifier, err := paths.DisectLeaf(path)
+	if err != nil {
+		return 0, fmt.Errorf("failed to disect leaf from path: %w", err)
+	}
+	// Pass WithAllDeleted to find both active and soft-deleted registries
+	// This is needed when checking public access for deleted registries (e.g., in list API with deleted=ONLY)
+	repo, err := s.registryFinder.FindByRootRef(ctx, rootRef, registryIdentifier, types.WithAllDeleted())
+	if err != nil {
+		return 0, fmt.Errorf("failed to find repo: %w", err)
+	}
+
+	return repo.ID, nil
 }

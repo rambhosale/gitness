@@ -19,27 +19,40 @@ import cx from 'classnames'
 import { useGet, useMutate } from 'restful-react'
 import { Render } from 'react-jsx-match'
 import type {
+  DeletePullReqSourceBranchQueryParams,
   TypesCodeOwnerEvaluation,
   TypesListCommitResponse,
   TypesPullReq,
   TypesPullReqActivity,
-  TypesPullReqReviewer,
   RepoRepositoryOutput,
-  TypesRuleViolations
+  TypesRuleViolations,
+  TypesBranchExtended,
+  TypesDefaultReviewerApprovalsResponse,
+  PullreqCombinedListResponse
 } from 'services/code'
-import { PanelSectionOutletPosition } from 'pages/PullRequest/PullRequestUtils'
-import { MergeCheckStatus, PRMergeOption } from 'utils/Utils'
-import { PullRequestState, dryMerge } from 'utils/GitUtils'
+import {
+  PRMergeOption,
+  PanelSectionOutletPosition,
+  extractInfoFromRuleViolationArr,
+  extractSpecificViolations,
+  getMergeOptions
+} from 'pages/PullRequest/PullRequestUtils'
+import { MergeCheckStatus } from 'utils/Utils'
+import { MergeStrategy, PullRequestState, dryMerge } from 'utils/GitUtils'
 import { useStrings } from 'framework/strings'
 import type { PRChecksDecisionResult } from 'hooks/usePRChecksDecision'
 import { useGetRepositoryMetadata } from 'hooks/useGetRepositoryMetadata'
+import { UserPreference, useUserPreference } from 'hooks/useUserPreference'
 import { PullRequestActionsBox } from '../PullRequestActionsBox/PullRequestActionsBox'
 import PullRequestPanelSections from './PullRequestPanelSections'
 import ChecksSection from './sections/ChecksSection'
 import MergeSection from './sections/MergeSection'
 import CommentsSection from './sections/CommentsSection'
 import ChangesSection from './sections/ChangesSection'
+import BranchActionsSection from './sections/BranchActionsSection'
+import RebaseSourceSection from './sections/RebaseSourceSection'
 import css from './PullRequestOverviewPanel.module.scss'
+
 interface PullRequestOverviewPanelProps {
   repoMetadata: RepoRepositoryOutput
   pullReqMetadata: TypesPullReq
@@ -47,12 +60,14 @@ interface PullRequestOverviewPanelProps {
   refetchReviewers: () => void
   prChecksDecisionResult: PRChecksDecisionResult
   codeOwners: TypesCodeOwnerEvaluation | null
-  reviewers: TypesPullReqReviewer[] | null
+  combinedReviewers: PullreqCombinedListResponse | null
   setActivityFilter: (val: SelectOption) => void
   loadingReviewers: boolean
+  refetchActivities: () => void
   refetchCodeOwners: () => void
-  activities: TypesPullReqActivity[] | undefined
-  pullReqCommits: TypesListCommitResponse | undefined
+  refetchPullReq: () => void
+  activities?: TypesPullReqActivity[]
+  pullReqCommits?: TypesListCommitResponse
 }
 
 const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
@@ -63,16 +78,19 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
     pullReqMetadata,
     onPRStateChanged,
     refetchReviewers,
-    reviewers,
+    combinedReviewers,
     loadingReviewers,
+    refetchActivities,
     refetchCodeOwners,
     activities,
-    pullReqCommits
+    pullReqCommits,
+    refetchPullReq
   } = props
   const { getString } = useStrings()
   const { showError } = useToaster()
 
   const isMounted = useIsMounted()
+  const isMerged = pullReqMetadata.state === PullRequestState.MERGED
   const isClosed = pullReqMetadata.state === PullRequestState.CLOSED
 
   const unchecked = useMemo(
@@ -87,78 +105,115 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
   const [reqCodeOwnerApproval, setReqCodeOwnerApproval] = useState(false)
   const [minApproval, setMinApproval] = useState(0)
   const [reqCodeOwnerLatestApproval, setReqCodeOwnerLatestApproval] = useState(false)
+  const [defaultReviewersInfoSet, setDefaultReviewersInfoSet] = useState<TypesDefaultReviewerApprovalsResponse[]>([])
   const [minReqLatestApproval, setMinReqLatestApproval] = useState(0)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [resolvedCommentArr, setResolvedCommentArr] = useState<any>()
+  const [mergeBlockedRule, setMergeBlockedRule] = useState<boolean>(false)
   const [PRStateLoading, setPRStateLoading] = useState(isClosed ? false : true)
   const { pullRequestSection } = useGetRepositoryMetadata()
   const mergeable = useMemo(() => pullReqMetadata.merge_check_status === MergeCheckStatus.MERGEABLE, [pullReqMetadata])
-  const mergeOptions: PRMergeOption[] = [
-    {
-      method: 'squash',
-      title: getString('pr.mergeOptions.squashAndMerge'),
-      desc: getString('pr.mergeOptions.squashAndMergeDesc'),
-      disabled: mergeable === false,
-      label: getString('pr.mergeOptions.squashAndMerge'),
-      value: 'squash'
-    },
-    {
-      method: 'merge',
-      title: getString('pr.mergeOptions.createMergeCommit'),
-      desc: getString('pr.mergeOptions.createMergeCommitDesc'),
-      disabled: mergeable === false,
-      label: getString('pr.mergeOptions.createMergeCommit'),
-      value: 'merge'
-    },
-    {
-      method: 'rebase',
-      title: getString('pr.mergeOptions.rebaseAndMerge'),
-      desc: getString('pr.mergeOptions.rebaseAndMergeDesc'),
-      disabled: mergeable === false,
-      label: getString('pr.mergeOptions.rebaseAndMerge'),
-      value: 'rebase'
-    },
-
-    {
-      method: 'close',
-      title: getString('pr.mergeOptions.close'),
-      desc: getString('pr.mergeOptions.closeDesc'),
-      label: getString('pr.mergeOptions.close'),
-      value: 'close'
-    }
-  ]
+  const mergeOptions = useMemo(() => getMergeOptions(getString, mergeable), [mergeable])
   const [allowedStrats, setAllowedStrats] = useState<string[]>([
     mergeOptions[0].method,
     mergeOptions[1].method,
     mergeOptions[2].method,
     mergeOptions[3].method
   ])
-  const { mutate: mergePR } = useMutate({
+  const [showDeleteBranchButton, setShowDeleteBranchButton] = useState(false)
+  const [showRestoreBranchButton, setShowRestoreBranchButton] = useState(false)
+  const [isSourceBranchDeleted, setIsSourceBranchDeleted] = useState(false)
+
+  const {
+    data: sourceBranch,
+    error,
+    refetch: refetchBranch
+  } = useGet<TypesBranchExtended>({
+    path: `/api/v1/repos/${repoMetadata?.path}/+/branches/${pullReqMetadata?.source_branch}`,
+    queryParams: {
+      repo_ref: repoMetadata.path || '',
+      branch_name: pullReqMetadata.source_branch || ''
+    },
+    lazy: true
+  })
+  const { mutate: deleteBranch } = useMutate({
+    verb: 'DELETE',
+    path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/branch`,
+    queryParams: { bypass_rules: true, dry_run_rules: true } as DeletePullReqSourceBranchQueryParams
+  })
+  const { mutate: restoreBranch } = useMutate({
+    verb: 'POST',
+    path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/branch`
+  })
+  const { mutate: mergePR, loading: mergeLoading } = useMutate({
     verb: 'POST',
     path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/merge`
   })
-  const { data: data } = useGet({
-    path: `/api/v1/repos/${repoMetadata.path}/+/rules`
-  })
+
   // Flags to optimize rendering
   const internalFlags = useRef({ dryRun: false })
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function extractSpecificViolations(violationsData: any, rule: string) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const specificViolations = violationsData?.data?.rule_violations.flatMap((violation: { violations: any[] }) =>
-      violation.violations.filter(v => v.code === rule)
-    )
-    return specificViolations
-  }
+
+  useEffect(() => {
+    if (isMerged || isClosed) {
+      refetchBranch()
+    }
+  }, [isMerged, isClosed])
+
+  useEffect(() => {
+    if (error && error.status === 404) {
+      setIsSourceBranchDeleted(true)
+      restoreBranch({
+        bypass_rules: true,
+        dry_run_rules: true
+      })
+        .then(res => {
+          if (res?.rule_violations) {
+            const { checkIfBypassNotAllowed } = extractInfoFromRuleViolationArr(res.rule_violations)
+            if (!checkIfBypassNotAllowed) {
+              setShowRestoreBranchButton(true)
+            } else {
+              setShowRestoreBranchButton(false)
+            }
+          } else {
+            setShowRestoreBranchButton(true)
+          }
+        })
+        .catch(err => console.error('Dry run failed while trying to restore branch', err)) // eslint-disable-line no-console
+    }
+  }, [error])
+
+  useEffect(() => {
+    if (sourceBranch?.sha === pullReqMetadata?.source_sha) {
+      deleteBranch({})
+        .then(res => {
+          if (res?.rule_violations) {
+            const { checkIfBypassNotAllowed } = extractInfoFromRuleViolationArr(res.rule_violations)
+            if (!checkIfBypassNotAllowed) {
+              setShowDeleteBranchButton(true)
+            } else {
+              setShowDeleteBranchButton(false)
+            }
+          } else {
+            setShowDeleteBranchButton(true)
+          }
+        })
+        .catch(err => console.error('Dry run failed while trying to delete branch', err)) // eslint-disable-line no-console
+    }
+  }, [sourceBranch, pullReqMetadata?.source_sha])
 
   useEffect(() => {
     if (ruleViolationArr) {
       const requireResCommentRule = extractSpecificViolations(ruleViolationArr, 'pullreq.comments.require_resolve_all')
+      const mergeBlockedViaRule = extractSpecificViolations(ruleViolationArr, 'pullreq.merge.blocked')
       if (requireResCommentRule) {
         setResolvedCommentArr(requireResCommentRule[0])
       }
+      setMergeBlockedRule(mergeBlockedViaRule.length > 0)
+    } else {
+      setMergeBlockedRule(false)
     }
-  }, [ruleViolationArr, pullReqMetadata, repoMetadata, data, ruleViolation])
+  }, [ruleViolationArr, pullReqMetadata, repoMetadata, ruleViolation])
+
   useEffect(() => {
     // recheck PR in case source SHA changed or PR was marked as unchecked
     // TODO: optimize call to handle all causes and avoid double calls by keeping track of SHA
@@ -174,15 +229,28 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
       pullRequestSection,
       showError,
       setConflictingFiles,
+      refetchPullReq,
       setRequiresCommentApproval,
       setAtLeastOneReviewerRule,
       setReqCodeOwnerApproval,
       setMinApproval,
       setReqCodeOwnerLatestApproval,
       setMinReqLatestApproval,
-      setPRStateLoading
+      setPRStateLoading,
+      setDefaultReviewersInfoSet
     ) // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unchecked, pullReqMetadata?.source_sha, activities])
+
+  const rebasePossible = useMemo(
+    () => pullReqMetadata.merge_target_sha !== pullReqMetadata.merge_base_sha && !pullReqMetadata.merged,
+    [pullReqMetadata]
+  )
+
+  const [mergeOption, setMergeOption] = useUserPreference<PRMergeOption>(
+    UserPreference.PULL_REQUEST_MERGE_STRATEGY,
+    mergeOptions[0],
+    option => option.method !== 'close'
+  )
 
   return (
     <Container margin={{ bottom: 'medium' }} className={css.mainContainer}>
@@ -197,8 +265,21 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
           allowedStrategy={allowedStrats}
           pullReqCommits={pullReqCommits}
           PRStateLoading={PRStateLoading || loadingReviewers}
+          refetchPullReq={refetchPullReq}
+          refetchActivities={refetchActivities}
+          restoreBranch={restoreBranch}
+          refetchBranch={refetchBranch}
+          deleteBranch={deleteBranch}
+          showRestoreBranchButton={showRestoreBranchButton}
+          showDeleteBranchButton={showDeleteBranchButton}
+          setShowDeleteBranchButton={setShowDeleteBranchButton}
+          setShowRestoreBranchButton={setShowRestoreBranchButton}
+          isSourceBranchDeleted={isSourceBranchDeleted}
+          mergeOption={mergeOption}
+          setMergeOption={setMergeOption}
+          rebasePossible={rebasePossible}
         />
-        {pullReqMetadata.state !== PullRequestState.CLOSED && (
+        {!isClosed ? (
           <PullRequestPanelSections
             outlets={{
               [PanelSectionOutletPosition.CHANGES]: !pullReqMetadata.merged && (
@@ -212,10 +293,12 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
                     atLeastOneReviewerRule={atLeastOneReviewerRule}
                     reqCodeOwnerApproval={reqCodeOwnerApproval}
                     minApproval={minApproval}
-                    reviewers={reviewers}
+                    combinedReviewers={combinedReviewers}
                     minReqLatestApproval={minReqLatestApproval}
                     reqCodeOwnerLatestApproval={reqCodeOwnerLatestApproval}
                     refetchCodeOwners={refetchCodeOwners}
+                    mergeBlockedRule={mergeBlockedRule}
+                    defaultReviewersInfoSet={defaultReviewersInfoSet}
                   />
                 </Render>
               ),
@@ -240,6 +323,34 @@ const PullRequestOverviewPanel = (props: PullRequestOverviewPanelProps) => {
                   unchecked={unchecked}
                   mergeable={mergeable}
                   conflictingFiles={conflictingFiles}
+                />
+              ),
+              [PanelSectionOutletPosition.REBASE_SOURCE_BRANCH]: rebasePossible &&
+                !mergeLoading &&
+                !conflictingFiles?.length &&
+                mergeOption.method === MergeStrategy.FAST_FORWARD && (
+                  <RebaseSourceSection
+                    pullReqMetadata={pullReqMetadata}
+                    repoMetadata={repoMetadata}
+                    refetchActivities={refetchActivities}
+                  />
+                )
+            }}
+          />
+        ) : (
+          <PullRequestPanelSections
+            outlets={{
+              [PanelSectionOutletPosition.BRANCH_ACTIONS]: (showDeleteBranchButton || showRestoreBranchButton) && (
+                <BranchActionsSection
+                  sourceBranch={sourceBranch?.name || pullReqMetadata.source_branch || ''}
+                  restoreBranch={restoreBranch}
+                  refetchBranch={refetchBranch}
+                  refetchActivities={refetchActivities}
+                  deleteBranch={deleteBranch}
+                  showDeleteBranchButton={showDeleteBranchButton}
+                  setShowRestoreBranchButton={setShowRestoreBranchButton}
+                  setShowDeleteBranchButton={setShowDeleteBranchButton}
+                  setIsSourceBranchDeleted={setIsSourceBranchDeleted}
                 />
               )
             }}

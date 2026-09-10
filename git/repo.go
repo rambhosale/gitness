@@ -18,15 +18,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/git/check"
 	"github.com/harness/gitness/git/hash"
+	"github.com/harness/gitness/git/hook"
+	"github.com/harness/gitness/git/sha"
+	"github.com/harness/gitness/git/sharedrepo"
+	"github.com/harness/gitness/langstats"
 
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/rs/zerolog/log"
@@ -96,6 +104,15 @@ type GetRepositorySizeParams struct {
 	ReadParams
 }
 
+type GetRepoLanguageStatsParams struct {
+	ReadParams
+	Branch string
+}
+
+type GetRepoLanguageStatsOutput struct {
+	Stats map[string]*langstats.LangStat
+}
+
 type GetRepositorySizeOutput struct {
 	// Total size of the repository in KiB.
 	Size int64
@@ -109,6 +126,10 @@ type SyncRepositoryParams struct {
 	// RefSpecs [OPTIONAL] allows to override the refspecs that are being synced from the remote repository.
 	// By default all references present on the remote repository will be fetched (including scm internal ones).
 	RefSpecs []string
+	// DefaultBranch [OPTIONAL] allows to override the default branch of the repository.
+	// If empty, the default branch will be set to match the remote repository's default branch.
+	// WARNING: If the remote repo is empty and no value is provided, an api.ErrNoDefaultBranch error is returned.
+	DefaultBranch string
 }
 
 type SyncRepositoryOutput struct {
@@ -130,7 +151,15 @@ type HashRepositoryOutput struct {
 }
 type UpdateDefaultBranchParams struct {
 	WriteParams
-	// BranchName is the name of the branch
+	// BranchName is the name of the branch (not the full reference).
+	BranchName string
+}
+
+type GetDefaultBranchParams struct {
+	ReadParams
+}
+type GetDefaultBranchOutput struct {
+	// BranchName is the name of the branch (not the full reference).
 	BranchName string
 }
 
@@ -205,13 +234,6 @@ func (s *Service) DeleteRepository(ctx context.Context, params *DeleteRepository
 	if err := params.Validate(); err != nil {
 		return err
 	}
-	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-
-	if _, err := os.Stat(repoPath); err != nil && os.IsNotExist(err) {
-		return errors.NotFound("repository path not found")
-	} else if err != nil {
-		return fmt.Errorf("failed to check the status of the repository %v: %w", repoPath, err)
-	}
 
 	return s.DeleteRepositoryBestEffort(ctx, params.RepoUID)
 }
@@ -221,19 +243,25 @@ func (s *Service) DeleteRepositoryBestEffort(ctx context.Context, repoUID string
 	tempPath := path.Join(s.reposGraveyard, repoUID)
 
 	// delete should not fail if repoGraveyard dir does not exist.
-	if _, err := os.Stat(s.reposGraveyard); os.IsNotExist(err) {
+	if _, err := os.Stat(s.reposGraveyard); errors.Is(err, fs.ErrNotExist) {
 		if errdir := os.MkdirAll(s.reposGraveyard, fileMode700); errdir != nil {
 			return fmt.Errorf("clean up dir '%s' doesn't exist and can't be created: %w", s.reposGraveyard, errdir)
 		}
 	}
+
 	// move current dir to a temp dir (prevent partial deletion)
-	if err := os.Rename(repoPath, tempPath); err != nil {
+	err := os.Rename(repoPath, tempPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.NotFound("repository path not found") // caller decides whether ignore this error
+	}
+	if err != nil {
 		return fmt.Errorf("couldn't move dir %s to %s : %w", repoPath, tempPath, err)
 	}
 
 	if err := os.RemoveAll(tempPath); err != nil {
 		log.Ctx(ctx).Warn().Err(err).Msgf("failed to delete dir %s from graveyard", tempPath)
 	}
+
 	return nil
 }
 
@@ -246,20 +274,21 @@ func (s *Service) SyncRepository(
 	}
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
+	source := s.convertRepoSource(params.Source)
 
 	// create repo if requested
 	_, err := os.Stat(repoPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, errors.Internal(err, "failed to create repository")
 	}
 
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		if !params.CreateIfNotExists {
 			return nil, errors.NotFound("repository not found")
 		}
 
 		// the default branch doesn't matter for a sync,
-		// we create an empty repo and the head will by updated as part of the Sync.
+		// we create an empty repo and the head will by updated later.
 		const syncDefaultBranch = "main"
 		if err = s.createRepositoryInternal(
 			ctx,
@@ -276,26 +305,24 @@ func (s *Service) SyncRepository(
 	}
 
 	// sync repo content
-	err = s.git.Sync(ctx, repoPath, params.Source, params.RefSpecs)
+	err = s.git.Sync(ctx, repoPath, source, params.RefSpecs)
 	if err != nil {
-		return nil, fmt.Errorf("SyncRepository: failed to sync git repo: %w", err)
+		return nil, fmt.Errorf("failed to sync from source repo: %w", err)
 	}
 
-	// get remote default branch
-	defaultBranch, err := s.git.GetRemoteDefaultBranch(ctx, params.Source)
-	if errors.Is(err, api.ErrNoDefaultBranch) {
-		return &SyncRepositoryOutput{
-			DefaultBranch: "",
-		}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("SyncRepository: failed to get default branch from repo: %w", err)
+	defaultBranch := params.DefaultBranch
+	if defaultBranch == "" {
+		// get default branch from remote repo (returns api.ErrNoDefaultBranch if repo is empty!)
+		defaultBranch, err = s.git.GetRemoteDefaultBranch(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get default branch from source repo: %w", err)
+		}
 	}
 
 	// set default branch
 	err = s.git.SetDefaultBranch(ctx, repoPath, defaultBranch, true)
 	if err != nil {
-		return nil, fmt.Errorf("SyncRepository: failed to set default branch of repo: %w", err)
+		return nil, fmt.Errorf("failed to set default branch of repo: %w", err)
 	}
 
 	return &SyncRepositoryOutput{
@@ -329,7 +356,8 @@ func (s *Service) HashRepository(ctx context.Context, params *HashRepositoryPara
 		}()
 
 		// add default branch to hash
-		defaultBranch, err := s.git.GetDefaultBranch(goCtx, repoPath)
+		// IMPORTANT: Has to stay as is to ensure hash consistency! (e.g. "refs/heads/main/n")
+		defaultBranchRef, err := s.git.GetSymbolicRefHeadRaw(goCtx, repoPath)
 		if err != nil {
 			hashChan <- hash.SourceNext{
 				Err: fmt.Errorf("HashRepository: failed to get default branch: %w", err),
@@ -338,7 +366,7 @@ func (s *Service) HashRepository(ctx context.Context, params *HashRepositoryPara
 		}
 
 		hashChan <- hash.SourceNext{
-			Data: hash.SerializeHead(defaultBranch),
+			Data: hash.SerializeHead(defaultBranchRef),
 		}
 
 		err = s.git.WalkReferences(goCtx, repoPath, func(wre api.WalkReferencesEntry) error {
@@ -393,8 +421,8 @@ func (s *Service) createRepositoryInternal(
 ) error {
 	log := log.Ctx(ctx)
 	repoPath := getFullPathForRepo(s.reposRoot, base.RepoUID)
-	if _, err := os.Stat(repoPath); !os.IsNotExist(err) {
-		return errors.Conflict("repository already exists at path %q", repoPath)
+	if _, err := os.Stat(repoPath); !errors.Is(err, fs.ErrNotExist) {
+		return errors.Conflictf("repository already exists at path %q", repoPath)
 	}
 
 	// create repository in repos folder
@@ -406,7 +434,7 @@ func (s *Service) createRepositoryInternal(
 	defer func() {
 		if err != nil {
 			cleanuperr := s.DeleteRepositoryBestEffort(ctx, base.RepoUID)
-			if cleanuperr != nil {
+			if cleanuperr != nil && !errors.IsNotFound(cleanuperr) {
 				log.Warn().Err(cleanuperr).Msg("failed to cleanup repo dir")
 			}
 		}
@@ -454,7 +482,7 @@ func (s *Service) createRepositoryInternal(
 			break
 		}
 		if err != nil {
-			return errors.Internal(err, "failed to receive file %s", file)
+			return errors.Internalf(err, "failed to receive file %s", file)
 		}
 
 		filePaths = append(filePaths, filePath)
@@ -490,7 +518,7 @@ func (s *Service) createRepositoryInternal(
 		hookPath := path.Join(repoPath, gitHooksDir, hook)
 		err = os.Symlink(s.gitHookPath, hookPath)
 		if err != nil {
-			return errors.Internal(err, "failed to setup symlink for hook '%s' ('%s' -> '%s')",
+			return errors.Internalf(err, "failed to setup symlink for hook '%s' ('%s' -> '%s')",
 				hook, hookPath, s.gitHookPath)
 		}
 	}
@@ -515,7 +543,27 @@ func (s *Service) GetRepositorySize(
 	}, nil
 }
 
-// UpdateDefaultBranch updates the default barnch of the repo.
+// GetDefaultBranch returns the default branch of the repo.
+func (s *Service) GetDefaultBranch(
+	ctx context.Context,
+	params *GetDefaultBranchParams,
+) (*GetDefaultBranchOutput, error) {
+	if err := params.Validate(); err != nil {
+		return nil, err
+	}
+
+	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
+
+	dfltBranch, err := s.git.GetDefaultBranch(ctx, repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo default branch: %w", err)
+	}
+	return &GetDefaultBranchOutput{
+		BranchName: dfltBranch,
+	}, nil
+}
+
+// UpdateDefaultBranch updates the default branch of the repo.
 func (s *Service) UpdateDefaultBranch(
 	ctx context.Context,
 	params *UpdateDefaultBranchParams,
@@ -531,7 +579,7 @@ func (s *Service) UpdateDefaultBranch(
 
 	err := s.git.SetDefaultBranch(ctx, repoPath, params.BranchName, false)
 	if err != nil {
-		return fmt.Errorf("UpdateDefaultBranch: failed to update repo default branch %q: %w",
+		return fmt.Errorf("failed to update repo default branch %q: %w",
 			params.BranchName, err)
 	}
 	return nil
@@ -564,4 +612,202 @@ func (s *Service) Archive(ctx context.Context, params ArchiveParams, w io.Writer
 	}
 
 	return nil
+}
+
+type FetchObjectsParams struct {
+	WriteParams
+	Source     string
+	ObjectSHAs []sha.SHA
+}
+
+type FetchObjectsOutput struct{}
+
+func (s *Service) FetchObjects(
+	ctx context.Context,
+	params *FetchObjectsParams,
+) (FetchObjectsOutput, error) {
+	if err := params.Validate(); err != nil {
+		return FetchObjectsOutput{}, err
+	}
+
+	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
+	source := s.convertRepoSource(params.Source)
+
+	// sync repo content
+	err := s.git.FetchObjects(ctx, repoPath, source, params.ObjectSHAs)
+	if err != nil {
+		return FetchObjectsOutput{}, fmt.Errorf("failed to fetch git objects from source repo: %w", err)
+	}
+
+	return FetchObjectsOutput{}, nil
+}
+
+type GetRemoteDefaultBranchParams struct {
+	ReadParams
+	Source string
+}
+
+type GetRemoteDefaultBranchOutput struct {
+	BranchName string
+}
+
+func (s *Service) GetRemoteDefaultBranch(
+	ctx context.Context,
+	params *GetRemoteDefaultBranchParams,
+) (*GetRemoteDefaultBranchOutput, error) {
+	source := s.convertRepoSource(params.Source)
+
+	branch, err := s.git.GetRemoteDefaultBranch(ctx, source)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch git objects from source repo: %w", err)
+	}
+
+	return &GetRemoteDefaultBranchOutput{
+		BranchName: branch,
+	}, nil
+}
+
+// convertRepoSource converts the source in Git operations like SyncRepository or FetchObjects.
+// If the source string contains no slash, we assume it's a GitUID and create a full path out of it.
+// If it does contain a slash, we assume it's a URL and leave it intact.
+func (s *Service) convertRepoSource(source string) string {
+	if strings.IndexByte(source, '/') >= 0 {
+		return source
+	}
+
+	return getFullPathForRepo(s.reposRoot, source)
+}
+
+type SyncRefsParams struct {
+	WriteParams
+	Source string
+	Refs   []string
+}
+
+type SyncRefsOutput struct {
+	Refs []hook.ReferenceUpdate
+}
+
+func (s *Service) SyncRefs(
+	ctx context.Context,
+	params *SyncRefsParams,
+) (*SyncRefsOutput, error) {
+	if err := params.Validate(); err != nil {
+		return nil, err
+	}
+
+	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
+	source := s.convertRepoSource(params.Source)
+
+	refs := slices.Clone(params.Refs)
+
+	slices.Sort(refs)
+	refs = slices.Compact(refs)
+
+	refRemoteMap, err := s.git.ListRemoteReferences(ctx, repoPath, source, refs...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote refs: %w", err)
+	}
+
+	refLocalMap, err := s.git.ListLocalReferences(ctx, repoPath, refs...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list local refs: %w", err)
+	}
+
+	refsRemote := slices.Collect(maps.Keys(refRemoteMap))
+	slices.Sort(refsRemote)
+	if len(refsRemote) != len(refs) {
+		notFound := func(all, found []string) (notFound []string) {
+			var idxFound, idxAll int
+			for ; idxFound < len(found) && idxAll < len(all); idxAll++ {
+				if all[idxAll] == found[idxFound] {
+					idxFound++
+					continue
+				}
+				notFound = append(notFound, all[idxAll])
+			}
+			for ; idxAll < len(all); idxAll++ {
+				notFound = append(notFound, all[idxAll])
+			}
+			return
+		}(refs, refsRemote)
+
+		return nil, errors.InvalidArgumentf("Could not find remote references: %v", notFound)
+	}
+
+	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reference updater: %w", err)
+	}
+
+	refUpdates := make([]hook.ReferenceUpdate, 0, len(refs))
+	for _, ref := range refs {
+		oldSHA, ok := refLocalMap[ref]
+		if !ok {
+			oldSHA = sha.Nil
+		}
+
+		newSHA := refRemoteMap[ref]
+
+		if oldSHA == newSHA {
+			continue
+		}
+
+		refUpdates = append(refUpdates, hook.ReferenceUpdate{
+			Ref: ref,
+			Old: oldSHA,
+			New: newSHA,
+		})
+	}
+
+	if len(refUpdates) == 0 {
+		return &SyncRefsOutput{}, nil
+	}
+
+	err = sharedrepo.Run(ctx, refUpdater, s.sharedRepoRoot, repoPath, func(s *sharedrepo.SharedRepo) error {
+		objects := slices.Collect(maps.Values(refRemoteMap))
+
+		if err := s.FetchObjects(ctx, source, objects); err != nil {
+			return fmt.Errorf("failed to fetch objects: %w", err)
+		}
+
+		err = refUpdater.Init(ctx, refUpdates)
+		if err != nil {
+			return fmt.Errorf("failed to init values of references (%v): %w", refUpdates, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync references: %w", err)
+	}
+
+	return &SyncRefsOutput{
+		Refs: refUpdates,
+	}, nil
+}
+
+func (s *Service) GetRepoLanguageStats(
+	ctx context.Context,
+	params *GetRepoLanguageStatsParams,
+) (GetRepoLanguageStatsOutput, error) {
+	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
+	nodes, err := api.ListTreeNodesRecursive(
+		ctx,
+		repoPath,
+		params.Branch,
+		"",
+		true,  // fetchSizes
+		false, // flattenDirectories
+	)
+	if err != nil {
+		return GetRepoLanguageStatsOutput{},
+			fmt.Errorf("failed to list tree nodes recursively: %w", err)
+	}
+
+	stats := langstats.AnalyzeRepoLanguages(ctx, nodes)
+
+	return GetRepoLanguageStatsOutput{
+		Stats: stats,
+	}, nil
 }

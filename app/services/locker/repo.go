@@ -23,6 +23,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// LockDefaultBranch is used to lock changing of a repository's default branch.
 func (l Locker) LockDefaultBranch(
 	ctx context.Context,
 	repoID int64,

@@ -19,11 +19,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/command"
@@ -33,12 +31,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 )
-
-// CommitGPGSignature represents a git commit signature part.
-type CommitGPGSignature struct {
-	Signature string
-	Payload   string
-}
 
 type CommitChangesOptions struct {
 	Committer Signature
@@ -55,14 +47,15 @@ type CommitFileStats struct {
 }
 
 type Commit struct {
-	SHA        sha.SHA   `json:"sha"`
-	Title      string    `json:"title"`
-	Message    string    `json:"message,omitempty"`
-	Author     Signature `json:"author"`
-	Committer  Signature `json:"committer"`
-	Signature  *CommitGPGSignature
+	SHA        sha.SHA
+	TreeSHA    sha.SHA
 	ParentSHAs []sha.SHA
-	FileStats  []CommitFileStats `json:"file_stats,omitempty"`
+	Title      string
+	Message    string
+	Author     Signature
+	Committer  Signature
+	SignedData *SignedData
+	FileStats  []CommitFileStats
 }
 
 type CommitFilter struct {
@@ -71,6 +64,8 @@ type CommitFilter struct {
 	Since     int64
 	Until     int64
 	Committer string
+	Author    string
+	Regex     bool
 }
 
 // CommitDivergenceRequest contains the refs for which the converging commits should be counted.
@@ -96,41 +91,6 @@ type PathRenameDetails struct {
 	CommitSHAAfter  sha.SHA
 }
 
-// GetLatestCommit gets the latest commit of a path relative from the provided revision.
-func (g *Git) GetLatestCommit(
-	ctx context.Context,
-	repoPath string,
-	rev string,
-	treePath string,
-) (*Commit, error) {
-	if repoPath == "" {
-		return nil, ErrRepositoryPathEmpty
-	}
-	treePath = cleanTreePath(treePath)
-
-	return getCommit(ctx, repoPath, rev, treePath)
-}
-
-func getCommits(
-	ctx context.Context,
-	repoPath string,
-	commitIDs []string,
-) ([]*Commit, error) {
-	if len(commitIDs) == 0 {
-		return nil, nil
-	}
-	commits := make([]*Commit, 0, len(commitIDs))
-	for _, commitID := range commitIDs {
-		commit, err := getCommit(ctx, repoPath, commitID, "")
-		if err != nil {
-			return nil, fmt.Errorf("failed to get commit '%s': %w", commitID, err)
-		}
-		commits = append(commits, commit)
-	}
-
-	return commits, nil
-}
-
 func (g *Git) listCommitSHAs(
 	ctx context.Context,
 	repoPath string,
@@ -139,7 +99,7 @@ func (g *Git) listCommitSHAs(
 	page int,
 	limit int,
 	filter CommitFilter,
-) ([]string, error) {
+) ([]sha.SHA, error) {
 	cmd := command.New("rev-list")
 
 	// return commits only up to a certain reference if requested
@@ -175,17 +135,41 @@ func (g *Git) listCommitSHAs(
 	if filter.Until > 0 {
 		cmd.Add(command.WithFlag("--until", strconv.FormatInt(filter.Until, 10)))
 	}
+	if filter.Regex {
+		cmd.Add(command.WithFlag("-E"))
+	}
 	if filter.Committer != "" {
 		cmd.Add(command.WithFlag("--committer", filter.Committer))
 	}
+	if filter.Author != "" {
+		cmd.Add(command.WithFlag("--author", filter.Author))
+	}
 	output := &bytes.Buffer{}
 	err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(output))
+	if cErr := command.AsError(err); cErr != nil && cErr.IsExitCode(128) {
+		if cErr.IsAmbiguousArgErr() || cErr.IsBadObject() {
+			return []sha.SHA{}, nil // return an empty list if reference doesn't exist
+		}
+	}
 	if err != nil {
-		// TODO: handle error in case they don't have a common merge base!
 		return nil, processGitErrorf(err, "failed to trigger rev-list command")
 	}
 
-	return parseLinesToSlice(output.Bytes()), nil
+	var objectSHAs []sha.SHA
+
+	scanner := bufio.NewScanner(output)
+	for scanner.Scan() {
+		objectSHA, err := sha.New(scanner.Text())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse commit sha: %w", err)
+		}
+		objectSHAs = append(objectSHAs, objectSHA)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan commit sha list: %w", err)
+	}
+
+	return objectSHAs, nil
 }
 
 // ListCommitSHAs lists the commits reachable from ref.
@@ -199,7 +183,7 @@ func (g *Git) ListCommitSHAs(
 	page int,
 	limit int,
 	filter CommitFilter,
-) ([]string, error) {
+) ([]sha.SHA, error) {
 	return g.listCommitSHAs(ctx, repoPath, alternateObjectDirs, ref, page, limit, filter)
 }
 
@@ -214,28 +198,28 @@ func (g *Git) ListCommits(
 	limit int,
 	includeStats bool,
 	filter CommitFilter,
-) ([]*Commit, []PathRenameDetails, error) {
+) ([]Commit, []PathRenameDetails, error) {
 	if repoPath == "" {
 		return nil, nil, ErrRepositoryPathEmpty
 	}
 
 	commitSHAs, err := g.listCommitSHAs(ctx, repoPath, nil, ref, page, limit, filter)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to list commit SHAs: %w", err)
 	}
 
-	commits, err := getCommits(ctx, repoPath, commitSHAs)
+	commits, err := CatFileCommits(ctx, repoPath, nil, commitSHAs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to list commits by SHAs: %w", err)
 	}
 
 	if includeStats {
-		for _, commit := range commits {
-			fileStats, err := getCommitFileStats(ctx, repoPath, commit.SHA)
+		for i := range commits {
+			fileStats, err := getCommitFileStats(ctx, repoPath, commits[i].SHA)
 			if err != nil {
 				return nil, nil, fmt.Errorf("encountered error getting commit file stats: %w", err)
 			}
-			commit.FileStats = fileStats
+			commits[i].FileStats = fileStats
 		}
 	}
 
@@ -298,10 +282,10 @@ func getCommitFileStats(
 // In case of rename of a file, same commit will be listed twice - Once in old file and second time in new file.
 // Hence, we are making it a pattern to only list it as part of new file and not as part of old file.
 func cleanupCommitsForRename(
-	commits []*Commit,
+	commits []Commit,
 	renameDetails []PathRenameDetails,
 	path string,
-) []*Commit {
+) []Commit {
 	if len(commits) == 0 {
 		return commits
 	}
@@ -317,7 +301,7 @@ func cleanupCommitsForRename(
 func getRenameDetails(
 	ctx context.Context,
 	repoPath string,
-	commits []*Commit,
+	commits []Commit,
 	path string,
 ) ([]PathRenameDetails, error) {
 	if len(commits) == 0 {
@@ -505,6 +489,7 @@ type changeInfoType struct {
 	OldPath string // populated only in case of renames
 	Path    string
 }
+
 type changeInfoChange struct {
 	Insertions int64
 	Deletions  int64
@@ -528,8 +513,8 @@ func convertFileDiffStatus(ctx context.Context, c string) enum.FileDiffStatus {
 	}
 }
 
-// GetCommit returns the (latest) commit for a specific revision.
-func (g *Git) GetCommit(
+// GetCommitFromRev returns the (latest) commit for a specific revision.
+func (g *Git) GetCommitFromRev(
 	ctx context.Context,
 	repoPath string,
 	rev string,
@@ -538,53 +523,87 @@ func (g *Git) GetCommit(
 		return nil, ErrRepositoryPathEmpty
 	}
 
-	return getCommit(ctx, repoPath, rev, "")
-}
-
-func (g *Git) GetFullCommitID(
-	ctx context.Context,
-	repoPath string,
-	shortID string,
-) (sha.SHA, error) {
-	if repoPath == "" {
-		return sha.None, ErrRepositoryPathEmpty
+	commitSHA, err := g.ResolveRev(ctx, repoPath, rev+"^{commit}")
+	if errors.IsInvalidArgument(err) {
+		return nil, errors.NotFoundf("revision %q not found", rev)
 	}
-	cmd := command.New("rev-parse",
-		command.WithArg(shortID),
-	)
-	output := &bytes.Buffer{}
-	err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(output))
 	if err != nil {
-		if strings.Contains(err.Error(), "exit status 128") {
-			return sha.None, errors.NotFound("commit not found %s", shortID)
-		}
-		return sha.None, err
+		return nil, fmt.Errorf("failed to resolve revision %q: %w", rev, err)
 	}
-	return sha.New(output.String())
+
+	return GetCommit(ctx, repoPath, commitSHA)
 }
 
-// GetCommits returns the (latest) commits for a specific list of refs.
-// Note: ref can be Branch / Tag / CommitSHA.
+// GetCommits returns the commits for a specific list of SHAs.
 func (g *Git) GetCommits(
 	ctx context.Context,
 	repoPath string,
-	refs []string,
-) ([]*Commit, error) {
+	commitSHAs []sha.SHA,
+) ([]Commit, error) {
 	if repoPath == "" {
 		return nil, ErrRepositoryPathEmpty
 	}
 
-	return getCommits(ctx, repoPath, refs)
+	commits, err := CatFileCommits(ctx, repoPath, nil, commitSHAs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list commits by SHAs: %w", err)
+	}
+
+	return commits, nil
+}
+
+func GetCommit(ctx context.Context, repoPath string, commitSHA sha.SHA) (*Commit, error) {
+	commits, err := CatFileCommits(ctx, repoPath, nil, []sha.SHA{commitSHA})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list commit by SHA: %w", err)
+	}
+
+	if len(commits) != 1 {
+		return nil, fmt.Errorf("expected one commit, but got %d", len(commits))
+	}
+
+	return &commits[0], nil
+}
+
+func GetLatestCommit(
+	ctx context.Context,
+	repoPath string,
+	rev string,
+	path string,
+) (*Commit, error) {
+	cmd := command.New("log",
+		command.WithFlag("--max-count", "1"),
+		command.WithFlag("--format="+fmtCommitHash),
+		command.WithArg(rev),
+		command.WithPostSepArg(path))
+
+	output := &bytes.Buffer{}
+	err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(output))
+	if err != nil {
+		if strings.Contains(err.Error(), "ambiguous argument") {
+			return nil, errors.NotFoundf("revision %q not found", rev)
+		}
+		return nil, fmt.Errorf("failed to run git to get commit data: %w", err)
+	}
+
+	commitLine := strings.TrimSpace(output.String())
+	if commitLine == "" {
+		return nil, errors.InvalidArgumentf("path %q not found in %s", path, rev)
+	}
+
+	commitSHA := sha.Must(commitLine)
+
+	return GetCommit(ctx, repoPath, commitSHA)
 }
 
 // GetCommitDivergences returns the count of the diverging commits for all branch pairs.
-// IMPORTANT: If a max is provided it limits the overal count of diverging commits
-// (max 10 could lead to (0, 10) while it's actually (2, 12)).
+// IMPORTANT: If a maxCount is provided it limits the overal count of diverging commits
+// (maxCount 10 could lead to (0, 10) while it's actually (2, 12)).
 func (g *Git) GetCommitDivergences(
 	ctx context.Context,
 	repoPath string,
 	requests []CommitDivergenceRequest,
-	max int32,
+	maxCount int32,
 ) ([]CommitDivergence, error) {
 	if repoPath == "" {
 		return nil, ErrRepositoryPathEmpty
@@ -592,7 +611,7 @@ func (g *Git) GetCommitDivergences(
 	var err error
 	res := make([]CommitDivergence, len(requests))
 	for i, req := range requests {
-		res[i], err = g.getCommitDivergence(ctx, repoPath, req, max)
+		res[i], err = g.getCommitDivergence(ctx, repoPath, req, maxCount)
 		if errors.IsNotFound(err) {
 			res[i] = CommitDivergence{Ahead: -1, Behind: -1}
 			continue
@@ -606,21 +625,21 @@ func (g *Git) GetCommitDivergences(
 }
 
 // getCommitDivergence returns the count of diverging commits for a pair of branches.
-// IMPORTANT: If a max is provided it limits the overall count of diverging commits
-// (max 10 could lead to (0, 10) while it's actually (2, 12)).
+// IMPORTANT: If a maxCount is provided it limits the overall count of diverging commits
+// (maxCount 10 could lead to (0, 10) while it's actually (2, 12)).
 func (g *Git) getCommitDivergence(
 	ctx context.Context,
 	repoPath string,
 	req CommitDivergenceRequest,
-	max int32,
+	maxCount int32,
 ) (CommitDivergence, error) {
 	cmd := command.New("rev-list",
 		command.WithFlag("--count"),
 		command.WithFlag("--left-right"),
 	)
 	// limit count if requested.
-	if max > 0 {
-		cmd.Add(command.WithFlag("--max-count", strconv.Itoa(int(max))))
+	if maxCount > 0 {
+		cmd.Add(command.WithFlag("--max-count", strconv.Itoa(int(maxCount))))
 	}
 	// add query to get commits without shared base commits
 	cmd.Add(command.WithArg(req.From + "..." + req.To))
@@ -676,266 +695,4 @@ func parseLinesToSlice(output []byte) []string {
 	}
 
 	return slice
-}
-
-// getCommit returns info about a commit.
-// TODO: This function is used only for last used cache
-func getCommit(
-	ctx context.Context,
-	repoPath string,
-	rev string,
-	path string,
-) (*Commit, error) {
-	const format = "" +
-		fmtCommitHash + fmtZero + // 0
-		fmtParentHashes + fmtZero + // 1
-		fmtAuthorName + fmtZero + // 2
-		fmtAuthorEmail + fmtZero + // 3
-		fmtAuthorTime + fmtZero + // 4
-		fmtCommitterName + fmtZero + // 5
-		fmtCommitterEmail + fmtZero + // 6
-		fmtCommitterTime + fmtZero + // 7
-		fmtSubject + fmtZero + // 8
-		fmtBody // 9
-
-	cmd := command.New("log",
-		command.WithFlag("--max-count", "1"),
-		command.WithFlag("--format="+format), //nolint:goconst
-		command.WithArg(rev),
-	)
-	if path != "" {
-		cmd.Add(command.WithPostSepArg(path))
-	}
-	output := &bytes.Buffer{}
-	err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(output))
-	if err != nil {
-		if strings.Contains(err.Error(), "ambiguous argument") {
-			return nil, errors.NotFound("revision %q not found", rev)
-		}
-		return nil, fmt.Errorf("failed to run git to get commit data: %w", err)
-	}
-
-	commitLine := output.String()
-
-	if commitLine == "" {
-		return nil, errors.InvalidArgument("path %q not found in %s", path, rev)
-	}
-
-	const columnCount = 10
-
-	commitData := strings.Split(strings.TrimSpace(commitLine), separatorZero)
-	if len(commitData) != columnCount {
-		return nil, fmt.Errorf(
-			"unexpected git log formatted output, expected %d, but got %d columns", columnCount, len(commitData))
-	}
-
-	commitSHA := sha.Must(commitData[0])
-	var parentSHAs []sha.SHA
-	if commitData[1] != "" {
-		for _, parentSHA := range strings.Split(commitData[1], " ") {
-			parentSHAs = append(parentSHAs, sha.Must(parentSHA))
-		}
-	}
-	authorName := commitData[2]
-	authorEmail := commitData[3]
-	authorTimestamp := commitData[4]
-	committerName := commitData[5]
-	committerEmail := commitData[6]
-	committerTimestamp := commitData[7]
-	subject := commitData[8]
-	body := commitData[9]
-
-	authorTime, _ := time.Parse(time.RFC3339Nano, authorTimestamp)
-	committerTime, _ := time.Parse(time.RFC3339Nano, committerTimestamp)
-
-	return &Commit{
-		SHA:        commitSHA,
-		ParentSHAs: parentSHAs,
-		Title:      subject,
-		Message:    body,
-		Author: Signature{
-			Identity: Identity{
-				Name:  authorName,
-				Email: authorEmail,
-			},
-			When: authorTime,
-		},
-		Committer: Signature{
-			Identity: Identity{
-				Name:  committerName,
-				Email: committerEmail,
-			},
-			When: committerTime,
-		},
-	}, nil
-}
-
-// GetCommit returns info about a commit.
-// TODO: Move this function outside of the api package.
-func GetCommit(
-	ctx context.Context,
-	repoPath string,
-	rev string,
-) (*Commit, error) {
-	wr, rd, cancel := CatFileBatch(ctx, repoPath, nil)
-	defer cancel()
-
-	_, _ = wr.Write([]byte(rev + "\n"))
-
-	return getCommitFromBatchReader(ctx, repoPath, rd, rev)
-}
-
-func getCommitFromBatchReader(
-	ctx context.Context,
-	repoPath string,
-	rd *bufio.Reader,
-	rev string,
-) (*Commit, error) {
-	output, err := ReadBatchHeaderLine(rd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read cat-file header line: %w", err)
-	}
-
-	switch output.Type {
-	case "missing":
-		return nil, errors.NotFound("sha '%s' not found", output.SHA)
-	case "tag":
-		// then we need to parse the tag
-		// and load the commit
-		data, err := io.ReadAll(io.LimitReader(rd, output.Size))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read tag data: %w", err)
-		}
-		if _, err = rd.Discard(1); err != nil {
-			return nil, fmt.Errorf("tag reader Discard failed: %w", err)
-		}
-		tag, err := parseTagData(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse tag: %w", err)
-		}
-
-		commit, err := GetCommit(ctx, repoPath, tag.TargetSha.String())
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch commit: %w", err)
-		}
-
-		return commit, nil
-	case "commit":
-		commit, err := CommitFromReader(output.SHA, io.LimitReader(rd, output.Size))
-		if err != nil {
-			return nil, fmt.Errorf("faile to read commit from reader: %w", err)
-		}
-		if _, err = rd.Discard(1); err != nil {
-			return nil, fmt.Errorf("commit reader Discard failed: %w", err)
-		}
-
-		return commit, nil
-	default:
-		log.Warn().Msgf("Unknown object type: %s", output.Type)
-		_, err = rd.Discard(int(output.Size) + 1)
-		if err != nil {
-			return nil, fmt.Errorf("reader Discard failed: %w", err)
-		}
-		return nil, errors.NotFound("rev '%s' not found", rev)
-	}
-}
-
-// CommitFromReader will generate a Commit from a provided reader
-// We need this to interpret commits from cat-file or cat-file --batch
-//
-// If used as part of a cat-file --batch stream you need to limit the reader to the correct size.
-//
-//nolint:gocognit,nestif
-func CommitFromReader(commitSHA sha.SHA, reader io.Reader) (*Commit, error) {
-	commit := &Commit{
-		SHA:       commitSHA,
-		Author:    Signature{},
-		Committer: Signature{},
-	}
-
-	payloadSB := new(strings.Builder)
-	signatureSB := new(strings.Builder)
-	messageSB := new(strings.Builder)
-	message := false
-	pgpsig := false
-
-	bufReader, ok := reader.(*bufio.Reader)
-	if !ok {
-		bufReader = bufio.NewReader(reader)
-	}
-
-readLoop:
-	for {
-		line, err := bufReader.ReadBytes('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if message {
-					_, _ = messageSB.Write(line)
-				}
-				_, _ = payloadSB.Write(line)
-				break readLoop
-			}
-			return nil, fmt.Errorf("error occurred while reading a line from buffer: %w", err)
-		}
-		if pgpsig {
-			if len(line) > 0 && line[0] == ' ' {
-				_, _ = signatureSB.Write(line[1:])
-				continue
-			}
-			pgpsig = false
-		}
-
-		if !message {
-			// This is probably not correct but is copied from go-gits interpretation...
-			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) == 0 {
-				message = true
-				_, _ = payloadSB.Write(line)
-				continue
-			}
-
-			split := bytes.SplitN(trimmed, []byte{' '}, 2)
-			var data []byte
-			if len(split) > 1 {
-				data = split[1]
-			}
-
-			switch string(split[0]) {
-			case "tree":
-				_, _ = payloadSB.Write(line)
-			case "parent":
-				commit.ParentSHAs = append(commit.ParentSHAs, sha.Must(string(data)))
-				_, _ = payloadSB.Write(line)
-			case "author":
-				commit.Author, err = DecodeSignature(data)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse author signature: %w", err)
-				}
-				_, _ = payloadSB.Write(line)
-			case "committer":
-				commit.Committer, err = DecodeSignature(data)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse committer signature: %w", err)
-				}
-				_, _ = payloadSB.Write(line)
-			case "gpgsig":
-				_, _ = signatureSB.Write(data)
-				_ = signatureSB.WriteByte('\n')
-				pgpsig = true
-			}
-		} else {
-			_, _ = messageSB.Write(line)
-			_, _ = payloadSB.Write(line)
-		}
-	}
-	commit.Message = messageSB.String()
-	commit.Signature = &CommitGPGSignature{
-		Signature: signatureSB.String(),
-		Payload:   payloadSB.String(),
-	}
-	if len(commit.Signature.Signature) == 0 {
-		commit.Signature = nil
-	}
-
-	return commit, nil
 }

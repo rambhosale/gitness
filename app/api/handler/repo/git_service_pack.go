@@ -16,7 +16,6 @@ package repo
 
 import (
 	"compress/gzip"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -24,8 +23,8 @@ import (
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
-	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/types/enum"
 
@@ -43,7 +42,7 @@ func HandleGitServicePack(
 		session, _ := request.AuthSessionFrom(ctx)
 		repoRef, err := request.GetRepoRefFromPath(r)
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			pktError(ctx, w, err)
 			return
 		}
 
@@ -55,7 +54,7 @@ func HandleGitServicePack(
 		if contentEncoding == "gzip" {
 			gzipReader, err := gzip.NewReader(dataReader)
 			if err != nil {
-				render.TranslatedUserError(ctx, w, fmt.Errorf("failed to create new gzip reader: %w", err))
+				pktError(ctx, w, fmt.Errorf("failed to create new gzip reader: %w", err))
 				return
 			}
 			defer func() {
@@ -79,12 +78,12 @@ func HandleGitServicePack(
 			Stdin:        dataReader,
 			Protocol:     gitProtocol,
 		})
-		if errors.Is(err, apiauth.ErrNotAuthorized) && auth.IsAnonymousSession(session) {
-			renderBasicAuth(w, urlProvider)
+		if errors.Is(err, apiauth.ErrUnauthorized) {
+			render.GitBasicAuth(ctx, w, urlProvider)
 			return
 		}
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			pktError(ctx, w, err)
 			return
 		}
 	}

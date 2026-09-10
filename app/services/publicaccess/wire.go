@@ -15,7 +15,9 @@
 package publicaccess
 
 import (
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
+	registryrefcache "github.com/harness/gitness/registry/app/services/refcache"
 	"github.com/harness/gitness/types"
 
 	"github.com/google/wire"
@@ -28,8 +30,9 @@ var WireSet = wire.NewSet(
 func ProvidePublicAccess(
 	config *types.Config,
 	publicAccessStore store.PublicAccessStore,
-	repoStore store.RepoStore,
-	spaceStore store.SpaceStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	registryFinder registryrefcache.RegistryFinder,
 ) Service {
-	return NewService(config.PublicResourceCreationEnabled, publicAccessStore, repoStore, spaceStore)
+	return NewService(config.PublicResourceCreationEnabled, publicAccessStore, spaceFinder, repoFinder, registryFinder)
 }

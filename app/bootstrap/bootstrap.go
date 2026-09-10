@@ -28,8 +28,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// systemServicePrincipal is the principal representing gitness.
-// It is used for all operations executed by gitness itself.
+// systemServicePrincipal is the principal representing Harness.
+// It is used for all operations executed by Harness itself.
 var systemServicePrincipal *types.Principal
 
 var ErrAdminEmailRequired = errors.New("config.Principal.Admin.Email is required")
@@ -42,12 +42,23 @@ func NewSystemServiceSession() *auth.Session {
 }
 
 // pipelineServicePrincipal is the principal that is used during
-// pipeline executions for calling gitness APIs.
+// pipeline executions for calling Harness APIs.
 var pipelineServicePrincipal *types.Principal
 
 func NewPipelineServiceSession() *auth.Session {
 	return &auth.Session{
 		Principal: *pipelineServicePrincipal,
+		Metadata:  &auth.EmptyMetadata{},
+	}
+}
+
+// gitspaceServicePrincipal is the principal that is used during
+// gitspace token injection for calling Harness APIs.
+var gitspaceServicePrincipal *types.Principal
+
+func NewGitspaceServiceSession() *auth.Session {
+	return &auth.Session{
+		Principal: *gitspaceServicePrincipal,
 		Metadata:  &auth.EmptyMetadata{},
 	}
 }
@@ -64,6 +75,9 @@ func System(config *types.Config, userCtrl *user.Controller,
 
 		if err := PipelineService(ctx, config, serviceCtrl); err != nil {
 			return fmt.Errorf("failed to setup pipeline service: %w", err)
+		}
+		if err := GitspaceService(ctx, config, serviceCtrl); err != nil {
+			return fmt.Errorf("failed to setup gitspace service: %w", err)
 		}
 
 		if err := AdminUser(ctx, config, userCtrl); err != nil {
@@ -133,7 +147,7 @@ func createAdminUser(
 	return usr, nil
 }
 
-// SystemService sets up the gitness service principal that is used for
+// SystemService sets up the Harness service principal that is used for
 // resources that are automatically created by the system.
 func SystemService(
 	ctx context.Context,
@@ -167,7 +181,7 @@ func SystemService(
 }
 
 // PipelineService sets up the pipeline service principal that is used during
-// pipeline executions for calling gitness APIs.
+// pipeline executions for calling Harness APIs.
 func PipelineService(
 	ctx context.Context,
 	config *types.Config,
@@ -192,6 +206,36 @@ func PipelineService(
 	pipelineServicePrincipal = svc.ToPrincipal()
 
 	log.Ctx(ctx).Info().Msgf("Completed setup of pipeline service '%s' (id: %d).", svc.UID, svc.ID)
+
+	return nil
+}
+
+// GitspaceService sets up the gitspace service principal that is used during
+// gitspace credential injection for calling Harness APIs.
+func GitspaceService(
+	ctx context.Context,
+	config *types.Config,
+	serviceCtrl *service.Controller,
+) error {
+	svc, err := serviceCtrl.FindNoAuth(ctx, config.Principal.Gitspace.UID)
+	if errors.Is(err, store.ErrResourceNotFound) {
+		svc, err = createServicePrincipal(
+			ctx,
+			serviceCtrl,
+			config.Principal.Gitspace.UID,
+			config.Principal.Gitspace.Email,
+			config.Principal.Gitspace.DisplayName,
+			false,
+		)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to setup gitspace service: %w", err)
+	}
+
+	gitspaceServicePrincipal = svc.ToPrincipal()
+
+	log.Ctx(ctx).Info().Msgf("Completed setup of gitspace service '%s' (id: %d).", svc.UID, svc.ID)
 
 	return nil
 }

@@ -15,9 +15,12 @@
 package runner
 
 import (
+	goruntime "runtime"
+
 	"github.com/harness/gitness/app/pipeline/resolver"
 	"github.com/harness/gitness/types"
 
+	dockerclient "github.com/docker/docker/client"
 	"github.com/drone-runners/drone-runner-docker/engine"
 	"github.com/drone-runners/drone-runner-docker/engine/compiler"
 	"github.com/drone-runners/drone-runner-docker/engine/linter"
@@ -47,14 +50,38 @@ var Privileged = []string{
 	"plugins/heroku",
 }
 
+// dockerOpts returns back the options to be overridden from docker options set
+// in the environment. If values are specified in Harness, they get preference.
+func dockerOpts(config *types.Config) []dockerclient.Opt {
+	var overrides []dockerclient.Opt
+
+	// Enable API version negotiation to automatically use a compatible version.
+	// This ensures compatibility with Docker daemons that require newer API versions
+	// (e.g., Docker 29.0+ requires minimum API version 1.44).
+	overrides = append(overrides, dockerclient.WithAPIVersionNegotiation())
+
+	if config.Docker.Host != "" {
+		overrides = append(overrides, dockerclient.WithHost(config.Docker.Host))
+	}
+	if config.Docker.APIVersion != "" {
+		overrides = append(overrides, dockerclient.WithVersion(config.Docker.APIVersion))
+	}
+
+	return overrides
+}
+
 func NewExecutionRunner(
 	config *types.Config,
 	client runnerclient.Client,
 	resolver *resolver.Manager,
 ) (*runtime2.Runner, error) {
-	// For linux, containers need to have extra hosts set in order to interact with
-	// the gitness container.
-	extraHosts := []string{"host.docker.internal:host-gateway"}
+	// For linux/windows, containers need to have extra hosts set in order to interact with
+	// Harness. For docker desktop for mac, this is built in and not needed.
+	extraHosts := []string{}
+	if goruntime.GOOS != "darwin" {
+		extraHosts = []string{"host.docker.internal:host-gateway"}
+	}
+
 	compiler := &compiler.Compiler{
 		Environ:    provider.Static(map[string]string{}),
 		Registry:   registry.Static([]*drone.Registry{}),
@@ -67,11 +94,10 @@ func NewExecutionRunner(
 	remote := remote.New(client)
 	upload := uploader.New(client)
 	tracer := history.New(remote)
-	engine, err := engine.NewEnv(engine.Opts{})
+	engine, err := engine.NewEnv(engine.Opts{}, dockerOpts(config)...)
 	if err != nil {
 		return nil, err
 	}
-
 	exec := runtime.NewExecer(tracer, remote, upload,
 		engine, int64(config.CI.ParallelWorkers))
 
@@ -85,7 +111,7 @@ func NewExecutionRunner(
 		Exec:     exec.Exec,
 	}
 
-	engine2, err := engine2.NewEnv(engine2.Opts{})
+	engine2, err := engine2.NewEnv(engine2.Opts{}, dockerOpts(config)...)
 	if err != nil {
 		return nil, err
 	}

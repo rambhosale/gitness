@@ -14,7 +14,15 @@
 
 package hook
 
-import "github.com/harness/gitness/git/sha"
+import (
+	"encoding/json"
+
+	"github.com/harness/gitness/git/sha"
+)
+
+// RuleViolationsErrorDetailsKey is the error-details key under which a githook stores the
+// marshaled push-rule violations for the API layer to decode.
+const RuleViolationsErrorDetailsKey = "rule_violations"
 
 // Output represents the output of server hook api calls.
 type Output struct {
@@ -23,6 +31,10 @@ type Output struct {
 
 	// Error contains the user facing error (like "branch is protected", ...).
 	Error *string `json:"error,omitempty"`
+
+	// RuleViolations carries the marshaled []types.RuleViolations for the API layer.
+	// Raw JSON avoids a git/hook<->types import cycle and is opaque to the git layer.
+	RuleViolations json.RawMessage `json:"rule_violations,omitempty"`
 }
 
 // ReferenceUpdate represents an update of a git reference.

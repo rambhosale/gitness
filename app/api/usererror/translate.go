@@ -25,6 +25,7 @@ import (
 	"github.com/harness/gitness/app/services/webhook"
 	"github.com/harness/gitness/blob"
 	"github.com/harness/gitness/errors"
+	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/lock"
 	"github.com/harness/gitness/store"
 	"github.com/harness/gitness/types/check"
@@ -34,17 +35,20 @@ import (
 
 func Translate(ctx context.Context, err error) *Error {
 	var (
-		rError                   *Error
-		checkError               *check.ValidationError
-		appError                 *errors.Error
-		maxBytesErr              *http.MaxBytesError
-		codeOwnersTooLargeError  *codeowners.TooLargeError
-		codeOwnersFileParseError *codeowners.FileParseError
-		lockError                *lock.Error
+		rError                       *Error
+		checkError                   *check.ValidationError
+		appError                     *errors.Error
+		unrelatedHistoriesErr        *api.UnrelatedHistoriesError
+		maxBytesErr                  *http.MaxBytesError
+		codeOwnersTooLargeError      *codeowners.TooLargeError
+		codeOwnersFileParseError     *codeowners.FileParseError
+		codeOwnersInvalidFileTypeErr *codeowners.InvalidFileTypeError
+		lockError                    *lock.Error
+		totalQuotaStorageErr         *limiter.TotalQuotaStorageError
 	)
 
 	// print original error for debugging purposes
-	log.Ctx(ctx).Debug().Err(err).Msgf("translating error to user facing error")
+	log.Ctx(ctx).Info().Err(err).Msgf("translating error to user facing error")
 
 	// TODO: Improve performance of checking multiple errors with errors.Is
 
@@ -54,8 +58,11 @@ func Translate(ctx context.Context, err error) *Error {
 		return rError
 
 	// api auth errors
-	case errors.Is(err, apiauth.ErrNotAuthorized):
+	case errors.Is(err, apiauth.ErrForbidden):
 		return ErrForbidden
+
+	case errors.Is(err, apiauth.ErrUnauthorized):
+		return ErrUnauthorized
 
 	// validation errors
 	case errors.As(err, &checkError):
@@ -78,6 +85,12 @@ func Translate(ctx context.Context, err error) *Error {
 		return ErrSpaceWithChildsCantBeDeleted
 	case errors.Is(err, limiter.ErrMaxNumReposReached):
 		return Forbidden(err.Error())
+	// Only the blocking level is a rejection. The advisory ones are filtered out where the
+	// limiter is called, because they are meant for the push output, so one arriving here
+	// is a bug and is left to fall through to an internal error rather than be reported to
+	// the user as a limit that stopped them.
+	case errors.As(err, &totalQuotaStorageErr) && totalQuotaStorageErr.Blocked():
+		return Forbidden(totalQuotaStorageErr.UserMessage())
 
 	//	upload errors
 	case errors.Is(err, blob.ErrNotFound):
@@ -85,16 +98,31 @@ func Translate(ctx context.Context, err error) *Error {
 	case errors.As(err, &maxBytesErr):
 		return RequestTooLargef("The request is too large. maximum allowed size is %d bytes", maxBytesErr.Limit)
 
+	case errors.Is(err, store.ErrLicenseExpired):
+		return BadRequestf("license expired.")
+
+	case errors.Is(err, store.ErrLicenseNotFound):
+		return BadRequestf("license not found.")
+
+	case errors.Is(err, ErrQuarantinedArtifact):
+		return ErrQuarantinedArtifact
+
 	// git errors
 	case errors.As(err, &appError):
 		if appError.Err != nil {
 			log.Ctx(ctx).Warn().Err(appError.Err).Msgf("Application error translation is omitting internal details.")
 		}
 
-		return NewWithPayload(httpStatusCode(
-			appError.Status),
+		return NewWithPayload(
+			httpStatusCode(appError.Status),
 			appError.Message,
 			appError.Details,
+		)
+	case errors.As(err, &unrelatedHistoriesErr):
+		return NewWithPayload(
+			http.StatusBadRequest,
+			err.Error(),
+			unrelatedHistoriesErr.Map(),
 		)
 
 	// webhook errors
@@ -105,7 +133,9 @@ func Translate(ctx context.Context, err error) *Error {
 	case errors.Is(err, codeowners.ErrNotFound):
 		return ErrCodeOwnersNotFound
 	case errors.As(err, &codeOwnersTooLargeError):
-		return UnprocessableEntityf(codeOwnersTooLargeError.Error())
+		return UnprocessableEntity(codeOwnersTooLargeError.Error())
+	case errors.As(err, &codeOwnersInvalidFileTypeErr):
+		return UnprocessableEntity(codeOwnersInvalidFileTypeErr.Error())
 	case errors.As(err, &codeOwnersFileParseError):
 		return NewWithPayload(
 			http.StatusUnprocessableEntity,
@@ -144,13 +174,15 @@ func errorFromLockError(err *lock.Error) *Error {
 
 // lookup of git error codes to HTTP status codes.
 var codes = map[errors.Status]int{
-	errors.StatusConflict:           http.StatusConflict,
-	errors.StatusInvalidArgument:    http.StatusBadRequest,
-	errors.StatusNotFound:           http.StatusNotFound,
-	errors.StatusNotImplemented:     http.StatusNotImplemented,
-	errors.StatusPreconditionFailed: http.StatusPreconditionFailed,
-	errors.StatusUnauthorized:       http.StatusUnauthorized,
-	errors.StatusInternal:           http.StatusInternalServerError,
+	errors.StatusConflict:            http.StatusConflict,
+	errors.StatusInvalidArgument:     http.StatusBadRequest,
+	errors.StatusNotFound:            http.StatusNotFound,
+	errors.StatusNotImplemented:      http.StatusNotImplemented,
+	errors.StatusPreconditionFailed:  http.StatusPreconditionFailed,
+	errors.StatusUnauthorized:        http.StatusUnauthorized,
+	errors.StatusForbidden:           http.StatusForbidden,
+	errors.StatusInternal:            http.StatusInternalServerError,
+	errors.StatusUnprocessableEntity: http.StatusUnprocessableEntity,
 }
 
 // httpStatusCode returns the associated HTTP status code for a git error code.

@@ -15,27 +15,14 @@
 package api
 
 const (
-	fmtEOL  = "%n"
-	fmtPerc = "%%"
 	fmtZero = "%x00"
 
-	fmtCommitHash   = "%H"
-	fmtTreeHash     = "%T"
-	fmtParentHashes = "%P"
-
-	fmtAuthorName  = "%an"
-	fmtAuthorEmail = "%ae"
-	fmtAuthorTime  = "%aI" // ISO 8601
-	fmtAuthorUnix  = "%at" // Unix timestamp
-
-	fmtCommitterName  = "%cn"
-	fmtCommitterEmail = "%ce"
-	fmtCommitterTime  = "%cI" // ISO 8601
-	fmtCommitterUnix  = "%ct" // Unix timestamp
-
-	fmtSubject = "%s"
-	fmtBody    = "%B"
+	fmtCommitHash = "%H"
+	fmtTreeHash   = "%T"
 
 	fmtFieldObjectType = "%(objecttype)"
 	fmtFieldPath       = "%(path)"
+
+	// RFC2822DateFormat is the date format that Git typically uses for dates.
+	RFC2822DateFormat = "Mon Jan 02 2006 15:04:05 -0700"
 )

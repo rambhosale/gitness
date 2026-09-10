@@ -39,7 +39,7 @@ func (c *Controller) List(
 	if filter.SourceRepoRef == repoRef {
 		filter.SourceRepoID = repo.ID
 	} else if filter.SourceRepoRef != "" {
-		var sourceRepo *types.Repository
+		var sourceRepo *types.RepositoryCore
 		sourceRepo, err = c.getRepoCheckAccess(ctx, session, filter.SourceRepoRef, enum.PermissionRepoView)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to acquire access to source repo: %w", err)
@@ -58,6 +58,11 @@ func (c *Controller) List(
 			return fmt.Errorf("failed to list pull requests: %w", err)
 		}
 
+		err := c.labelSvc.BackfillMany(ctx, list)
+		if err != nil {
+			return fmt.Errorf("failed to backfill labels assigned to pull requests: %w", err)
+		}
+
 		if filter.Page == 1 && len(list) < filter.Size {
 			count = int64(len(list))
 			return nil
@@ -72,6 +77,10 @@ func (c *Controller) List(
 	}, dbtx.TxDefaultReadOnly)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	if err := c.pullreqListService.BackfillMetadataForRepo(ctx, repo, list, filter.PullReqMetadataOptions); err != nil {
+		return nil, 0, fmt.Errorf("failed to backfill metadata for pull requests: %w", err)
 	}
 
 	return list, count, nil

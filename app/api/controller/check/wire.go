@@ -17,6 +17,9 @@ package check
 import (
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
+	checkevents "github.com/harness/gitness/app/events/check"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/store/database/dbtx"
@@ -34,17 +37,27 @@ var WireSet = wire.NewSet(
 func ProvideController(
 	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	repoStore store.RepoStore,
+	spaceStore store.SpaceStore,
 	checkStore store.CheckStore,
-	rpcClient git.Interface,
+	principalStore store.PrincipalStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	git git.Interface,
 	sanitizers map[enum.CheckPayloadKind]func(in *ReportInput, s *auth.Session) error,
+	sseStreamer sse.Streamer,
+	eventReporter *checkevents.Reporter,
 ) *Controller {
 	return NewController(
 		tx,
 		authorizer,
-		repoStore,
+		spaceStore,
 		checkStore,
-		rpcClient,
+		principalStore,
+		spaceFinder,
+		repoFinder,
+		git,
 		sanitizers,
+		sseStreamer,
+		eventReporter,
 	)
 }

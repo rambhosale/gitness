@@ -19,17 +19,18 @@ import "golang.org/x/exp/slices"
 // CheckStatus defines status check status.
 type CheckStatus string
 
-func (CheckStatus) Enum() []interface{}                 { return toInterfaceSlice(checkStatuses) }
+func (CheckStatus) Enum() []any                         { return toInterfaceSlice(checkStatuses) }
 func (s CheckStatus) Sanitize() (CheckStatus, bool)     { return Sanitize(s, GetAllCheckStatuses) }
 func GetAllCheckStatuses() ([]CheckStatus, CheckStatus) { return checkStatuses, "" }
 
 // CheckStatus enumeration.
 const (
-	CheckStatusPending CheckStatus = "pending"
-	CheckStatusRunning CheckStatus = "running"
-	CheckStatusSuccess CheckStatus = "success"
-	CheckStatusFailure CheckStatus = "failure"
-	CheckStatusError   CheckStatus = "error"
+	CheckStatusPending        CheckStatus = "pending"
+	CheckStatusRunning        CheckStatus = "running"
+	CheckStatusSuccess        CheckStatus = "success"
+	CheckStatusFailure        CheckStatus = "failure"
+	CheckStatusError          CheckStatus = "error"
+	CheckStatusFailureIgnored CheckStatus = "failure_ignored"
 )
 
 var checkStatuses = sortEnum([]CheckStatus{
@@ -38,14 +39,18 @@ var checkStatuses = sortEnum([]CheckStatus{
 	CheckStatusSuccess,
 	CheckStatusFailure,
 	CheckStatusError,
+	CheckStatusFailureIgnored,
 })
 
-var terminalCheckStatuses = []CheckStatus{CheckStatusFailure, CheckStatusSuccess, CheckStatusError}
+var terminalCheckStatuses = []CheckStatus{CheckStatusFailure, CheckStatusSuccess, CheckStatusError,
+	CheckStatusFailureIgnored}
+
+var successCheckStatuses = []CheckStatus{CheckStatusSuccess, CheckStatusFailureIgnored}
 
 // CheckPayloadKind defines status payload type.
 type CheckPayloadKind string
 
-func (CheckPayloadKind) Enum() []interface{} { return toInterfaceSlice(checkPayloadTypes) }
+func (CheckPayloadKind) Enum() []any { return toInterfaceSlice(checkPayloadTypes) }
 func (s CheckPayloadKind) Sanitize() (CheckPayloadKind, bool) {
 	return Sanitize(s, GetAllCheckPayloadTypes)
 }
@@ -70,4 +75,8 @@ var checkPayloadTypes = sortEnum([]CheckPayloadKind{
 
 func (s CheckStatus) IsCompleted() bool {
 	return slices.Contains(terminalCheckStatuses, s)
+}
+
+func (s CheckStatus) IsSuccess() bool {
+	return slices.Contains(successCheckStatuses, s)
 }

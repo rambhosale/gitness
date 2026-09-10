@@ -35,8 +35,11 @@ type Check struct {
 	Started    int64            `json:"started,omitempty"`
 	Ended      int64            `json:"ended,omitempty"`
 
+	BypassedByID *int64 `json:"-"` // clients will use "bypassed_by"
+
 	Payload    CheckPayload   `json:"payload"`
 	ReportedBy *PrincipalInfo `json:"reported_by,omitempty"`
+	BypassedBy *PrincipalInfo `json:"bypassed_by,omitempty"`
 }
 
 // TODO [CODE-1363]: remove after identifier migration.
@@ -55,6 +58,7 @@ func (c Check) MarshalJSON() ([]byte, error) {
 type CheckResult struct {
 	Identifier string           `json:"identifier" db:"check_uid"`
 	Status     enum.CheckStatus `json:"status" db:"check_status"`
+	BypassedBy *int64           `json:"bypassed_by,omitempty" db:"check_bypassed_by"`
 }
 
 // TODO [CODE-1363]: remove after identifier migration.
@@ -92,7 +96,7 @@ type CheckPayloadText struct {
 }
 
 // CheckPayloadInternal is for internal use for more seamless integration for
-// gitness CI status checks.
+// Harness CI status checks.
 type CheckPayloadInternal struct {
 	Number     int64 `json:"execution_number"`
 	RepoID     int64 `json:"repo_id"`
@@ -108,4 +112,13 @@ type PullReqCheck struct {
 	Required   bool  `json:"required"`
 	Bypassable bool  `json:"bypassable"`
 	Check      Check `json:"check"`
+}
+
+type CheckCountSummary struct {
+	Pending        int `json:"pending"`
+	Running        int `json:"running"`
+	Success        int `json:"success"`
+	Failure        int `json:"failure"`
+	Error          int `json:"error"`
+	FailureIgnored int `json:"failure_ignored"`
 }

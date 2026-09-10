@@ -25,8 +25,11 @@ import type { TypesUser } from 'services/code'
 import { currentUserAtom } from 'atoms/currentUser'
 import { newCacheStrategy } from 'utils/CacheStrategy'
 import { useGetSettingValue } from 'hooks/useGetSettingValue'
+import { useCodeOPAError } from 'hooks/useCodeOPAError'
 import { useFeatureFlags } from 'hooks/useFeatureFlag'
 import { defaultUsefulOrNot } from 'components/DefaultUsefulOrNot/UsefulOrNot'
+import { defaultDelegateSelectorsV2 } from 'components/DelegateSelector/DelegateSelector'
+import { defaultMultiTypeConnectorField } from 'components/FormMultiTypeConnectorField/FormMultiTypeConnectorField'
 
 interface AppContextProps extends AppProps {
   setAppContext: (value: Partial<AppProps>) => void
@@ -39,7 +42,8 @@ export const defaultCurrentUser: Required<TypesUser> = {
   updated: 0,
   display_name: '',
   email: '',
-  uid: ''
+  uid: '',
+  id: 0
 }
 
 const AppContext = React.createContext<AppContextProps>({
@@ -49,13 +53,16 @@ const AppContext = React.createContext<AppContextProps>({
   hooks: {},
   currentUser: defaultCurrentUser,
   customComponents: {
-    UsefulOrNot: defaultUsefulOrNot
+    UsefulOrNot: defaultUsefulOrNot,
+    DelegateSelectorsV2: defaultDelegateSelectorsV2,
+    MultiTypeConnectorField: defaultMultiTypeConnectorField
   },
   currentUserProfileURL: '',
   routingId: '',
   defaultSettingsURL: '',
   isPublicAccessEnabledOnResources: false,
-  isCurrentSessionPublic: false
+  isCurrentSessionPublic: !!window.publicAccessOnGitness,
+  accountInfo: noop
 })
 
 export const AppContextProvider: React.FC<{ value: AppProps }> = React.memo(function AppContextProvider({
@@ -72,14 +79,15 @@ export const AppContextProvider: React.FC<{ value: AppProps }> = React.memo(func
   })
   const [currentUser, setCurrentUser] = useAtom(currentUserAtom)
   const [appStates, setAppStates] = useState<AppProps>(
-    merge({ hooks: { useFeatureFlags, useGetSettingValue } }, initialValue)
+    merge({ hooks: { useFeatureFlags, useGetSettingValue, useCodeOPAError } }, initialValue)
   )
 
   useEffect(() => {
     // Fetch current user when conditions to fetch it matched and
     //  - cache does not exist yet
     //  - or cache is expired
-    if (!lazy && (!currentUser || cacheStrategy.isExpired())) {
+    //  - currentSession is not Public
+    if (!lazy && (!currentUser || cacheStrategy.isExpired()) && !initialValue.isCurrentSessionPublic) {
       fetchCurrentUser()
     }
   }, [lazy, fetchCurrentUser, currentUser])

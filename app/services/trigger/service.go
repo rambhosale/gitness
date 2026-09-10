@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	gitevents "github.com/harness/gitness/app/events/git"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/app/pipeline/commit"
 	"github.com/harness/gitness/app/pipeline/triggerer"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/stream"
@@ -63,7 +65,7 @@ func (c *Config) Prepare() error {
 type Service struct {
 	triggerStore  store.TriggerStore
 	pullReqStore  store.PullReqStore
-	repoStore     store.RepoStore
+	repoFinder    refcache.RepoFinder
 	pipelineStore store.PipelineStore
 	triggerSvc    triggerer.Triggerer
 	commitSvc     commit.Service
@@ -74,7 +76,7 @@ func New(
 	config Config,
 	triggerStore store.TriggerStore,
 	pullReqStore store.PullReqStore,
-	repoStore store.RepoStore,
+	repoFinder refcache.RepoFinder,
 	pipelineStore store.PipelineStore,
 	triggerSvc triggerer.Triggerer,
 	commitSvc commit.Service,
@@ -88,7 +90,7 @@ func New(
 	service := &Service{
 		triggerStore:  triggerStore,
 		pullReqStore:  pullReqStore,
-		repoStore:     repoStore,
+		repoFinder:    repoFinder,
 		commitSvc:     commitSvc,
 		pipelineStore: pipelineStore,
 		triggerSvc:    triggerSvc,
@@ -156,11 +158,8 @@ func (s *Service) trigger(ctx context.Context, repoID int64,
 	validTriggers := []*types.Trigger{}
 	// Check which triggers are eligible to be fired
 	for _, t := range ret {
-		for _, a := range t.Actions {
-			if a == action {
-				validTriggers = append(validTriggers, t)
-				break
-			}
+		if slices.Contains(t.Actions, action) {
+			validTriggers = append(validTriggers, t)
 		}
 	}
 

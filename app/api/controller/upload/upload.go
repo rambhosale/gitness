@@ -32,25 +32,23 @@ type Result struct {
 	FilePath string `json:"file_path"`
 }
 
-const (
-	fileNameFmt = "%s%s"
-)
-
 func (c *Controller) Upload(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	file io.Reader,
 ) (*Result, error) {
 	// Permission check to see if the user in request has access to the repo.
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
 
 	if file == nil {
-		return nil, usererror.BadRequest("no file provided")
+		return nil, usererror.BadRequest("No file provided")
 	}
+
 	bufReader := bufio.NewReader(file)
+
 	// Check if the file is an image or video
 	extn, err := c.getFileExtension(bufReader)
 	if err != nil {
@@ -58,13 +56,15 @@ func (c *Controller) Upload(ctx context.Context,
 	}
 
 	identifier := uuid.New().String()
-	fileName := fmt.Sprintf(fileNameFmt, identifier, extn)
+	fileName := identifier + extn
 
 	fileBucketPath := getFileBucketPath(repo.ID, fileName)
+
 	err = c.blobStore.Upload(ctx, bufReader, fileBucketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload file: %w", err)
 	}
+
 	return &Result{
 		FilePath: fileName,
 	}, nil

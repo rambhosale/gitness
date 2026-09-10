@@ -26,7 +26,7 @@ func ptrSchemaType(t openapi3.SchemaType) *openapi3.SchemaType {
 	return &t
 }
 
-func ptrptr(i interface{}) *interface{} {
+func ptrptr(i any) *any {
 	return &i
 }
 
@@ -55,8 +55,8 @@ var queryParameterOrder = openapi3.ParameterOrRef{
 		Schema: &openapi3.SchemaOrRef{
 			Schema: &openapi3.Schema{
 				Type:    ptrSchemaType(openapi3.SchemaTypeString),
-				Default: ptrptr(enum.OrderAsc.String()),
-				Enum: []interface{}{
+				Default: ptrptr(enum.OrderDesc.String()),
+				Enum: []any{
 					ptr.String(enum.OrderAsc.String()),
 					ptr.String(enum.OrderDesc.String()),
 				},
@@ -122,6 +122,66 @@ var queryParameterCreatedGt = openapi3.ParameterOrRef{
 			Schema: &openapi3.Schema{
 				Type:    ptrSchemaType(openapi3.SchemaTypeInteger),
 				Minimum: ptr.Float64(0),
+			},
+		},
+	},
+}
+
+var queryParameterUpdatedLt = openapi3.ParameterOrRef{
+	Parameter: &openapi3.Parameter{
+		Name:        request.QueryParamUpdatedLt,
+		In:          openapi3.ParameterInQuery,
+		Description: ptr.String("The result should contain only entries updated before this timestamp (unix millis)."),
+		Required:    ptr.Bool(false),
+		Schema: &openapi3.SchemaOrRef{
+			Schema: &openapi3.Schema{
+				Type:    ptrSchemaType(openapi3.SchemaTypeInteger),
+				Minimum: ptr.Float64(0),
+			},
+		},
+	},
+}
+
+var queryParameterUpdatedGt = openapi3.ParameterOrRef{
+	Parameter: &openapi3.Parameter{
+		Name:        request.QueryParamUpdatedGt,
+		In:          openapi3.ParameterInQuery,
+		Description: ptr.String("The result should contain only entries updated after this timestamp (unix millis)."),
+		Required:    ptr.Bool(false),
+		Schema: &openapi3.SchemaOrRef{
+			Schema: &openapi3.Schema{
+				Type:    ptrSchemaType(openapi3.SchemaTypeInteger),
+				Minimum: ptr.Float64(0),
+			},
+		},
+	},
+}
+
+var QueryParameterRecursive = openapi3.ParameterOrRef{
+	Parameter: &openapi3.Parameter{
+		Name:        request.QueryParamRecursive,
+		In:          openapi3.ParameterInQuery,
+		Description: ptr.String("The result should include entities from child spaces."),
+		Required:    ptr.Bool(false),
+		Schema: &openapi3.SchemaOrRef{
+			Schema: &openapi3.Schema{
+				Type:    ptrSchemaType(openapi3.SchemaTypeBoolean),
+				Default: ptrptr(false),
+			},
+		},
+	},
+}
+
+var queryParameterIncludeSubspaces = openapi3.ParameterOrRef{
+	Parameter: &openapi3.Parameter{
+		Name:        request.QueryParamIncludeSubspaces,
+		In:          openapi3.ParameterInQuery,
+		Description: ptr.String("The result should contain entries from the desired space and of its subspaces."),
+		Required:    ptr.Bool(false),
+		Schema: &openapi3.SchemaOrRef{
+			Schema: &openapi3.Schema{
+				Type:    ptrSchemaType(openapi3.SchemaTypeBoolean),
+				Default: ptrptr(false),
 			},
 		},
 	},

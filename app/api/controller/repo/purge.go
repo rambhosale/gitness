@@ -21,6 +21,7 @@ import (
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/bootstrap"
 	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/githook"
 	"github.com/harness/gitness/errors"
@@ -38,12 +39,16 @@ func (c *Controller) Purge(
 	repoRef string,
 	deletedAt int64,
 ) error {
-	repo, err := c.repoStore.FindByRefAndDeletedAt(ctx, repoRef, deletedAt)
+	repo, err := c.repoFinder.FindDeletedByRef(ctx, repoRef, deletedAt)
 	if err != nil {
 		return fmt.Errorf("failed to find the repo (deleted at %d): %w", deletedAt, err)
 	}
 
-	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, enum.PermissionRepoDelete); err != nil {
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo.Core(), enum.PermissionRepoDelete); err != nil {
+		return err
+	}
+
+	if err = c.repoCheck.LifecycleRestriction(ctx, session, repo.Core()); err != nil {
 		return err
 	}
 
@@ -64,7 +69,7 @@ func (c *Controller) PurgeNoAuth(
 	session *auth.Session,
 	repo *types.Repository,
 ) error {
-	if repo.Importing {
+	if repo.State == enum.RepoStateGitImport {
 		log.Ctx(ctx).Info().Msg("repository is importing. cancelling the import job.")
 		err := c.importer.Cancel(ctx, repo)
 		if err != nil {
@@ -72,9 +77,28 @@ func (c *Controller) PurgeNoAuth(
 		}
 	}
 
-	if err := c.repoStore.Purge(ctx, repo.ID, repo.Deleted); err != nil {
+	err := c.tx.WithTx(ctx, func(ctx context.Context) error {
+		if err := c.repoStore.ClearForkID(ctx, repo.ID); err != nil {
+			return fmt.Errorf("failed to clear fork ID of forks: %w", err)
+		}
+
+		if repo.ForkID != 0 {
+			if err := c.repoStore.UpdateNumForks(ctx, repo.ForkID, -1); err != nil {
+				return fmt.Errorf("failed to decrement number of forks of the upstream repository: %w", err)
+			}
+		}
+
+		if err := c.repoStore.Purge(ctx, repo.ID, repo.Deleted); err != nil {
+			return fmt.Errorf("failed to delete repo from db: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("failed to delete repo from db: %w", err)
 	}
+
+	c.repoFinder.MarkChanged(ctx, repo.Core())
 
 	if err := c.DeleteGitRepository(ctx, session, repo.GitUID); err != nil {
 		log.Ctx(ctx).Err(err).Msg("failed to remove git repository")
@@ -83,9 +107,10 @@ func (c *Controller) PurgeNoAuth(
 	c.eventReporter.Deleted(
 		ctx,
 		&repoevents.DeletedPayload{
-			RepoID: repo.ID,
+			Base: eventBase(repo.Core(), &bootstrap.NewSystemServiceSession().Principal),
 		},
 	)
+
 	return nil
 }
 
@@ -95,17 +120,18 @@ func (c *Controller) DeleteGitRepository(
 	gitUID string,
 ) error {
 	// create custom write params for delete as repo might or might not exist in db (similar to create).
-	envVars, err := githook.GenerateEnvironmentVariables(
+	envVars, err := githook.GenerateEnvironmentVariablesForOperation(
 		ctx,
-		c.urlProvider.GetInternalAPIURL(),
+		c.urlProvider.GetInternalAPIURL(ctx),
 		0, // no repoID
 		session.Principal.ID,
 		true,
-		true,
+		enum.GitOpTypeManageRepo,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to generate git hook environment variables: %w", err)
 	}
+
 	writeParams := git.WriteParams{
 		Actor: git.Identity{
 			Name:  session.Principal.DisplayName,
@@ -118,13 +144,9 @@ func (c *Controller) DeleteGitRepository(
 	err = c.git.DeleteRepository(ctx, &git.DeleteRepositoryParams{
 		WriteParams: writeParams,
 	})
-
-	// deletion should not fail if repo dir does not exist.
-	if errors.IsNotFound(err) {
-		log.Ctx(ctx).Warn().Str("repo.git_uid", gitUID).
-			Msg("git repository directory does not exist")
-	} else if err != nil {
+	if err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to remove git repository %s: %w", gitUID, err)
 	}
+
 	return nil
 }

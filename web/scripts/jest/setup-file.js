@@ -24,14 +24,16 @@ enableMapSet()
 
 process.env.TZ = 'UTC'
 
-document.createRange = () => ({
-  setStart: () => {},
-  setEnd: () => {},
-  commonAncestorContainer: {
-    nodeName: 'BODY',
-    ownerDocument: document,
-  },
-})
+// https://stackoverflow.com/questions/71704077/errors-when-updating-testing-library-user-event-to-v-14
+// document.createRange = () => ({
+//   setStart: () => {},
+//   setEnd: () => {},
+//   commonAncestorContainer: {
+//     nodeName: 'BODY',
+//     ownerDocument: document,
+//   },
+// })
+
 window.HTMLElement.prototype.scrollIntoView = jest.fn()
 window.scrollTo = jest.fn()
 
@@ -44,7 +46,7 @@ Please mock this call.`)
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
-  value: jest.fn().mockImplementation((query) => ({
+  value: jest.fn().mockImplementation(query => ({
     matches: false,
     media: query,
     onchange: null,
@@ -52,8 +54,40 @@ Object.defineProperty(window, 'matchMedia', {
     removeListener: jest.fn(), // Deprecated
     addEventListener: jest.fn(),
     removeEventListener: jest.fn(),
-    dispatchEvent: jest.fn(),
-  })),
+    dispatchEvent: jest.fn()
+  }))
 })
 
 jest.mock('react-timeago', () => () => 'dummy date')
+
+class MockIntersectionObserver {
+  constructor() {
+    this.root = null
+    this.rootMargin = ''
+    this.thresholds = []
+    this.disconnect = () => null
+    this.observe = () => null
+    this.takeRecords = () => []
+    this.unobserve = () => null
+  }
+}
+
+Object.defineProperty(window, 'IntersectionObserver', {
+  writable: true,
+  configurable: true,
+  value: MockIntersectionObserver
+})
+
+Object.defineProperty(global, 'IntersectionObserver', {
+  writable: true,
+  configurable: true,
+  value: MockIntersectionObserver
+})
+
+Object.defineProperty(window, 'getApiBaseUrl', {
+  writable: true,
+  configurable: true,
+  value: jest.fn().mockImplementation(query => {
+    return '/'
+  })
+})

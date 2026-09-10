@@ -47,13 +47,80 @@ func (c *Controller) ActivityList(
 		return nil, fmt.Errorf("failed to list pull requests activities: %w", err)
 	}
 
+	// Collect all principal IDs needed: mention IDs and reaction author IDs.
+	// Batch them into a single cache lookup to avoid N+1 calls.
+	principalIDSet := map[int64]struct{}{}
 	for _, act := range list {
-		if act.Metadata != nil && act.Metadata.Mentions != nil {
-			mentions, err := c.principalInfoCache.Map(ctx, act.Metadata.Mentions.IDs)
-			if err != nil {
-				return nil, fmt.Errorf("failed to fetch activity mentions from principalInfoView: %w", err)
+		if act.Deleted != nil || act.Metadata == nil {
+			continue
+		}
+		if act.Metadata.Mentions != nil {
+			for _, id := range act.Metadata.Mentions.IDs {
+				principalIDSet[id] = struct{}{}
+			}
+		}
+		if !act.Metadata.Reactions.IsEmpty() {
+			for _, ids := range act.Metadata.Reactions.Counts {
+				for _, id := range ids {
+					principalIDSet[id] = struct{}{}
+				}
+			}
+		}
+	}
+
+	var principalInfoMap map[int64]*types.PrincipalInfo
+	if len(principalIDSet) > 0 {
+		allIDs := make([]int64, 0, len(principalIDSet))
+		for id := range principalIDSet {
+			allIDs = append(allIDs, id)
+		}
+		principalInfoMap, err = c.principalInfoCache.Map(ctx, allIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch principal info for activities: %w", err)
+		}
+	}
+
+	for _, act := range list {
+		if act.Deleted != nil || act.Metadata == nil {
+			continue
+		}
+
+		if act.Metadata.Mentions != nil && act.Metadata.Mentions.IDs != nil {
+			mentions := make(map[int64]*types.PrincipalInfo, len(act.Metadata.Mentions.IDs))
+			for _, id := range act.Metadata.Mentions.IDs {
+				if info := principalInfoMap[id]; info != nil {
+					mentions[id] = info
+				}
 			}
 			act.Mentions = mentions
+		}
+		if act.Metadata.Mentions != nil && act.Metadata.Mentions.UserGroupIDs != nil {
+			groups, err := c.userGroupStore.Map(ctx, act.Metadata.Mentions.UserGroupIDs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch activity mentions from userGroupStore: %w", err)
+			}
+			groupInfoMentions := make(map[int64]*types.UserGroupInfo, len(groups))
+			for id, g := range groups {
+				if g != nil {
+					groupInfoMentions[id] = g.ToUserGroupInfo()
+				}
+			}
+			act.GroupMentions = groupInfoMentions
+		}
+
+		if !act.Metadata.Reactions.IsEmpty() {
+			for emoji, ids := range act.Metadata.Reactions.Counts {
+				for _, id := range ids {
+					info := principalInfoMap[id]
+					if info == nil {
+						continue
+					}
+					act.Reactions = append(act.Reactions, &types.PullReqCommentReaction{
+						Emoji:  emoji,
+						Author: *info,
+					})
+				}
+			}
 		}
 	}
 
@@ -92,7 +159,8 @@ func removeDeletedComments(list []*types.PullReqActivity) []*types.PullReqActivi
 
 	for i, act := range list {
 		if act.Deleted != nil {
-			act.Text = "" // return deleted comments, but remove their content
+			act.Text = ""       // return deleted comments, but remove their content
+			act.Reactions = nil // and strip reactions
 		}
 
 		if act.Kind == enum.PullReqActivityKindComment || act.Kind == enum.PullReqActivityKindChangeComment {

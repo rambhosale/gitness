@@ -14,9 +14,23 @@
 
 package types
 
+import (
+	"github.com/harness/gitness/git/sha"
+)
+
 // CommitFilesResponse holds commit id.
 type CommitFilesResponse struct {
-	DryRunRules    bool             `json:"dry_run_rules,omitempty"`
-	CommitID       string           `json:"commit_id"`
-	RuleViolations []RuleViolations `json:"rule_violations,omitempty"`
+	CommitID sha.SHA `json:"commit_id"`
+	DryRunRulesOutput
+	ChangedFiles []FileReference `json:"changed_files"`
+}
+
+type FileReference struct {
+	Path string  `json:"path"`
+	SHA  sha.SHA `json:"blob_sha"`
+}
+
+type PathDetails struct {
+	Path       string  `json:"path"`
+	LastCommit *Commit `json:"last_commit,omitempty"`
 }

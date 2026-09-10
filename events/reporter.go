@@ -20,6 +20,10 @@ import (
 	"encoding/gob"
 	"fmt"
 	"time"
+
+	"github.com/harness/gitness/app/gitspace/orchestrator/container/response"
+
+	"github.com/google/uuid"
 )
 
 // GenericReporter represents an event reporter that supports sending typesafe messages
@@ -30,31 +34,42 @@ type GenericReporter struct {
 	category string
 }
 
-// ReportEvent reports an event using the provided GenericReporter.
+// ReporterSendEvent reports an event using the provided GenericReporter.
 // Returns the reported event's ID in case of success.
 // NOTE: This call is blocking until the event was send (not until it was processed).
 //
 //nolint:revive // emphasize that this is meant to be an operation on *GenericReporter
-func ReporterSendEvent[T interface{}](reporter *GenericReporter, ctx context.Context,
+func ReporterSendEvent[T any](reporter *GenericReporter, ctx context.Context,
 	eventType EventType, payload T) (string, error) {
 	streamID := getStreamID(reporter.category, eventType)
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate event ID: %w", err)
+	}
+
 	event := Event[T]{
-		ID:        "", // will be set by GenericReader
+		ID:        eventID.String(),
 		Timestamp: time.Now(),
 		Payload:   payload,
 	}
 
 	buff := &bytes.Buffer{}
 	encoder := gob.NewEncoder(buff)
+	gob.Register((*response.StartResponse)(nil))
+	gob.Register((*response.StopResponse)(nil))
+	gob.Register((*response.DeleteResponse)(nil))
 
 	if err := encoder.Encode(&event); err != nil {
 		return "", fmt.Errorf("failed to encode payload: %w", err)
 	}
 
-	streamPayload := map[string]interface{}{
+	streamPayload := map[string]any{
 		streamPayloadKey: buff.Bytes(),
 	}
 
-	// We are using the message ID as event ID.
-	return reporter.producer.Send(ctx, streamID, streamPayload)
+	if _, err = reporter.producer.Send(ctx, streamID, streamPayload); err != nil {
+		return "", fmt.Errorf("failed to send event: %w", err)
+	}
+
+	return event.ID, nil
 }

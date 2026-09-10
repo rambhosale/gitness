@@ -1,27 +1,61 @@
+/*
+ * Copyright 2024 Harness, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import React, { useEffect, useState } from 'react'
 import { useGet } from 'restful-react'
-import { Container, ExpandingSearchInput, Layout, Text } from '@harnessio/uicore'
+import { Button, ButtonVariation, Container, ExpandingSearchInput, Layout, Text } from '@harnessio/uicore'
 import { Menu, MenuItem } from '@blueprintjs/core'
 import { Color } from '@harnessio/design-system'
 import { Icon } from '@harnessio/icons'
+import { Repository } from 'iconoir-react'
 import { useFormikContext } from 'formik'
-import type { TypesRepository } from 'services/code'
+import type { RepoRepositoryOutput } from 'services/code'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import { String, useStrings } from 'framework/strings'
 import { LIST_FETCHING_LIMIT } from 'utils/Utils'
 import NewRepoModalButton from 'components/NewRepoModalButton/NewRepoModalButton'
-import { GitspaceSelect } from '../../../cde/components/GitspaceSelect/GitspaceSelect'
-import gitnessRepoLogo from './gitness.svg?url'
+import noRepo from 'cde-gitness/assests/noRepo.svg?url'
+import { RepoCreationType } from 'utils/GitUtils'
+import gitnessRepoLogo from 'cde-gitness/assests/gitness.svg?url'
+import { EnumGitspaceCodeRepoType } from 'cde-gitness/constants'
+import { useQueryParams } from 'hooks/useQueryParams'
+import type { RepoQueryParams } from 'cde-gitness/pages/GitspaceCreate/CDECreateGitspace'
+import { GitspaceSelect } from '../GitspaceSelect/GitspaceSelect'
 import css from './GitnessRepoImportForm.module.scss'
 
-const RepositoryText = ({ repoList, value }: { repoList: TypesRepository[] | null; value?: string }) => {
+const RepositoryText = ({
+  repoList,
+  value,
+  isCDE
+}: {
+  repoList: RepoRepositoryOutput[] | null
+  value?: string
+  isCDE?: boolean
+}) => {
   const { getString } = useStrings()
   const repoMetadata = repoList?.find(repo => repo.git_url === value)
   const repoName = repoMetadata?.path
 
   return (
     <Layout.Horizontal spacing={'medium'} flex={{ justifyContent: 'flex-start', alignItems: 'center' }}>
-      <img src={gitnessRepoLogo} height={24} width={24} />
+      {isCDE ? (
+        <Repository color="none" height={24} width={24} />
+      ) : (
+        <img src={gitnessRepoLogo} height={24} width={24} />
+      )}
       {repoName ? (
         <Container margin={{ left: 'medium' }}>
           <Layout.Vertical spacing="xsmall">
@@ -59,22 +93,29 @@ const BranchText = ({ value }: { value?: string }) => {
   )
 }
 
-export const GitnessRepoImportForm = () => {
+export const GitnessRepoImportForm = ({ isCDE }: { isCDE?: boolean }) => {
   const { getString } = useStrings()
   const space = useGetSpaceParam()
   const [branchSearch, setBranchSearch] = useState('')
   const [repoSearch, setRepoSearch] = useState('')
+  const [hadReops, setHadRepos] = useState(false)
   const [repoRef, setReporef] = useState('')
 
   const {
     data: repositories,
     loading,
     refetch: refetchRepos
-  } = useGet<TypesRepository[]>({
+  } = useGet<RepoRepositoryOutput[]>({
     path: `/api/v1/spaces/${space}/+/repos`,
     queryParams: { query: repoSearch },
     debounce: 500
   })
+
+  useEffect(() => {
+    if (!hadReops && repositories?.length) {
+      setHadRepos(true)
+    }
+  }, [repositories])
 
   const {
     data: branches,
@@ -100,6 +141,18 @@ export const GitnessRepoImportForm = () => {
   }, [repoRef, branchSearch])
 
   const repoListOptions = repositories || []
+  const hideInitialMenu = Boolean(repoSearch) || Boolean(repositories)
+
+  const repoQueryParams = useQueryParams<RepoQueryParams>()
+
+  useEffect(() => {
+    if (isCDE) {
+      const repoData = repoListOptions?.find(repo => repo.git_url === repoQueryParams.codeRepoURL)
+      if (!repoQueryParams.branch && repoData) {
+        formik.setFieldValue('branch', repoData?.default_branch)
+      }
+    }
+  }, [repoListOptions, isCDE])
 
   const formik = useFormikContext<any>()
 
@@ -116,7 +169,7 @@ export const GitnessRepoImportForm = () => {
           loading={loading}
           formikName="code_repo_url"
           formInputClassName={css.repoAndBranch}
-          text={<RepositoryText value={values.code_repo_url} repoList={repositories} />}
+          text={<RepositoryText value={values.code_repo_url} repoList={repositories} isCDE={isCDE} />}
           tooltipProps={{
             onClose: () => {
               setRepoSearch('')
@@ -124,15 +177,17 @@ export const GitnessRepoImportForm = () => {
           }}
           renderMenu={
             <Menu>
-              <Container margin={'small'}>
-                <ExpandingSearchInput
-                  placeholder={getString('cde.create.searchRepositoryPlaceholder')}
-                  alwaysExpanded
-                  autoFocus={false}
-                  defaultValue={repoSearch}
-                  onChange={setRepoSearch}
-                />
-              </Container>
+              {hideInitialMenu && (
+                <Container margin={'small'}>
+                  <ExpandingSearchInput
+                    placeholder={getString('cde.create.searchRepositoryPlaceholder')}
+                    alwaysExpanded
+                    autoFocus={false}
+                    defaultValue={repoSearch}
+                    onChange={setRepoSearch}
+                  />
+                </Container>
+              )}
               {loading ? (
                 <MenuItem disabled text={getString('loading')} />
               ) : repoListOptions?.length ? (
@@ -147,33 +202,89 @@ export const GitnessRepoImportForm = () => {
                     }
                     active={repo.git_url === values.code_repo_url}
                     onClick={() => {
+                      const repoParams = repo?.path?.split('/') || []
                       formik.setValues((prvValues: any) => {
+                        const codeRepoType = isCDE ? {} : { code_repo_type: EnumGitspaceCodeRepoType.GITNESS }
                         return {
                           ...prvValues,
                           code_repo_url: repo.git_url,
-                          id: repo.path,
-                          name: repo.path
+                          branch: repo.default_branch,
+                          identifier: repoParams?.[repoParams.length - 1],
+                          name: '',
+                          code_repo_ref: repo.path,
+                          ...codeRepoType
                         }
                       })
-                      formik.setFieldValue('code_repo_url', repo.git_url)
                     }}
                   />
                 ))
-              ) : (
+              ) : hideInitialMenu ? (
                 <Container>
                   <NewRepoModalButton
                     space={space}
-                    newRepoModalOnly
-                    notFoundRepoName={repoSearch}
+                    repoCreationType={RepoCreationType.CREATE}
+                    customRenderer={fn => (
+                      <MenuItem
+                        icon="plus"
+                        text={<String stringID="cde.create.repoNotFound" vars={{ repo: repoSearch }} useRichText />}
+                        onClick={fn}
+                      />
+                    )}
                     modalTitle={getString('createRepo')}
                     onSubmit={() => {
                       refetchRepos()
                     }}
                   />
                 </Container>
+              ) : !hadReops ? (
+                <Container>
+                  <Layout.Vertical
+                    spacing="medium"
+                    className={css.noReposContainer}
+                    flex={{ justifyContent: 'center' }}>
+                    <img src={noRepo} height={90} width={90} />
+                    <Layout.Vertical spacing="small" flex={{ alignItems: 'center' }}>
+                      <Text color={Color.PRIMARY_10} font={{ size: 'normal', weight: 'bold' }}>
+                        {getString('cde.getStarted')}
+                      </Text>
+                      <Text color={Color.PRIMARY_10} font={{ size: 'normal', weight: 'bold' }}>
+                        {getString('cde.createImport')}
+                      </Text>
+                    </Layout.Vertical>
+                    <NewRepoModalButton
+                      space={space}
+                      repoCreationType={RepoCreationType.CREATE}
+                      customRenderer={fn => (
+                        <Button width={'80%'} variation={ButtonVariation.PRIMARY} onClick={fn}>
+                          {getString('createNewRepo')}
+                        </Button>
+                      )}
+                      modalTitle={getString('newRepo')}
+                      onSubmit={() => {
+                        refetchRepos()
+                      }}
+                    />
+                    <NewRepoModalButton
+                      space={space}
+                      repoCreationType={RepoCreationType.IMPORT}
+                      customRenderer={fn => (
+                        <Button width={'80%'} variation={ButtonVariation.SECONDARY} onClick={fn}>
+                          {getString('cde.importInto')}
+                        </Button>
+                      )}
+                      modalTitle={getString('importGitRepo')}
+                      onSubmit={() => {
+                        refetchRepos()
+                      }}
+                    />
+                  </Layout.Vertical>
+                </Container>
+              ) : (
+                <MenuItem disabled text={getString('loading')} />
               )}
             </Menu>
           }
+          withoutCurrentColor
         />
       </Container>
       <Container width={'35%'}>

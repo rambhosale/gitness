@@ -19,9 +19,13 @@ import (
 	"fmt"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
+	"github.com/harness/gitness/app/api/controller/space"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
+	checkevents "github.com/harness/gitness/app/events/check"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/store/database/dbtx"
@@ -30,42 +34,66 @@ import (
 )
 
 type Controller struct {
-	tx         dbtx.Transactor
-	authorizer authz.Authorizer
-	repoStore  store.RepoStore
-	checkStore store.CheckStore
-	git        git.Interface
-	sanitizers map[enum.CheckPayloadKind]func(in *ReportInput, s *auth.Session) error
+	tx             dbtx.Transactor
+	authorizer     authz.Authorizer
+	spaceStore     store.SpaceStore
+	checkStore     store.CheckStore
+	principalStore store.PrincipalStore
+	spaceFinder    refcache.SpaceFinder
+	repoFinder     refcache.RepoFinder
+	git            git.Interface
+	sanitizers     map[enum.CheckPayloadKind]func(in *ReportInput, s *auth.Session) error
+	sseStreamer    sse.Streamer
+	eventReporter  *checkevents.Reporter
 }
 
 func NewController(
 	tx dbtx.Transactor,
 	authorizer authz.Authorizer,
-	repoStore store.RepoStore,
+	spaceStore store.SpaceStore,
 	checkStore store.CheckStore,
+	principalStore store.PrincipalStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
 	git git.Interface,
 	sanitizers map[enum.CheckPayloadKind]func(in *ReportInput, s *auth.Session) error,
+	sseStreamer sse.Streamer,
+	eventReporter *checkevents.Reporter,
 ) *Controller {
 	return &Controller{
-		tx:         tx,
-		authorizer: authorizer,
-		repoStore:  repoStore,
-		checkStore: checkStore,
-		git:        git,
-		sanitizers: sanitizers,
+		tx:             tx,
+		authorizer:     authorizer,
+		spaceStore:     spaceStore,
+		checkStore:     checkStore,
+		principalStore: principalStore,
+		spaceFinder:    spaceFinder,
+		repoFinder:     repoFinder,
+		git:            git,
+		sanitizers:     sanitizers,
+		sseStreamer:    sseStreamer,
+		eventReporter:  eventReporter,
 	}
 }
 
-func (c *Controller) getRepoCheckAccess(ctx context.Context,
-	session *auth.Session, repoRef string, reqPermission enum.Permission,
-) (*types.Repository, error) {
+//nolint:unparam
+func (c *Controller) getRepoCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	repoRef string,
+	reqPermission enum.Permission,
+	allowedRepoStates ...enum.RepoState,
+) (*types.RepositoryCore, error) {
 	if repoRef == "" {
 		return nil, usererror.BadRequest("A valid repository reference must be provided.")
 	}
 
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repository: %w", err)
+	}
+
+	if err := apiauth.CheckRepoState(ctx, session, repo, reqPermission, allowedRepoStates...); err != nil {
+		return nil, err
 	}
 
 	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
@@ -73,4 +101,13 @@ func (c *Controller) getRepoCheckAccess(ctx context.Context,
 	}
 
 	return repo, nil
+}
+
+func (c *Controller) getSpaceCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	permission enum.Permission,
+) (*types.SpaceCore, error) {
+	return space.GetSpaceCheckAuth(ctx, c.spaceFinder, c.authorizer, session, spaceRef, permission)
 }

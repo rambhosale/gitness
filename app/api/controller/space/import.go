@@ -23,6 +23,7 @@ import (
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/types"
 
@@ -30,9 +31,10 @@ import (
 )
 
 type ProviderInput struct {
-	Provider      importer.Provider       `json:"provider"`
-	ProviderSpace string                  `json:"provider_space"`
-	Pipelines     importer.PipelineOption `json:"pipelines"`
+	Provider              importer.Provider       `json:"provider"`
+	ProviderSpace         string                  `json:"provider_space"` //nolint:tagliatelle
+	Pipelines             importer.PipelineOption `json:"pipelines"`
+	IncludeSubgroupsRepos bool                    `json:"include_subgroups_repos"` //nolint:tagliatelle
 }
 
 type ImportInput struct {
@@ -59,13 +61,13 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 	}
 
 	remoteRepositories, provider, err :=
-		importer.LoadRepositoriesFromProviderSpace(ctx, in.Provider, in.ProviderSpace)
+		c.importer.LoadRepositoriesFromProviderSpace(ctx, in.Provider, in.ProviderSpace, in.IncludeSubgroupsRepos)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(remoteRepositories) == 0 {
-		return nil, usererror.BadRequestf("found no repositories at %s", in.ProviderSpace)
+		return nil, usererror.BadRequestf("Found no repositories in %q", in.ProviderSpace)
 	}
 
 	repoIDs := make([]int64, len(remoteRepositories))
@@ -80,7 +82,13 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 			return fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
 		}
 
-		space, err = c.createSpaceInnerInTX(ctx, session, parentSpace.ID, &in.CreateInput)
+		// A space that is over an enforced storage limit takes no new repository, and an
+		// import only adds more.
+		if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, parentSpace.ID); err != nil {
+			return err
+		}
+
+		space, err = c.createSpaceInnerInTX(ctx, session, parentSpace, &in.CreateInput)
 		if err != nil {
 			return err
 		}
@@ -93,6 +101,8 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 				"",
 				&session.Principal,
 			)
+			repo.RootSpaceID = space.RootSpaceID
+			repo.RootSpaceIdentifier = space.RootSpaceIdentifier
 
 			err = c.repoStore.Create(ctx, repo)
 			if err != nil {
@@ -136,6 +146,19 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		)
 		if err != nil {
 			log.Warn().Msgf("failed to insert audit log for import repository operation: %s", err)
+		}
+		err = c.instrumentation.Track(ctx, instrument.Event{
+			Type:      instrument.EventTypeRepositoryCreate,
+			Principal: session.Principal.ToPrincipalInfo(),
+			Path:      space.Path,
+			Properties: map[instrument.Property]any{
+				instrument.PropertyRepositoryID:           repo.ID,
+				instrument.PropertyRepositoryName:         repo.Identifier,
+				instrument.PropertyRepositoryCreationType: instrument.CreationTypeImport,
+			},
+		})
+		if err != nil {
+			log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for import repository operation: %s", err)
 		}
 	}
 

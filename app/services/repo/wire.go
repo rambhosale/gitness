@@ -38,17 +38,23 @@ func ProvideCalculator(
 	config *types.Config,
 	git git.Interface,
 	repoStore store.RepoStore,
+	spaceStore store.SpaceStore,
 	scheduler *job.Scheduler,
 	executor *job.Executor,
+	lfsStore store.LFSObjectStore,
+	usageMetricStore store.UsageMetricStore,
 ) (*SizeCalculator, error) {
 	job := &SizeCalculator{
-		enabled:    config.RepoSize.Enabled,
-		cron:       config.RepoSize.CRON,
-		maxDur:     config.RepoSize.MaxDuration,
-		numWorkers: config.RepoSize.NumWorkers,
-		git:        git,
-		repoStore:  repoStore,
-		scheduler:  scheduler,
+		enabled:          config.RepoSize.Enabled,
+		cron:             config.RepoSize.CRON,
+		maxDur:           config.RepoSize.MaxDuration,
+		numWorkers:       config.RepoSize.NumWorkers,
+		git:              git,
+		repoStore:        repoStore,
+		spaceStore:       spaceStore,
+		scheduler:        scheduler,
+		lfsStore:         lfsStore,
+		usageMetricStore: usageMetricStore,
 	}
 
 	err := executor.Register(jobType, job)

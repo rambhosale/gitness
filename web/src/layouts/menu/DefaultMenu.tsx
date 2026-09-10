@@ -15,10 +15,15 @@
  */
 
 import React, { useMemo, useState } from 'react'
-import { Container, Layout } from '@harnessio/uicore'
 import { Render } from 'react-jsx-match'
 import { useHistory, useRouteMatch } from 'react-router-dom'
 import { FingerprintLockCircle, BookmarkBook, UserSquare, Settings } from 'iconoir-react'
+
+import { Icon } from '@harnessio/icons'
+import { Container, Layout } from '@harnessio/uicore'
+
+import { useGet } from 'restful-react'
+import { useFeatureFlags } from 'hooks/useFeatureFlag'
 import { useGetRepositoryMetadata } from 'hooks/useGetRepositoryMetadata'
 import { useStrings } from 'framework/strings'
 import type { SpaceSpaceOutput } from 'services/code'
@@ -30,13 +35,17 @@ import css from './DefaultMenu.module.scss'
 
 export const DefaultMenu: React.FC = () => {
   const history = useHistory()
-  const { routes, standalone } = useAppContext()
+  const { routes, standalone, isCurrentSessionPublic, arAppStore } = useAppContext()
+  const { repositoryIdentifier, repositoryType } = arAppStore || {}
   const [selectedSpace, setSelectedSpace] = useState<SpaceSpaceOutput | undefined>()
   const { repoMetadata, gitRef, commitRef } = useGetRepositoryMetadata()
   const { getString } = useStrings()
+  const { HAR_TRIGGERS } = useFeatureFlags()
   const repoPath = useMemo(() => repoMetadata?.path || '', [repoMetadata])
   const routeMatch = useRouteMatch()
   const isCommitSelected = useMemo(() => routeMatch.path === '/:space*/:repoName/commit/:commitRef*', [routeMatch])
+
+  const { data: systemConfig } = useGet({ path: 'api/v1/system/config' })
 
   const isFilesSelected = useMemo(
     () =>
@@ -55,17 +64,19 @@ export const DefaultMenu: React.FC = () => {
   return (
     <Container className={css.main}>
       <Layout.Vertical spacing="small">
-        <SpaceSelector
-          onSelect={(_selectedSpace, isUserAction) => {
-            setSelectedSpace(_selectedSpace)
-            if (_selectedSpace.path === '' && _selectedSpace.id === -1) {
-              setSelectedSpace(undefined)
-            }
-            if (isUserAction) {
-              history.push(routes.toCODERepositories({ space: _selectedSpace.path as string }))
-            }
-          }}
-        />
+        <Render when={!isCurrentSessionPublic}>
+          <SpaceSelector
+            onSelect={(_selectedSpace, isUserAction) => {
+              setSelectedSpace(_selectedSpace)
+              if (_selectedSpace.path === '' && _selectedSpace.id === -1) {
+                setSelectedSpace(undefined)
+              }
+              if (isUserAction) {
+                history.push(routes.toCODERepositories({ space: _selectedSpace.path as string }))
+              }
+            }}
+          />
+        </Render>
 
         <Render when={selectedSpace}>
           <NavMenuItem
@@ -150,7 +161,7 @@ export const DefaultMenu: React.FC = () => {
               <NavMenuItem
                 data-code-repo-section="settings"
                 isSubLink
-                label={getString('settings')}
+                label={getString('manageRepository')}
                 to={routes.toCODESettings({
                   repoPath
                 })}
@@ -171,6 +182,52 @@ export const DefaultMenu: React.FC = () => {
             </Layout.Vertical>
           </Container>
         </Render>
+
+        <Render when={standalone && selectedSpace && systemConfig?.artifact_registry_enabled}>
+          <NavMenuItem
+            label={getString('pageTitle.artifactRegistries')}
+            to={routes.toAR({ space: selectedSpace?.path as string })}
+            customIcon={<Icon name="artifact-registry-outlined" />}
+            isDeselected={!!repositoryIdentifier}
+            isHighlighted={!!repositoryIdentifier}
+          />
+        </Render>
+
+        <Render when={standalone && repositoryIdentifier && systemConfig?.artifact_registry_enabled}>
+          <Container className={css.repoLinks}>
+            <Layout.Vertical spacing="small">
+              <NavMenuItem
+                isSubLink
+                label={getString('artifacts')}
+                to={routes.toARArtifacts({
+                  space: selectedSpace?.path as string,
+                  repositoryIdentifier: repositoryIdentifier as string
+                })}
+              />
+              {HAR_TRIGGERS && repositoryType !== 'UPSTREAM' && (
+                <NavMenuItem
+                  isSubLink
+                  label={getString('webhooks')}
+                  to={routes.toARRepositoryWebhooks({
+                    space: selectedSpace?.path as string,
+                    repositoryIdentifier: repositoryIdentifier as string
+                  })}
+                />
+              )}
+            </Layout.Vertical>
+          </Container>
+        </Render>
+
+        {systemConfig?.gitspace_enabled && (
+          <Render when={selectedSpace}>
+            <NavMenuItem
+              className=""
+              label={getString('cde.gitspaces')}
+              to={routes.toCDEGitspaces({ space: selectedSpace?.path as string })}
+              icon="gitspace"
+            />
+          </Render>
+        )}
 
         <Render when={!standalone && selectedSpace}>
           <NavMenuItem

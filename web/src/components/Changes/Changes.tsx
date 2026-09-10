@@ -34,7 +34,7 @@ import { useGet } from 'restful-react'
 import { chunk, isEqual, throttle } from 'lodash-es'
 import { useHistory } from 'react-router-dom'
 import { useStrings } from 'framework/strings'
-import { normalizeGitRef, type GitInfoProps, FILE_VIEWED_OBSOLETE_SHA } from 'utils/GitUtils'
+import { normalizeGitRef, type GitInfoProps, FILE_VIEWED_OBSOLETE_SHA, PullRequestState } from 'utils/GitUtils'
 import { formatNumber, getErrorMessage, isInViewport, PullRequestSection, voidFn } from 'utils/Utils'
 import {
   DiffViewer,
@@ -205,7 +205,9 @@ const ChangesInternal: React.FC<ChangesProps> = ({
     [diffs]
   )
   const shouldHideReviewButton = useMemo(
-    () => readOnly || pullRequestMetadata?.state === 'merged' || pullRequestMetadata?.state === 'closed',
+    () =>
+      readOnly ||
+      [PullRequestState.MERGED, PullRequestState.CLOSED].includes(pullRequestMetadata?.state as PullRequestState),
     [readOnly, pullRequestMetadata?.state]
   )
   const { currentUser } = useAppContext()
@@ -250,9 +252,13 @@ const ChangesInternal: React.FC<ChangesProps> = ({
     if (cachedDiff.raw) {
       const _diffs = Diff2Html.parse(cachedDiff.raw, DIFF2HTML_CONFIG)
         .map(diff => {
+          diff.oldName = normalizeGitFilePath(diff.oldName)
+          diff.newName = normalizeGitFilePath(diff.newName)
+
           const fileId = changedFileId([diff.oldName, diff.newName])
           const containerId = `container-${fileId}`
           const contentId = `content-${fileId}`
+
           const filePath = diff.isDeleted ? diff.oldName : diff.newName
 
           return {
@@ -386,7 +392,7 @@ const ChangesInternal: React.FC<ChangesProps> = ({
           }
 
           scheduleTask(() => {
-            if (isMounted.current && loopCount++ < 50) {
+            if (isMounted.current && loopCount++ < 100) {
               if (
                 !outterBlockDOM ||
                 !innerBlockDOM ||
@@ -510,16 +516,16 @@ const ChangesInternal: React.FC<ChangesProps> = ({
             <Container flex={{ alignItems: 'center' }}>
               <Layout.Horizontal spacing="medium">
                 <PullReqSuggestionsBatch />
-
-                <ReviewSplitButton
-                  shouldHide={shouldHideReviewButton}
-                  repoMetadata={repoMetadata}
-                  pullRequestMetadata={pullRequestMetadata}
-                  refreshPr={() => {
-                    refetchActivities?.()
-                  }}
-                  disabled={isActiveUserPROwner}
-                />
+                {!shouldHideReviewButton && (
+                  <ReviewSplitButton
+                    repoMetadata={repoMetadata}
+                    pullRequestMetadata={pullRequestMetadata}
+                    refreshPr={() => {
+                      refetchActivities?.()
+                    }}
+                    disabled={isActiveUserPROwner}
+                  />
+                )}
               </Layout.Horizontal>
             </Container>
           </Layout.Horizontal>
@@ -544,14 +550,16 @@ const ChangesInternal: React.FC<ChangesProps> = ({
                     key={key}
                     blockName={outterBlockName(blockIndex)}
                     root={scrollElementRef as RefObject<Element>}
-                    shouldRetainChildren={shouldRetainDiffChildren}>
+                    shouldRetainChildren={shouldRetainDiffChildren}
+                    detectionMargin={calculateDetectionMargin(diffs?.length as number)}>
                     {diffsBlock.map((diff, index) => {
                       return (
                         <InViewDiffBlockRenderer
                           key={key + index}
                           blockName={innerBlockName(diff.filePath)}
                           root={diffsContainerRef}
-                          shouldRetainChildren={shouldRetainDiffChildren}>
+                          shouldRetainChildren={shouldRetainDiffChildren}
+                          detectionMargin={Config.IN_VIEWPORT_DETECTION_MARGIN}>
                           <DiffViewer
                             readOnly={readOnly || (commitRange?.length || 0) > 0} // render in readonly mode in case a commit is selected
                             diff={diff}
@@ -587,6 +595,16 @@ const ChangesInternal: React.FC<ChangesProps> = ({
             </Container>
           </Case>
         </Match>
+        {diffs === undefined && (
+          <Container padding="xlarge">
+            <NoResultCard
+              showWhen={() => diffs === undefined && !loadingRawDiff && !loading}
+              forSearch={true}
+              title={emptyTitle}
+              emptySearchMessage={emptyMessage}
+            />
+          </Container>
+        )}
       </Render>
     </Container>
   )
@@ -603,3 +621,19 @@ const shouldRetainDiffChildren = (dom: HTMLElement | null) => !!dom?.querySelect
 const outterBlockName = (blockIndex: number) => `outter-${blockIndex}`
 const innerBlockName = (filePath: string) => `inner-${filePath}`
 const { scheduleTask } = createRequestIdleCallbackTaskPool()
+
+// If there are more than 200 diffs, we decrease the detection margin to make sure browser do not crash. As a result, Cmd-F
+// won't work well on diffs that got hidden/out of viewport.
+// TODO: This could be more accurate to calculate based on the complexity of the diff contents (added/deleted lines)?
+const calculateDetectionMargin = (diffsLength: number) =>
+  diffsLength >= 200 ? 5000 : Config.IN_VIEWPORT_DETECTION_MARGIN
+
+// Workaround util to correct filePath which is not correctly produced by
+// git itself when filename contains space
+// @see https://stackoverflow.com/questions/77596606/why-does-git-add-trailing-tab-to-the-b-line-of-the-diff-when-the-file-nam
+const normalizeGitFilePath = (filePath: string) => {
+  if (filePath && filePath.endsWith('\t') && filePath.indexOf(' ') !== -1) {
+    return filePath.replace(/\t$/, '')
+  }
+  return filePath
+}

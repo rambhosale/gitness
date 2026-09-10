@@ -16,8 +16,8 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +33,7 @@ import (
 	"github.com/guregu/null"
 	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 )
 
 var _ store.RepoStore = (*RepoStore)(nil)
@@ -61,24 +62,27 @@ type RepoStore struct {
 }
 
 type repository struct {
-	// TODO: int64 ID doesn't match DB
-	ID          int64    `db:"repo_id"`
-	Version     int64    `db:"repo_version"`
-	ParentID    int64    `db:"repo_parent_id"`
-	Identifier  string   `db:"repo_uid"`
-	Description string   `db:"repo_description"`
-	CreatedBy   int64    `db:"repo_created_by"`
-	Created     int64    `db:"repo_created"`
-	Updated     int64    `db:"repo_updated"`
-	Deleted     null.Int `db:"repo_deleted"`
+	ID                  int64    `db:"repo_id"`
+	Version             int64    `db:"repo_version"`
+	ParentID            int64    `db:"repo_parent_id"`
+	Identifier          string   `db:"repo_uid"`
+	Description         string   `db:"repo_description"`
+	RootSpaceID         int64    `db:"repo_root_space_id"`
+	RootSpaceIdentifier string   `db:"repo_root_space_identifier"`
+	CreatedBy           int64    `db:"repo_created_by"`
+	Created             int64    `db:"repo_created"`
+	Updated             int64    `db:"repo_updated"`
+	Deleted             null.Int `db:"repo_deleted"`
+	LastGITPush         int64    `db:"repo_last_git_push"`
 
 	Size        int64 `db:"repo_size"`
+	SizeLFS     int64 `db:"repo_lfs_size"`
 	SizeUpdated int64 `db:"repo_size_updated"`
 
-	GitUID        string `db:"repo_git_uid"`
-	DefaultBranch string `db:"repo_default_branch"`
-	ForkID        int64  `db:"repo_fork_id"`
-	PullReqSeq    int64  `db:"repo_pullreq_seq"`
+	GitUID        string   `db:"repo_git_uid"`
+	DefaultBranch string   `db:"repo_default_branch"`
+	ForkID        null.Int `db:"repo_fork_id"` // in DB this is not a FK: 0 is stored if a repo is not a fork
+	PullReqSeq    int64    `db:"repo_pullreq_seq"`
 
 	NumForks       int `db:"repo_num_forks"`
 	NumPulls       int `db:"repo_num_pulls"`
@@ -86,8 +90,15 @@ type repository struct {
 	NumOpenPulls   int `db:"repo_num_open_pulls"`
 	NumMergedPulls int `db:"repo_num_merged_pulls"`
 
-	Importing bool `db:"repo_importing"`
-	IsEmpty   bool `db:"repo_is_empty"`
+	State   enum.RepoState `db:"repo_state"`
+	IsEmpty bool           `db:"repo_is_empty"`
+
+	// default sqlite '[]' requires []byte, fails with json.RawMessage
+	Tags []byte `db:"repo_tags"`
+
+	Language string `db:"repo_language"`
+
+	Type null.String `db:"repo_type"`
 }
 
 const (
@@ -97,11 +108,15 @@ const (
 		,repo_parent_id
 		,repo_uid
 		,repo_description
+		,repo_root_space_id
+		,repo_root_space_identifier
 		,repo_created_by
 		,repo_created
 		,repo_updated
 		,repo_deleted
+		,repo_last_git_push
 		,repo_size
+		,repo_lfs_size
 		,repo_size_updated
 		,repo_git_uid
 		,repo_default_branch
@@ -112,17 +127,21 @@ const (
 		,repo_num_closed_pulls
 		,repo_num_open_pulls
 		,repo_num_merged_pulls
-		,repo_importing
-		,repo_is_empty`
+		,repo_state
+		,repo_is_empty
+		,repo_tags
+		,repo_type
+		,repo_language
+		`
 )
 
 // Find finds the repo by id.
 func (s *RepoStore) Find(ctx context.Context, id int64) (*types.Repository, error) {
-	return s.find(ctx, id, nil)
+	return s.FindDeleted(ctx, id, nil)
 }
 
-// find is a wrapper to find a repo by id w/o deleted timestamp.
-func (s *RepoStore) find(ctx context.Context, id int64, deletedAt *int64) (*types.Repository, error) {
+// FindDeleted finds a repo by id and deleted timestamp.
+func (s *RepoStore) FindDeleted(ctx context.Context, id int64, deletedAt *int64) (*types.Repository, error) {
 	stmt := database.Builder.
 		Select(repoColumnsForJoin).
 		From("repositories").
@@ -149,22 +168,18 @@ func (s *RepoStore) find(ctx context.Context, id int64, deletedAt *int64) (*type
 	return s.mapToRepo(ctx, dst)
 }
 
-func (s *RepoStore) findByIdentifier(
+// FindActiveByUID finds the repo by UID.
+func (s *RepoStore) FindActiveByUID(
 	ctx context.Context,
-	spaceID int64,
-	identifier string,
-	deletedAt *int64,
+	parentID int64,
+	uid string,
 ) (*types.Repository, error) {
 	stmt := database.Builder.
 		Select(repoColumnsForJoin).
 		From("repositories").
-		Where("repo_parent_id = ? AND LOWER(repo_uid) = ?", spaceID, strings.ToLower(identifier))
-
-	if deletedAt != nil {
-		stmt = stmt.Where("repo_deleted = ?", *deletedAt)
-	} else {
-		stmt = stmt.Where("repo_deleted IS NULL")
-	}
+		Where("repo_parent_id = ?", parentID).
+		Where("LOWER(repo_uid) = LOWER(?)", uid).
+		Where("repo_deleted IS NULL")
 
 	db := dbtx.GetAccessor(ctx, s.db)
 
@@ -175,49 +190,46 @@ func (s *RepoStore) findByIdentifier(
 	}
 
 	if err = db.GetContext(ctx, dst, sql, args...); err != nil {
-		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to find repo")
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to find repo by UID")
 	}
 
 	return s.mapToRepo(ctx, dst)
 }
 
-func (s *RepoStore) findByRef(ctx context.Context, repoRef string, deletedAt *int64) (*types.Repository, error) {
-	// ASSUMPTION: digits only is not a valid repo path
-	id, err := strconv.ParseInt(repoRef, 10, 64)
-	if err != nil {
-		spacePath, repoIdentifier, err := paths.DisectLeaf(repoRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to disect leaf for path '%s': %w", repoRef, err)
-		}
-		pathObject, err := s.spacePathCache.Get(ctx, spacePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get space path: %w", err)
-		}
-
-		return s.findByIdentifier(ctx, pathObject.SpaceID, repoIdentifier, deletedAt)
-	}
-	return s.find(ctx, id, deletedAt)
-}
-
-// FindByRef finds the repo using the repoRef as either the id or the repo path.
-func (s *RepoStore) FindByRef(ctx context.Context, repoRef string) (*types.Repository, error) {
-	return s.findByRef(ctx, repoRef, nil)
-}
-
-// FindByRefAndDeletedAt finds the repo using the repoRef and deleted timestamp.
-func (s *RepoStore) FindByRefAndDeletedAt(
+// FindDeletedByUID finds the repo by UID.
+func (s *RepoStore) FindDeletedByUID(
 	ctx context.Context,
-	repoRef string,
+	parentID int64,
+	uid string,
 	deletedAt int64,
 ) (*types.Repository, error) {
-	return s.findByRef(ctx, repoRef, &deletedAt)
+	stmt := database.Builder.
+		Select(repoColumnsForJoin).
+		From("repositories").
+		Where("repo_parent_id = ?", parentID).
+		Where("LOWER(repo_uid) = LOWER(?)", uid).
+		Where("repo_deleted = ?", deletedAt)
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	dst := new(repository)
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	if err = db.GetContext(ctx, dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to find repo by UID")
+	}
+
+	return s.mapToRepo(ctx, dst)
 }
 
 // Create creates a new repository.
 func (s *RepoStore) Create(ctx context.Context, repo *types.Repository) error {
 	const sqlQuery = `
 		INSERT INTO repositories (
-			repo_version                      
+			repo_version
 			,repo_parent_id
 			,repo_uid
 			,repo_description
@@ -225,8 +237,10 @@ func (s *RepoStore) Create(ctx context.Context, repo *types.Repository) error {
 			,repo_created
 			,repo_updated
 			,repo_deleted
+			,repo_last_git_push
 			,repo_size
-			,repo_size_updated	
+			,repo_lfs_size
+			,repo_size_updated
 			,repo_git_uid
 			,repo_default_branch
 			,repo_fork_id
@@ -236,8 +250,13 @@ func (s *RepoStore) Create(ctx context.Context, repo *types.Repository) error {
 			,repo_num_closed_pulls
 			,repo_num_open_pulls
 			,repo_num_merged_pulls
-			,repo_importing
+			,repo_state
 			,repo_is_empty
+			,repo_tags
+			,repo_type
+			,repo_language
+			,repo_root_space_id
+			,repo_root_space_identifier
 		) values (
 			:repo_version
 			,:repo_parent_id
@@ -247,7 +266,9 @@ func (s *RepoStore) Create(ctx context.Context, repo *types.Repository) error {
 			,:repo_created
 			,:repo_updated
 			,:repo_deleted
+			,:repo_last_git_push
 			,:repo_size
+			,:repo_lfs_size
 			,:repo_size_updated
 			,:repo_git_uid
 			,:repo_default_branch
@@ -258,8 +279,13 @@ func (s *RepoStore) Create(ctx context.Context, repo *types.Repository) error {
 			,:repo_num_closed_pulls
 			,:repo_num_open_pulls
 			,:repo_num_merged_pulls
-			,:repo_importing
+			,:repo_state
 			,:repo_is_empty
+			,:repo_tags
+			,:repo_type
+			,:repo_language
+			,:repo_root_space_id
+			,:repo_root_space_identifier
 		) RETURNING repo_id`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -290,28 +316,30 @@ func (s *RepoStore) Update(ctx context.Context, repo *types.Repository) error {
 			 repo_version = :repo_version
 			,repo_updated = :repo_updated
 			,repo_deleted = :repo_deleted
+			,repo_last_git_push = :repo_last_git_push
 			,repo_parent_id = :repo_parent_id
 			,repo_uid = :repo_uid
 			,repo_git_uid = :repo_git_uid
 			,repo_description = :repo_description
 			,repo_default_branch = :repo_default_branch
 			,repo_pullreq_seq = :repo_pullreq_seq
-			,repo_num_forks = :repo_num_forks
 			,repo_num_pulls = :repo_num_pulls
 			,repo_num_closed_pulls = :repo_num_closed_pulls
 			,repo_num_open_pulls = :repo_num_open_pulls
 			,repo_num_merged_pulls = :repo_num_merged_pulls
-			,repo_importing = :repo_importing
+			,repo_state = :repo_state
 			,repo_is_empty = :repo_is_empty
+			,repo_tags = :repo_tags
+			,repo_language = :repo_language
+
 		WHERE repo_id = :repo_id AND repo_version = :repo_version - 1`
 
-	dbRepo := mapToInternalRepo(repo)
+	db := dbtx.GetAccessor(ctx, s.db)
 
+	dbRepo := mapToInternalRepo(repo)
 	// update Version (used for optimistic locking) and Updated time
 	dbRepo.Version++
 	dbRepo.Updated = time.Now().UnixMilli()
-
-	db := dbtx.GetAccessor(ctx, s.db)
 
 	query, arg, err := db.BindNamed(sqlQuery, dbRepo)
 	if err != nil {
@@ -345,10 +373,11 @@ func (s *RepoStore) Update(ctx context.Context, repo *types.Repository) error {
 }
 
 // UpdateSize updates the size of a specific repository in the database (size is in KiB).
-func (s *RepoStore) UpdateSize(ctx context.Context, id int64, sizeInKiB int64) error {
+func (s *RepoStore) UpdateSize(ctx context.Context, id int64, sizeInKiB, lfsSizeInKiB int64) error {
 	stmt := database.Builder.
 		Update("repositories").
 		Set("repo_size", sizeInKiB).
+		Set("repo_lfs_size", lfsSizeInKiB).
 		Set("repo_size_updated", time.Now().UnixMilli()).
 		Where("repo_id = ? AND repo_deleted IS NULL", id)
 
@@ -378,11 +407,35 @@ func (s *RepoStore) UpdateSize(ctx context.Context, id int64, sizeInKiB int64) e
 
 // GetSize returns the repo size.
 func (s *RepoStore) GetSize(ctx context.Context, id int64) (int64, error) {
-	query := "SELECT repo_size FROM repositories WHERE repo_id = $1 AND repo_deleted IS NULL;"
+	query := `
+		SELECT 
+		    repo_size
+		FROM repositories
+		WHERE 
+		    repo_id = $1 AND repo_deleted IS NULL
+`
 	db := dbtx.GetAccessor(ctx, s.db)
 
 	var size int64
-	if err := db.GetContext(ctx, &size, query, id); err != nil {
+	if err := db.QueryRowContext(ctx, query, id).Scan(&size); err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get repo size")
+	}
+	return size, nil
+}
+
+// GetLFSSize returns the repo LFS size.
+func (s *RepoStore) GetLFSSize(ctx context.Context, id int64) (int64, error) {
+	query := `
+		SELECT 
+		    repo_lfs_size
+		FROM repositories
+		WHERE 
+		    repo_id = $1 AND repo_deleted IS NULL
+`
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var size int64
+	if err := db.QueryRowContext(ctx, query, id).Scan(&size); err != nil {
 		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get repo size")
 	}
 	return size, nil
@@ -406,7 +459,7 @@ func (s *RepoStore) UpdateOptLock(
 	)
 }
 
-// UpdateDeletedOptLock updates a deleted repository using the optimistic locking mechanism.
+// updateDeletedOptLock updates a deleted repository using the optimistic locking mechanism.
 func (s *RepoStore) updateDeletedOptLock(ctx context.Context,
 	repo *types.Repository,
 	mutateFn func(repository *types.Repository) error,
@@ -445,7 +498,12 @@ func (s *RepoStore) updateOptLock(
 			return nil, err
 		}
 
-		repo, err = s.find(ctx, repo.ID, repo.Deleted)
+		log.Ctx(ctx).Warn().
+			Int64("repo.id", repo.ID).
+			Err(err).
+			Msg("optimistic lock conflict ABOUT TO FIND DELETED")
+
+		repo, err = s.FindDeleted(ctx, repo.ID, repo.Deleted)
 		if err != nil {
 			return nil, err
 		}
@@ -540,7 +598,7 @@ func (s *RepoStore) count(
 		stmt = stmt.Where("repo_parent_id = ?", parentID)
 	}
 
-	stmt = applyQueryFilter(stmt, filter)
+	stmt = applyQueryFilter(stmt, filter, s.db.DriverName())
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
@@ -562,25 +620,14 @@ func (s *RepoStore) countAll(
 	parentID int64,
 	filter *types.RepoFilter,
 ) (int64, error) {
-	query := `WITH RECURSIVE SpaceHierarchy AS (
-    SELECT space_id, space_parent_id
-    FROM spaces
-    WHERE space_id = $1
-    
-    UNION
-    
-    SELECT s.space_id, s.space_parent_id
-    FROM spaces s
-    JOIN SpaceHierarchy h ON s.space_parent_id = h.space_id
-)
-SELECT space_id
-FROM SpaceHierarchy h1;`
-
 	db := dbtx.GetAccessor(ctx, s.db)
 
-	var spaceIDs []int64
-	if err := db.SelectContext(ctx, &spaceIDs, query, parentID); err != nil {
-		return 0, database.ProcessSQLErrorf(ctx, err, "failed to retrieve spaces")
+	spaceIDs, err := getSpaceDescendantsIDs(ctx, db, parentID)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"failed to get space descendants ids for %d: %w",
+			parentID, err,
+		)
 	}
 
 	stmt := database.Builder.
@@ -588,7 +635,7 @@ FROM SpaceHierarchy h1;`
 		From("repositories").
 		Where(squirrel.Eq{"repo_parent_id": spaceIDs})
 
-	stmt = applyQueryFilter(stmt, filter)
+	stmt = applyQueryFilter(stmt, filter, s.db.DriverName())
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
@@ -603,105 +650,141 @@ FROM SpaceHierarchy h1;`
 	return numRepos, nil
 }
 
+// CountByRootSpaces counts total number of repositories grouped by root spaces.
+func (s *RepoStore) CountByRootSpaces(
+	ctx context.Context,
+) ([]types.RepositoryCount, error) {
+	query := `
+WITH RECURSIVE
+    SpaceHierarchy(root_id, space_id, space_parent_id, space_uid) AS (
+        SELECT space_id, space_id, space_parent_id, space_uid
+        FROM spaces
+        WHERE space_parent_id is null
+
+        UNION
+
+        SELECT h.root_id, s.space_id, s.space_parent_id, h.space_uid
+        FROM spaces s
+                 JOIN SpaceHierarchy h ON s.space_parent_id = h.space_id
+    )
+SELECT 
+	COUNT(r.repo_id) AS total, 
+	s.root_id AS root_space_id,
+	s.space_uid 
+FROM repositories r
+JOIN SpaceHierarchy s ON s.space_id = r.repo_parent_id
+GROUP BY root_space_id, s.space_uid
+`
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	rows, err := db.QueryxContext(ctx, query)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to count repositories")
+	}
+
+	defer rows.Close()
+
+	var result []types.RepositoryCount
+	for rows.Next() {
+		var count types.RepositoryCount
+		if err = rows.Scan(&count.Total, &count.SpaceID, &count.SpaceUID); err != nil {
+			return nil, database.ProcessSQLErrorf(ctx, err, "failed to scan row for count repositories query")
+		}
+
+		result = append(result, count)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // List returns a list of active repos in a space.
 // With "DeletedBeforeOrAt" filter, lists deleted repos by opts.DeletedBeforeOrAt.
 func (s *RepoStore) List(
 	ctx context.Context,
-	parentID int64,
+	spaceID int64,
 	filter *types.RepoFilter,
 ) ([]*types.Repository, error) {
-	if filter.Recursive {
-		return s.listAll(ctx, parentID, filter)
-	}
-	return s.list(ctx, parentID, filter)
-}
-
-func (s *RepoStore) list(
-	ctx context.Context,
-	parentID int64,
-	filter *types.RepoFilter,
-) ([]*types.Repository, error) {
-	stmt := database.Builder.
-		Select(repoColumnsForJoin).
-		From("repositories").
-		Where("repo_parent_id = ?", fmt.Sprint(parentID))
-
-	stmt = applyQueryFilter(stmt, filter)
-	stmt = applySortFilter(stmt, filter)
-
-	sql, args, err := stmt.ToSql()
+	sql, args, err := s.getListSQL(ctx, spaceID, repoColumnsForJoin, filter)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to convert query to sql")
+		return nil, fmt.Errorf("failed to prepare query to list repos: %w", err)
 	}
 
-	db := dbtx.GetAccessor(ctx, s.db)
-
-	dst := []*repository{}
-	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
-		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
+	var dst []*repository
+	if err := dbtx.GetAccessor(ctx, s.db).SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed executing custom list query")
 	}
 
 	return s.mapToRepos(ctx, dst)
 }
 
-func (s *RepoStore) listAll(
+func (s *RepoStore) getListSQL(
 	ctx context.Context,
-	parentID int64,
+	spaceID int64,
+	repoColumns string,
 	filter *types.RepoFilter,
-) ([]*types.Repository, error) {
-	where := `WITH RECURSIVE SpaceHierarchy AS (
-    SELECT space_id, space_parent_id
-    FROM spaces
-    WHERE space_id = $1
-    
-    UNION
-    
-    SELECT s.space_id, s.space_parent_id
-    FROM spaces s
-    JOIN SpaceHierarchy h ON s.space_parent_id = h.space_id
-)
-SELECT space_id
-FROM SpaceHierarchy h1;`
-
+) (string, []any, error) {
 	db := dbtx.GetAccessor(ctx, s.db)
 
 	var spaceIDs []int64
-	if err := db.SelectContext(ctx, &spaceIDs, where, parentID); err != nil {
-		return nil, database.ProcessSQLErrorf(ctx, err, "failed to retrieve spaces")
+	var err error
+
+	if filter.Recursive {
+		spaceIDs, err = getSpaceDescendantsIDs(ctx, db, spaceID)
+		if err != nil {
+			return "", nil, fmt.Errorf(
+				"failed to get space descendants ids for %d: %w",
+				spaceID, err,
+			)
+		}
+	} else {
+		spaceIDs = []int64{spaceID}
 	}
 
 	stmt := database.Builder.
-		Select(repoColumnsForJoin).
-		From("repositories").
-		Where(squirrel.Eq{"repo_parent_id": spaceIDs})
+		Select(repoColumns).
+		From("repositories")
 
-	stmt = applyQueryFilter(stmt, filter)
+	if len(spaceIDs) == 1 {
+		stmt = stmt.Where("repo_parent_id = ?", spaceIDs[0])
+	} else {
+		stmt = stmt.Where(squirrel.Eq{"repo_parent_id": spaceIDs})
+	}
+
+	stmt = applyQueryFilter(stmt, filter, s.db.DriverName())
 	stmt = applySortFilter(stmt, filter)
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to convert query to sql")
-	}
-	repos := []*repository{}
-	if err := db.SelectContext(ctx, &repos, sql, args...); err != nil {
-		return nil, database.ProcessSQLErrorf(ctx, err, "failed to count repositories")
+		return "", nil, fmt.Errorf("failed to convert query to sql: %w", err)
 	}
 
-	return s.mapToRepos(ctx, repos)
+	return sql, args, nil
 }
 
 type repoSize struct {
 	ID          int64  `db:"repo_id"`
 	GitUID      string `db:"repo_git_uid"`
 	Size        int64  `db:"repo_size"`
+	LFSSize     int64  `db:"repo_lfs_size"`
 	SizeUpdated int64  `db:"repo_size_updated"`
 }
 
 func (s *RepoStore) ListSizeInfos(ctx context.Context) ([]*types.RepositorySizeInfo, error) {
 	stmt := database.Builder.
-		Select("repo_id", "repo_git_uid", "repo_size", "repo_size_updated").
+		Select("repo_id", "repo_git_uid", "repo_size", "repo_lfs_size", "repo_size_updated").
 		From("repositories").
-		Where("repo_deleted IS NULL")
+		Where("repo_last_git_push >= repo_size_updated").
+		Where("repo_deleted IS NULL").
+		Where("repo_state NOT IN (?, ?, ?)",
+			enum.RepoStateGitImport,
+			enum.RepoStateMigrateGitPush,
+			enum.RepoStateImportFailed,
+		)
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
@@ -718,34 +801,295 @@ func (s *RepoStore) ListSizeInfos(ctx context.Context) ([]*types.RepositorySizeI
 	return s.mapToRepoSizes(dst), nil
 }
 
+// ListAll returns a list of all repos across spaces with the provided filters.
+func (s *RepoStore) ListAll(
+	ctx context.Context,
+	filter *types.RepoFilter,
+) ([]*types.Repository, error) {
+	stmt := database.Builder.
+		Select(repoColumnsForJoin).
+		From("repositories")
+
+	stmt = applyQueryFilter(stmt, filter, s.db.DriverName())
+	stmt = applySortFilter(stmt, filter)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var dst []*repository
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed executing custom list query")
+	}
+
+	return s.mapToRepos(ctx, dst)
+}
+
+// MapOfAllRepos returns a map of all repository paths per repository ID in the given space.
+func (s *RepoStore) MapOfAllRepos(
+	ctx context.Context,
+	spaceID int64,
+	recursive bool,
+) (map[int64]string, error) {
+	//nolint:lll
+	sql := `
+		WITH RECURSIVE ascendants(ascendant_space_path_id, ascendant_parent_path_id, ascendant_uid, ascendant_rank) AS (
+			SELECT space_path_id, space_path_parent_id, space_path_uid, 0
+			FROM space_paths
+			WHERE space_path_space_id = $1 AND space_path_is_primary = TRUE
+
+			UNION
+
+			SELECT space_path_id, space_path_parent_id, space_path_uid, ascendant_rank + 1
+			FROM space_paths
+			INNER JOIN ascendants ON ascendant_parent_path_id = space_path_space_id
+			WHERE space_path_is_primary = TRUE
+		)
+		SELECT ascendant_uid
+		FROM ascendants
+		ORDER BY ascendant_rank DESC`
+
+	resultAscendants, err := dbtx.GetAccessor(ctx, s.db).QueryContext(ctx, sql, spaceID)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to query space path ascendants")
+	}
+
+	defer func() {
+		_ = resultAscendants.Close()
+	}()
+
+	var spacePath string
+
+	for resultAscendants.Next() {
+		var spaceIdentifier string
+
+		if err := resultAscendants.Scan(&spaceIdentifier); err != nil {
+			return nil, database.ProcessSQLErrorf(ctx, err, "failed to scan space ascendants")
+		}
+
+		spacePath = paths.Concatenate(spacePath, spaceIdentifier)
+	}
+	if err := resultAscendants.Err(); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed go over query space ascendant results")
+	}
+
+	sql = `
+		SELECT repo_id, '' as "relative_path", repo_uid
+		FROM repositories
+		WHERE repo_parent_id = $1 AND repo_deleted IS NULL`
+
+	if recursive {
+		//nolint:lll
+		sql = `
+		WITH RECURSIVE descendants(descendant_space_path_id, descendant_space_id, descendant_parent_path_id, descendant_path) AS (
+			SELECT space_path_id, space_path_space_id, space_path_parent_id, ''
+			FROM space_paths
+			WHERE space_path_space_id = $1 AND space_path_is_primary = TRUE
+
+			UNION
+
+			SELECT space_path_id, space_path_space_id, space_path_parent_id, concat(descendant_path, '` + types.PathSeparatorAsString + `', space_path_uid)
+			FROM space_paths
+			INNER JOIN descendants ON space_path_parent_id = descendant_space_id
+			WHERE space_path_is_primary = TRUE
+		)
+		SELECT repo_id, descendant_path as "relative_path", repo_uid
+		FROM descendants
+		INNER JOIN repositories ON descendant_space_id = repo_parent_id
+		WHERE repo_deleted IS NULL`
+	}
+
+	result, err := dbtx.GetAccessor(ctx, s.db).QueryContext(ctx, sql, spaceID)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to query repositories for path")
+	}
+
+	defer func() {
+		_ = result.Close()
+	}()
+
+	mapRepos := make(map[int64]string)
+
+	for result.Next() {
+		var repoID int64
+		var relativePath string
+		var repoIdentifier string
+
+		if err := result.Scan(&repoID, &relativePath, &repoIdentifier); err != nil {
+			return nil, database.ProcessSQLErrorf(ctx, err, "failed to scan")
+		}
+
+		repoPath := paths.Concatenate(
+			spacePath,
+			strings.Trim(relativePath, types.PathSeparatorAsString),
+			repoIdentifier,
+		)
+
+		mapRepos[repoID] = repoPath
+	}
+	if err := result.Err(); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed go over query results")
+	}
+
+	return mapRepos, nil
+}
+
+func (s *RepoStore) UpdateNumForks(ctx context.Context, repoID int64, delta int64) error {
+	query := "UPDATE repositories SET repo_num_forks = repo_num_forks + $1 WHERE repo_id = $2"
+
+	if _, err := dbtx.GetAccessor(ctx, s.db).ExecContext(ctx, query, delta, repoID); err != nil {
+		return database.ProcessSQLErrorf(ctx, err, "failed updating number of forks")
+	}
+
+	return nil
+}
+
+func (s *RepoStore) ClearForkID(ctx context.Context, repoUpstreamID int64) error {
+	stmt := database.Builder.Update("repositories").
+		Set("repo_fork_id", 0).
+		Where("repo_fork_id = ?", repoUpstreamID)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	_, err = db.ExecContext(ctx, sql, args...)
+	if err != nil {
+		return database.ProcessSQLErrorf(ctx, err, "failed to clear fork ID")
+	}
+
+	return nil
+}
+
+func (s *RepoStore) UpdateParent(ctx context.Context, currentParentID, newParentID int64) (int64, error) {
+	stmt := database.Builder.Update("repositories").
+		Set("repo_parent_id", newParentID).
+		Set("repo_updated", time.Now().UnixMilli()).
+		Where("repo_parent_id = ?", currentParentID)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	result, err := db.ExecContext(ctx, sql, args...)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to update parent ID for repos")
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get number of updated rows")
+	}
+
+	return rows, nil
+}
+
+// ListIDsByParentSpaceIDs returns the IDs of all repos directly parented by any of the given spaces.
+func (s *RepoStore) ListIDsByParentSpaceIDs(ctx context.Context, spaceIDs []int64) ([]int64, error) {
+	if len(spaceIDs) == 0 {
+		return []int64{}, nil
+	}
+
+	stmt := database.Builder.
+		Select("repo_id").
+		From("repositories").
+		Where(squirrel.Eq{"repo_parent_id": spaceIDs})
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var ids []int64
+	if err := db.SelectContext(ctx, &ids, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "failed to list repo IDs by parent spaces")
+	}
+
+	return ids, nil
+}
+
+// UpdateRootSpace sets the root space id and identifier for all given repos.
+func (s *RepoStore) UpdateRootSpace(
+	ctx context.Context,
+	repoIDs []int64,
+	rootSpaceID int64,
+	rootSpaceIdentifier string,
+) error {
+	if len(repoIDs) == 0 {
+		return nil
+	}
+
+	// deliberately not touching repo_updated: this is a bulk propagation, and
+	// stamping every row with the same timestamp would collapse their sort order.
+	stmt := database.Builder.
+		Update("repositories").
+		Set("repo_root_space_id", rootSpaceID).
+		Set("repo_root_space_identifier", rootSpaceIdentifier).
+		Where(squirrel.Eq{"repo_id": repoIDs})
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return errors.Wrap(err, "failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	if _, err := db.ExecContext(ctx, sql, args...); err != nil {
+		return database.ProcessSQLErrorf(ctx, err, "failed to update root space for repos")
+	}
+
+	return nil
+}
+
 func (s *RepoStore) mapToRepo(
 	ctx context.Context,
 	in *repository,
 ) (*types.Repository, error) {
 	var err error
+
+	t := enum.RepoTypeNormal
+	if in.Type.Valid {
+		t = enum.RepoType(in.Type.String)
+	}
+
 	res := &types.Repository{
-		ID:             in.ID,
-		Version:        in.Version,
-		ParentID:       in.ParentID,
-		Identifier:     in.Identifier,
-		Description:    in.Description,
-		Created:        in.Created,
-		CreatedBy:      in.CreatedBy,
-		Updated:        in.Updated,
-		Deleted:        in.Deleted.Ptr(),
-		Size:           in.Size,
-		SizeUpdated:    in.SizeUpdated,
-		GitUID:         in.GitUID,
-		DefaultBranch:  in.DefaultBranch,
-		ForkID:         in.ForkID,
-		PullReqSeq:     in.PullReqSeq,
-		NumForks:       in.NumForks,
-		NumPulls:       in.NumPulls,
-		NumClosedPulls: in.NumClosedPulls,
-		NumOpenPulls:   in.NumOpenPulls,
-		NumMergedPulls: in.NumMergedPulls,
-		Importing:      in.Importing,
-		IsEmpty:        in.IsEmpty,
+		ID:                  in.ID,
+		Version:             in.Version,
+		ParentID:            in.ParentID,
+		Identifier:          in.Identifier,
+		Description:         in.Description,
+		RootSpaceID:         in.RootSpaceID,
+		RootSpaceIdentifier: in.RootSpaceIdentifier,
+		Created:             in.Created,
+		CreatedBy:           in.CreatedBy,
+		Updated:             in.Updated,
+		Deleted:             in.Deleted.Ptr(),
+		LastGITPush:         in.LastGITPush,
+		Size:                in.Size,
+		LFSSize:             in.SizeLFS,
+		SizeUpdated:         in.SizeUpdated,
+		GitUID:              in.GitUID,
+		DefaultBranch:       in.DefaultBranch,
+		ForkID:              in.ForkID.Int64,
+		PullReqSeq:          in.PullReqSeq,
+		NumForks:            in.NumForks,
+		NumPulls:            in.NumPulls,
+		NumClosedPulls:      in.NumClosedPulls,
+		NumOpenPulls:        in.NumOpenPulls,
+		NumMergedPulls:      in.NumMergedPulls,
+		State:               in.State,
+		IsEmpty:             in.IsEmpty,
+		Tags:                in.Tags,
+		Type:                t,
+		Language:            in.Language,
 		// Path: is set below
 	}
 
@@ -759,9 +1103,13 @@ func (s *RepoStore) mapToRepo(
 
 func (s *RepoStore) getRepoPath(ctx context.Context, parentID int64, repoIdentifier string) (string, error) {
 	spacePath, err := s.spacePathStore.FindPrimaryBySpaceID(ctx, parentID)
-	// try to re-create the space path if was soft deleted.
+	// try to re-create the space path if it was soft deleted.
 	if errors.Is(err, gitness_store.ErrResourceNotFound) {
-		return getPathForDeletedSpace(ctx, s.db, parentID)
+		sPath, err := getPathForDeletedSpace(ctx, s.db, parentID)
+		if err != nil {
+			return "", fmt.Errorf("failed to get primary path of soft deleted space %d: %w", parentID, err)
+		}
+		return paths.Concatenate(sPath, repoIdentifier), nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to get primary path for space %d: %w", parentID, err)
@@ -807,34 +1155,52 @@ func (s *RepoStore) mapToRepoSizes(
 
 func mapToInternalRepo(in *types.Repository) *repository {
 	return &repository{
-		ID:             in.ID,
-		Version:        in.Version,
-		ParentID:       in.ParentID,
-		Identifier:     in.Identifier,
-		Description:    in.Description,
-		Created:        in.Created,
-		CreatedBy:      in.CreatedBy,
-		Updated:        in.Updated,
-		Deleted:        null.IntFromPtr(in.Deleted),
-		Size:           in.Size,
-		SizeUpdated:    in.SizeUpdated,
-		GitUID:         in.GitUID,
-		DefaultBranch:  in.DefaultBranch,
-		ForkID:         in.ForkID,
-		PullReqSeq:     in.PullReqSeq,
-		NumForks:       in.NumForks,
-		NumPulls:       in.NumPulls,
-		NumClosedPulls: in.NumClosedPulls,
-		NumOpenPulls:   in.NumOpenPulls,
-		NumMergedPulls: in.NumMergedPulls,
-		Importing:      in.Importing,
-		IsEmpty:        in.IsEmpty,
+		ID:                  in.ID,
+		Version:             in.Version,
+		ParentID:            in.ParentID,
+		Identifier:          in.Identifier,
+		Description:         in.Description,
+		RootSpaceID:         in.RootSpaceID,
+		RootSpaceIdentifier: in.RootSpaceIdentifier,
+		Created:             in.Created,
+		CreatedBy:           in.CreatedBy,
+		Updated:             in.Updated,
+		Deleted:             null.IntFromPtr(in.Deleted),
+		LastGITPush:         in.LastGITPush,
+		Size:                in.Size,
+		SizeUpdated:         in.SizeUpdated,
+		GitUID:              in.GitUID,
+		DefaultBranch:       in.DefaultBranch,
+		ForkID:              null.NewInt(in.ForkID, true),
+		PullReqSeq:          in.PullReqSeq,
+		NumForks:            in.NumForks,
+		NumPulls:            in.NumPulls,
+		NumClosedPulls:      in.NumClosedPulls,
+		NumOpenPulls:        in.NumOpenPulls,
+		NumMergedPulls:      in.NumMergedPulls,
+		State:               in.State,
+		IsEmpty:             in.IsEmpty,
+		Tags:                in.Tags,
+		Type:                null.NewString(string(in.Type), in.Type != ""),
+		Language:            in.Language,
 	}
 }
 
-func applyQueryFilter(stmt squirrel.SelectBuilder, filter *types.RepoFilter) squirrel.SelectBuilder {
+func applyQueryFilter(
+	stmt squirrel.SelectBuilder,
+	filter *types.RepoFilter,
+	driverName string,
+) squirrel.SelectBuilder {
+	if len(filter.Identifiers) > 0 {
+		identifiers := make([]string, len(filter.Identifiers))
+		for i, id := range filter.Identifiers {
+			identifiers[i] = strings.ToLower(id)
+		}
+		stmt = stmt.Where(squirrel.Eq{"LOWER(repo_uid)": identifiers})
+	}
+
 	if filter.Query != "" {
-		stmt = stmt.Where("LOWER(repo_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(filter.Query)))
+		stmt = stmt.Where(PartialMatch("repo_uid", filter.Query))
 	}
 	//nolint:gocritic
 	if filter.DeletedAt != nil {
@@ -844,6 +1210,82 @@ func applyQueryFilter(stmt squirrel.SelectBuilder, filter *types.RepoFilter) squ
 	} else {
 		stmt = stmt.Where("repo_deleted IS NULL")
 	}
+
+	if filter.OnlyFavoritesFor != nil {
+		stmt = stmt.
+			InnerJoin("favorite_repos ON favorite_repos.favorite_repo_id = repositories.repo_id").
+			Where("favorite_repos.favorite_principal_id = ?", *filter.OnlyFavoritesFor)
+	}
+
+	return applyTagsFilter(stmt, filter, driverName)
+}
+
+func applyTagsFilter(
+	stmt squirrel.SelectBuilder,
+	filter *types.RepoFilter,
+	driverName string,
+) squirrel.SelectBuilder {
+	if len(filter.Tags) == 0 {
+		return stmt
+	}
+
+	ors := squirrel.Or{}
+
+	if driverName == PostgresDriverName {
+		for k, vs := range filter.Tags {
+			// key-only filter
+			if len(vs) == 0 {
+				ors = append(ors, squirrel.Expr("repo_tags ?? ?", k))
+				continue
+			}
+
+			// key-value filter
+			for _, v := range vs {
+				data, _ := json.Marshal(map[string]string{k: v})
+				ors = append(
+					ors,
+					squirrel.Expr("repo_tags @> ?::jsonb", string(data)),
+				)
+			}
+		}
+
+		if len(ors) > 0 {
+			stmt = stmt.Where(ors)
+		}
+		return stmt
+	}
+
+	for k, vs := range filter.Tags {
+		// key-only filter
+		if len(vs) == 0 {
+			ors = append(ors,
+				squirrel.Expr("EXISTS (SELECT 1 FROM json_each(repo_tags) WHERE json_each.key = ?)", k),
+			)
+			continue
+		}
+
+		// key-value filters
+		for _, v := range vs {
+			if k == "" {
+				// special case: empty key
+				ors = append(ors,
+					squirrel.Expr(
+						"EXISTS (SELECT 1 FROM json_each(repo_tags) WHERE json_each.key = '' AND json_each.value = ?)",
+						v,
+					),
+				)
+			} else {
+				ors = append(ors,
+					squirrel.Expr("json_extract(repo_tags, '$.' || ?) = ?", k, v),
+				)
+			}
+		}
+	}
+
+	if len(ors) > 0 {
+		stmt = stmt.Where(ors)
+	}
+
 	return stmt
 }
 
@@ -857,13 +1299,15 @@ func applySortFilter(stmt squirrel.SelectBuilder, filter *types.RepoFilter) squi
 		// NOTE: string concatenation is safe because the
 		// order attribute is an enum and is not user-defined,
 		// and is therefore not subject to injection attacks.
-		stmt = stmt.OrderBy("repo_importing desc, repo_uid " + filter.Order.String())
+		stmt = stmt.OrderBy("LOWER(repo_uid) " + filter.Order.String())
 	case enum.RepoAttrCreated:
 		stmt = stmt.OrderBy("repo_created " + filter.Order.String())
 	case enum.RepoAttrUpdated:
 		stmt = stmt.OrderBy("repo_updated " + filter.Order.String())
 	case enum.RepoAttrDeleted:
 		stmt = stmt.OrderBy("repo_deleted " + filter.Order.String())
+	case enum.RepoAttrLastGITPush:
+		stmt = stmt.OrderBy("repo_last_git_push " + filter.Order.String())
 	}
 
 	return stmt

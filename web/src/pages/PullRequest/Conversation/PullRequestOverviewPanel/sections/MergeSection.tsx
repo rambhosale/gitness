@@ -77,8 +77,8 @@ const MergeSection = (props: MergeSectionProps) => {
     [conflictingFiles]
   )
   return (
-    <Container>
-      <Container className={cx(css.sectionContainer, css.borderRadius)}>
+    <>
+      <Container className={cx(css.sectionContainer, css.borderContainer)}>
         <Layout.Horizontal flex={{ justifyContent: 'space-between' }}>
           <Layout.Horizontal flex={{ alignItems: 'center', justifyContent: 'start' }}>
             {(unchecked && <img src={Images.PrUnchecked} width={25} height={25} />) || (
@@ -132,7 +132,7 @@ const MergeSection = (props: MergeSectionProps) => {
               </Layout.Vertical>
             )}
           </Layout.Horizontal>
-          {!mergeable && (
+          {!mergeable && !unchecked && (
             <Button
               padding={{ right: 'unset' }}
               className={cx(css.blueText, css.buttonPadding)}
@@ -163,7 +163,7 @@ const MergeSection = (props: MergeSectionProps) => {
           </Container>
         </Container>
       </Render>
-    </Container>
+    </>
   )
 }
 

@@ -38,7 +38,7 @@ func StreamSSE(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		UserError(ctx, w, usererror.ErrResponseNotFlushable)
-		log.Ctx(ctx).Warn().Err(usererror.ErrResponseNotFlushable).Msg("failed to build SSE stream")
+		log.Ctx(ctx).Warn().Err(usererror.ErrResponseNotFlushable).Msg("Failed to build SSE stream")
 		return
 	}
 
@@ -100,7 +100,11 @@ func StreamSSE(
 				return
 			}
 
-		case event := <-chEvents:
+		case event, canProduce := <-chEvents:
+			if !canProduce {
+				log.Ctx(ctx).Debug().Msg("events channel is drained and closed.")
+				return
+			}
 			if err := stream.event(event); err != nil {
 				log.Ctx(ctx).Err(err).Msgf("failed to send SSE event: %s", event.Type)
 				return

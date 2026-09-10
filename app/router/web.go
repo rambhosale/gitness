@@ -17,51 +17,29 @@ package router
 import (
 	"net/http"
 
+	middlewareweb "github.com/harness/gitness/app/api/middleware/web"
 	"github.com/harness/gitness/app/api/openapi"
 	"github.com/harness/gitness/app/api/render"
-	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/app/auth/authn"
 	"github.com/harness/gitness/web"
 
-	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/swaggest/swgui"
 	"github.com/swaggest/swgui/v5emb"
 	"github.com/unrolled/secure"
 )
 
-// WebHandler is an abstraction of an http handler that handles web calls.
-type WebHandler interface {
-	http.Handler
-}
-
 // NewWebHandler returns a new WebHandler.
-func NewWebHandler(config *types.Config,
+func NewWebHandler(
+	authenticator authn.Authenticator,
 	openapi openapi.Service,
-) WebHandler {
+	sec *secure.Secure,
+	publicResourceCreationEnabled bool,
+	uiSourceOverride string,
+) http.Handler {
 	// Use go-chi router for inner routing
 	r := chi.NewRouter()
-	// create middleware to enforce security best practices for
-	// the user interface. note that theis middleware is only used
-	// when serving the user interface (not found handler, below).
-	sec := secure.New(
-		secure.Options{
-			AllowedHosts:          config.Secure.AllowedHosts,
-			HostsProxyHeaders:     config.Secure.HostsProxyHeaders,
-			SSLRedirect:           config.Secure.SSLRedirect,
-			SSLTemporaryRedirect:  config.Secure.SSLTemporaryRedirect,
-			SSLHost:               config.Secure.SSLHost,
-			SSLProxyHeaders:       config.Secure.SSLProxyHeaders,
-			STSSeconds:            config.Secure.STSSeconds,
-			STSIncludeSubdomains:  config.Secure.STSIncludeSubdomains,
-			STSPreload:            config.Secure.STSPreload,
-			ForceSTSHeader:        config.Secure.ForceSTSHeader,
-			FrameDeny:             config.Secure.FrameDeny,
-			ContentTypeNosniff:    config.Secure.ContentTypeNosniff,
-			BrowserXssFilter:      config.Secure.BrowserXSSFilter,
-			ContentSecurityPolicy: config.Secure.ContentSecurityPolicy,
-			ReferrerPolicy:        config.Secure.ReferrerPolicy,
-		},
-	)
 
 	// openapi endpoints
 	// TODO: this should not be generated and marshaled on the fly every time?
@@ -90,7 +68,8 @@ func NewWebHandler(config *types.Config,
 			// Available settings can be found here:
 			// https://swagger.io/docs/open-source-tools/swagger-ui/usage/configuration/
 			SettingsUI: map[string]string{
-				"queryConfigEnabled": "false", // block code injection vulnerability
+				"queryConfigEnabled":       "false", // block code injection vulnerability
+				"defaultModelsExpandDepth": "1",
 			},
 		})
 
@@ -100,8 +79,11 @@ func NewWebHandler(config *types.Config,
 
 	// serve all other routes from the embedded filesystem,
 	// which in turn serves the user interface.
-	r.With(sec.Handler).NotFound(
-		web.Handler(),
+	r.With(
+		sec.Handler,
+		middlewareweb.PublicAccess(publicResourceCreationEnabled, authenticator),
+	).NotFound(
+		web.Handler(uiSourceOverride),
 	)
 
 	return r

@@ -15,7 +15,6 @@
 package githook
 
 import (
-	"encoding/json"
 	"net/http"
 
 	controllergithook "github.com/harness/gitness/app/api/controller/githook"
@@ -23,6 +22,8 @@ import (
 	"github.com/harness/gitness/app/api/request"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/types"
+
+	"github.com/rs/zerolog/log"
 )
 
 // HandleUpdate returns a handler function that handles update git hooks.
@@ -35,16 +36,17 @@ func HandleUpdate(
 		session, _ := request.AuthSessionFrom(ctx)
 
 		in := types.GithookUpdateInput{}
-		err := json.NewDecoder(r.Body).Decode(&in)
+		err := request.DecodeBody(r, &in)
 		if err != nil {
-			render.BadRequestf(ctx, w, "Invalid Request Body: %s.", err)
+			log.Ctx(ctx).Error().Err(err).Msg("internal request body in update githook")
+			render.BadRequest(ctx, w)
 			return
 		}
 
-		// gitness doesn't require any custom git connector.
 		out, err := githookCtrl.Update(ctx, git, session, in)
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			log.Ctx(ctx).Error().Err(err).Msg("internal server error in update githook")
+			render.InternalError(ctx, w)
 			return
 		}
 

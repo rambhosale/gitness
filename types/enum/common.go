@@ -37,17 +37,13 @@ const (
 	// TODO [CODE-1363]: remove after identifier migration.
 	uid           = "uid"
 	identifier    = "identifier"
-	path          = "path"
 	name          = "name"
 	email         = "email"
 	admin         = "admin"
-	number        = "number"
 	created       = "created"
 	createdAt     = "created_at"
-	createdBy     = "created_by"
 	updated       = "updated"
 	updatedAt     = "updated_at"
-	updatedBy     = "updated_by"
 	deleted       = "deleted"
 	deletedAt     = "deleted_at"
 	displayName   = "display_name"
@@ -55,17 +51,18 @@ const (
 	defaultString = "default"
 	undefined     = "undefined"
 	system        = "system"
-	comment       = "comment"
-	code          = "code"
 	asc           = "asc"
 	ascending     = "ascending"
 	desc          = "desc"
 	descending    = "descending"
 	value         = "value"
+	lastUsed      = "last_used"
+	lastActivated = "last_activated"
+	lastGITPush   = "last_git_push"
 )
 
-func toInterfaceSlice[T interface{}](vals []T) []interface{} {
-	res := make([]interface{}, len(vals))
+func toInterfaceSlice[T any](vals []T) []any {
+	res := make([]any, len(vals))
 	for i := range vals {
 		res[i] = vals[i]
 	}

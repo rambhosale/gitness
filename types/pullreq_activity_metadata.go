@@ -18,11 +18,20 @@ package types
 type PullReqActivityMetadata struct {
 	Suggestions *PullReqActivitySuggestionsMetadata `json:"suggestions,omitempty"`
 	Mentions    *PullReqActivityMentionsMetadata    `json:"mentions,omitempty"`
+	Reactions   *PullReqActivityReactionsMetadata   `json:"reactions,omitempty"`
 }
 
 func (m *PullReqActivityMetadata) IsEmpty() bool {
-	// WARNING: This only works as long as there's no non-comparable fields in the struct.
-	return m == nil || *m == PullReqActivityMetadata{}
+	return m == nil || (m.Suggestions == nil && m.Mentions == nil && m.Reactions.IsEmpty())
+}
+
+// PullReqActivityReactionsMetadata stores emoji reactions as a map of emoji name to reactor principal IDs.
+type PullReqActivityReactionsMetadata struct {
+	Counts map[string][]int64 `json:"counts,omitempty"`
+}
+
+func (m *PullReqActivityReactionsMetadata) IsEmpty() bool {
+	return m == nil || len(m.Counts) == 0
 }
 
 type PullReqActivityMetadataUpdate interface {
@@ -68,11 +77,12 @@ func WithPullReqActivitySuggestionsMetadataUpdate(
 
 // PullReqActivityMentionsMetadata contains metadata for code comment mentions.
 type PullReqActivityMentionsMetadata struct {
-	IDs []int64 `json:"ids,omitempty"`
+	IDs          []int64 `json:"ids,omitempty"`
+	UserGroupIDs []int64 `json:"user_group_ids,omitempty"`
 }
 
 func (m *PullReqActivityMentionsMetadata) IsEmpty() bool {
-	return len(m.IDs) == 0
+	return len(m.IDs) == 0 && len(m.UserGroupIDs) == 0
 }
 
 func WithPullReqActivityMentionsMetadataUpdate(

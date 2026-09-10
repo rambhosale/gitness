@@ -52,8 +52,12 @@ module.exports = {
     './Webhooks': './src/pages/Webhooks/Webhooks.tsx',
     './WebhookNew': './src/pages/WebhookNew/WebhookNew.tsx',
     './Search': './src/pages/Search/CodeSearchPage.tsx',
+    './SpacePullRequests': '/src/pages/ManageSpace/SpacePullRequests/SpacePullRequests.tsx',
+    './Labels': './src/pages/ManageSpace/ManageRepositories/ManageRepositories.tsx',
     './WebhookDetails': './src/pages/WebhookDetails/WebhookDetails.tsx',
-    './NewRepoModalButton': './src/components/NewRepoModalButton/NewRepoModalButton.tsx'
+    './NewRepoModalButton': './src/components/NewRepoModalButton/NewRepoModalButton.tsx',
+    './HAREnterpriseApp': './src/ar/app/EnterpriseApp.tsx',
+    './HARCreateRegistryButton': './src/ar/views/CreateRegistryButton/CreateRegistryButton.tsx'
   },
   shared: {
     formik: packageJSON.dependencies['formik'],

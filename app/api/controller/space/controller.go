@@ -15,15 +15,30 @@
 package space
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/usererror"
+	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/autolink"
 	"github.com/harness/gitness/app/services/exporter"
+	"github.com/harness/gitness/app/services/gitspace"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/infraprovider"
+	"github.com/harness/gitness/app/services/instrument"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/publicaccess"
+	"github.com/harness/gitness/app/services/pullreq"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/rules"
+	"github.com/harness/gitness/app/services/space"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
@@ -31,6 +46,7 @@ import (
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/check"
+	"github.com/harness/gitness/types/enum"
 )
 
 var (
@@ -61,27 +77,40 @@ func (s SpaceOutput) MarshalJSON() ([]byte, error) {
 type Controller struct {
 	nestedSpacesEnabled bool
 
-	tx              dbtx.Transactor
-	urlProvider     url.Provider
-	sseStreamer     sse.Streamer
-	identifierCheck check.SpaceIdentifier
-	authorizer      authz.Authorizer
-	spacePathStore  store.SpacePathStore
-	pipelineStore   store.PipelineStore
-	secretStore     store.SecretStore
-	connectorStore  store.ConnectorStore
-	templateStore   store.TemplateStore
-	spaceStore      store.SpaceStore
-	repoStore       store.RepoStore
-	principalStore  store.PrincipalStore
-	repoCtrl        *repo.Controller
-	membershipStore store.MembershipStore
-	importer        *importer.Repository
-	exporter        *exporter.Repository
-	resourceLimiter limiter.ResourceLimiter
-	publicAccess    publicaccess.Service
-	auditService    audit.Service
-	gitspaceStore   store.GitspaceConfigStore
+	tx                  dbtx.Transactor
+	urlProvider         url.Provider
+	sseStreamer         sse.Streamer
+	identifierCheck     check.SpaceIdentifier
+	authorizer          authz.Authorizer
+	spacePathStore      store.SpacePathStore
+	pipelineStore       store.PipelineStore
+	secretStore         store.SecretStore
+	connectorStore      store.ConnectorStore
+	templateStore       store.TemplateStore
+	spaceStore          store.SpaceStore
+	repoStore           store.RepoStore
+	principalStore      store.PrincipalStore
+	repoCtrl            *repo.Controller
+	membershipStore     store.MembershipStore
+	prListService       *pullreq.ListService
+	spaceFinder         refcache.SpaceFinder
+	repoFinder          refcache.RepoFinder
+	importer            *importer.JobRepository
+	exporter            *exporter.Repository
+	resourceLimiter     limiter.ResourceLimiter
+	publicAccess        publicaccess.Service
+	auditService        audit.Service
+	gitspaceSvc         *gitspace.Service
+	labelSvc            *label.Service
+	instrumentation     instrument.Service
+	executionStore      store.ExecutionStore
+	rulesSvc            *rules.Service
+	usageMetricStore    store.UsageMetricStore
+	repoIdentifierCheck check.RepoIdentifier
+	infraProviderSvc    *infraprovider.Service
+	favoriteStore       store.FavoriteStore
+	autolinkSvc         *autolink.Service
+	spaceSvc            *space.Service
 }
 
 func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Provider,
@@ -89,9 +118,15 @@ func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Pro
 	spacePathStore store.SpacePathStore, pipelineStore store.PipelineStore, secretStore store.SecretStore,
 	connectorStore store.ConnectorStore, templateStore store.TemplateStore, spaceStore store.SpaceStore,
 	repoStore store.RepoStore, principalStore store.PrincipalStore, repoCtrl *repo.Controller,
-	membershipStore store.MembershipStore, importer *importer.Repository, exporter *exporter.Repository,
+	membershipStore store.MembershipStore, prListService *pullreq.ListService,
+	spaceFinder refcache.SpaceFinder, repoFinder refcache.RepoFinder,
+	importer *importer.JobRepository, exporter *exporter.Repository,
 	limiter limiter.ResourceLimiter, publicAccess publicaccess.Service, auditService audit.Service,
-	gitspaceStore store.GitspaceConfigStore,
+	gitspaceSvc *gitspace.Service, labelSvc *label.Service,
+	instrumentation instrument.Service, executionStore store.ExecutionStore,
+	rulesSvc *rules.Service, usageMetricStore store.UsageMetricStore, repoIdentifierCheck check.RepoIdentifier,
+	infraProviderSvc *infraprovider.Service, favoriteStore store.FavoriteStore, autolinkSvc *autolink.Service,
+	spaceSvc *space.Service,
 ) *Controller {
 	return &Controller{
 		nestedSpacesEnabled: config.NestedSpacesEnabled,
@@ -110,11 +145,76 @@ func NewController(config *types.Config, tx dbtx.Transactor, urlProvider url.Pro
 		principalStore:      principalStore,
 		repoCtrl:            repoCtrl,
 		membershipStore:     membershipStore,
+		prListService:       prListService,
+		spaceFinder:         spaceFinder,
+		repoFinder:          repoFinder,
 		importer:            importer,
 		exporter:            exporter,
 		resourceLimiter:     limiter,
 		publicAccess:        publicAccess,
 		auditService:        auditService,
-		gitspaceStore:       gitspaceStore,
+		gitspaceSvc:         gitspaceSvc,
+		labelSvc:            labelSvc,
+		instrumentation:     instrumentation,
+		executionStore:      executionStore,
+		rulesSvc:            rulesSvc,
+		usageMetricStore:    usageMetricStore,
+		repoIdentifierCheck: repoIdentifierCheck,
+		infraProviderSvc:    infraProviderSvc,
+		favoriteStore:       favoriteStore,
+		autolinkSvc:         autolinkSvc,
+		spaceSvc:            spaceSvc,
 	}
+}
+
+// getSpaceCheckAuth checks whether the user has the requested permission on the provided space and returns the space.
+func (c *Controller) getSpaceCheckAuth(
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	permission enum.Permission,
+) (*types.SpaceCore, error) {
+	return GetSpaceCheckAuth(ctx, c.spaceFinder, c.authorizer, session, spaceRef, permission)
+}
+
+func (c *Controller) getSpaceCheckAuthRepoCreation(
+	ctx context.Context,
+	session *auth.Session,
+	parentRef string,
+) (*types.SpaceCore, error) {
+	return repo.GetSpaceCheckAuthRepoCreation(ctx, c.spaceFinder, c.authorizer, session, parentRef)
+}
+
+func (c *Controller) getSpaceCheckAuthSpaceCreation(
+	ctx context.Context,
+	session *auth.Session,
+	parentRef string,
+) (*types.SpaceCore, error) {
+	parentRefAsID, err := strconv.ParseInt(parentRef, 10, 64)
+	if (parentRefAsID <= 0 && err == nil) || (len(strings.TrimSpace(parentRef)) == 0) {
+		// TODO: Restrict top level space creation - should be move to authorizer?
+		if auth.IsAnonymousSession(session) {
+			return nil, fmt.Errorf("anonymous user not allowed to create top level spaces: %w", usererror.ErrUnauthorized)
+		}
+
+		return &types.SpaceCore{}, nil
+	}
+
+	parentSpace, err := c.spaceFinder.FindByRef(ctx, parentRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get parent space: %w", err)
+	}
+
+	if err = apiauth.CheckSpaceScope(
+		ctx,
+		c.authorizer,
+		session,
+		parentSpace,
+		enum.ResourceTypeSpace,
+		enum.PermissionSpaceEdit,
+	); err != nil {
+		return nil, fmt.Errorf("authorization failed: %w", err)
+	}
+
+	return parentSpace, nil
 }

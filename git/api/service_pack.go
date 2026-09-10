@@ -17,6 +17,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"regexp"
 	"strconv"
@@ -49,20 +50,24 @@ func (g *Git) InfoRefs(
 		command.WithStdout(stdout),
 		command.WithEnvs(env...),
 	); err != nil {
-		return errors.Internal(err, "InfoRefs service %s failed", service)
+		return errors.Internalf(err, "InfoRefs service %s failed", service)
 	}
 	if _, err := w.Write(packetWrite("# service=git-" + service + "\n")); err != nil {
-		return errors.Internal(err, "failed to write pktLine in InfoRefs %s service", service)
+		return errors.Internalf(err, "failed to write pktLine in InfoRefs %s service", service)
 	}
 
 	if _, err := w.Write([]byte("0000")); err != nil {
-		return errors.Internal(err, "failed to flush data in InfoRefs %s service", service)
+		return errors.Internalf(err, "failed to flush data in InfoRefs %s service", service)
 	}
 
 	if _, err := io.Copy(w, stdout); err != nil {
-		return errors.Internal(err, "streaming InfoRefs %s service failed", service)
+		return errors.Internalf(err, "streaming InfoRefs %s service failed", service)
 	}
 	return nil
+}
+
+type ServicePackConfig struct {
+	UploadPackHook string
 }
 
 type ServicePackOptions struct {
@@ -74,6 +79,7 @@ type ServicePackOptions struct {
 	Stderr       io.Writer
 	Env          []string
 	Protocol     string
+	Config       ServicePackConfig
 }
 
 func (g *Git) ServicePack(
@@ -92,6 +98,10 @@ func (g *Git) ServicePack(
 
 	if options.Protocol != "" && safeGitProtocolHeader.MatchString(options.Protocol) {
 		cmd.Add(command.WithEnv("GIT_PROTOCOL", options.Protocol))
+	}
+
+	if options.Config.UploadPackHook != "" {
+		cmd.Add(command.WithConfig("uploadpack.packObjectsHook", options.Config.UploadPackHook))
 	}
 
 	err := cmd.Run(ctx,
@@ -113,4 +123,9 @@ func packetWrite(str string) []byte {
 		s = strings.Repeat("0", 4-len(s)%4) + s
 	}
 	return []byte(s + str)
+}
+
+func PktError(w io.Writer, err error) {
+	strErr := fmt.Sprintf("ERR %s\n", err.Error())
+	_, _ = w.Write(packetWrite(strErr))
 }

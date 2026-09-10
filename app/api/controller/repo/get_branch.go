@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
 
@@ -28,7 +30,8 @@ func (c *Controller) GetBranch(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	branchName string,
-) (*Branch, error) {
+	options types.BranchMetadataOptions,
+) (*types.BranchExtended, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
 	if err != nil {
 		return nil, err
@@ -42,10 +45,29 @@ func (c *Controller) GetBranch(ctx context.Context,
 		return nil, fmt.Errorf("failed to get branch: %w", err)
 	}
 
-	branch, err := mapBranch(rpcOut.Branch)
+	metadata, err := c.collectBranchMetadata(ctx, repo, []git.Branch{rpcOut.Branch}, options)
+	if err != nil {
+		return nil, fmt.Errorf("fail to collect branch metadata: %w", err)
+	}
+
+	branch, err := controller.MapBranch(rpcOut.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to map branch: %w", err)
 	}
 
-	return &branch, nil
+	if branch.Commit != nil {
+		err = c.signatureVerifyService.VerifyCommits(ctx, repo.ID, []*types.Commit{branch.Commit})
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify signature of branch commit: %w", err)
+		}
+	}
+
+	branchExtended := &types.BranchExtended{
+		Branch:    branch,
+		IsDefault: branchName == repo.DefaultBranch,
+	}
+
+	metadata.apply(0, branchExtended)
+
+	return branchExtended, nil
 }

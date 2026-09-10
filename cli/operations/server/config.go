@@ -22,18 +22,19 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/harness/gitness/app/gitspace/orchestrator/container"
+	"github.com/harness/gitness/app/services/branch"
 	"github.com/harness/gitness/app/services/cleanup"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/gitspacedeleteevent"
 	"github.com/harness/gitness/app/services/gitspaceevent"
 	"github.com/harness/gitness/app/services/keywordsearch"
 	"github.com/harness/gitness/app/services/notification"
+	"github.com/harness/gitness/app/services/repoactivity"
 	"github.com/harness/gitness/app/services/trigger"
 	"github.com/harness/gitness/app/services/webhook"
 	"github.com/harness/gitness/blob"
 	"github.com/harness/gitness/events"
 	gittypes "github.com/harness/gitness/git/types"
-	"github.com/harness/gitness/infraprovider"
 	"github.com/harness/gitness/job"
 	"github.com/harness/gitness/lock"
 	"github.com/harness/gitness/pubsub"
@@ -49,9 +50,9 @@ import (
 const (
 	schemeHTTP     = "http"
 	schemeHTTPS    = "https"
+	schemeSSH      = "ssh"
 	gitnessHomeDir = ".gitness"
 	blobDir        = "blob"
-	gitspacesDir   = "gitspaces"
 )
 
 // LoadConfig returns the system configuration from the
@@ -104,14 +105,27 @@ func LoadConfig() (*types.Config, error) {
 
 //nolint:gocognit // refactor if required
 func backfillURLs(config *types.Config) error {
-	// default base url
-	// TODO: once we actually use the config.Server.HTTP.Proto, we have to update that here.
+	// default values for HTTP
+	// TODO: once we actually use the config.HTTP.Proto, we have to update that here.
 	scheme, host, port, path := schemeHTTP, "localhost", "", ""
-
+	if config.HTTP.Host != "" {
+		host = config.HTTP.Host
+	}
 	// by default drop scheme's default port
-	if (scheme != schemeHTTP || config.Server.HTTP.Port != 80) &&
-		(scheme != schemeHTTPS || config.Server.HTTP.Port != 443) {
-		port = fmt.Sprint(config.Server.HTTP.Port)
+	if config.HTTP.Port > 0 &&
+		(scheme != schemeHTTP || config.HTTP.Port != 80) &&
+		(scheme != schemeHTTPS || config.HTTP.Port != 443) {
+		port = fmt.Sprint(config.HTTP.Port)
+	}
+
+	// default values for SSH
+	sshHost, sshPort := "localhost", ""
+	if config.SSH.Host != "" {
+		sshHost = config.SSH.Host
+	}
+	// by default drop scheme's default port
+	if config.SSH.Port > 0 && config.SSH.Port != 22 {
+		sshPort = fmt.Sprint(config.SSH.Port)
 	}
 
 	// backfil internal URLS before continuing override with user provided base (which is external facing)
@@ -149,6 +163,14 @@ func backfillURLs(config *types.Config) error {
 		host = u.Hostname()
 		port = u.Port()
 		path = u.Path
+
+		// overwrite sshhost with base url host, but keep port as is
+		sshHost = u.Hostname()
+	}
+
+	// backfill external facing URLs
+	if config.URL.GitSSH == "" {
+		config.URL.GitSSH = combineToRawURL(schemeSSH, sshHost, sshPort, "")
 	}
 
 	// create base URL object
@@ -159,6 +181,9 @@ func backfillURLs(config *types.Config) error {
 	}
 
 	// backfill all external URLs that weren't explicitly overwritten
+	if config.URL.Base == "" {
+		config.URL.Base = baseURL.String()
+	}
 	if config.URL.API == "" {
 		config.URL.API = baseURL.JoinPath("api").String()
 	}
@@ -167,6 +192,9 @@ func backfillURLs(config *types.Config) error {
 	}
 	if config.URL.UI == "" {
 		config.URL.UI = baseURL.String()
+	}
+	if config.URL.Registry == "" {
+		config.URL.Registry = combineToRawURL(scheme, "host.docker.internal", port, "")
 	}
 
 	return nil
@@ -212,22 +240,26 @@ func getSanitizedMachineName() (string, error) {
 			norm.NFD,
 			runes.ReplaceIllFormed(),
 			runes.Remove(runes.In(unicode.Mn)),
-			runes.Map(func(r rune) rune {
-				switch {
-				case 'A' <= r && r <= 'Z':
-					return r + 32
-				case 'a' <= r && r <= 'z':
-					return r
-				case '0' <= r && r <= '9':
-					return r
-				case r == '-', r == '.':
-					return r
-				default:
-					return '_'
-				}
-			}),
-			norm.NFC),
-		hostName)
+			runes.Map(
+				func(r rune) rune {
+					switch {
+					case 'A' <= r && r <= 'Z':
+						return r + 32
+					case 'a' <= r && r <= 'z':
+						return r
+					case '0' <= r && r <= '9':
+						return r
+					case r == '-', r == '.':
+						return r
+					default:
+						return '_'
+					}
+				},
+			),
+			norm.NFC,
+		),
+		hostName,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -238,8 +270,11 @@ func getSanitizedMachineName() (string, error) {
 // ProvideDatabaseConfig loads the database config from the main config.
 func ProvideDatabaseConfig(config *types.Config) database.Config {
 	return database.Config{
-		Driver:     config.Database.Driver,
-		Datasource: config.Database.Datasource,
+		Driver:          config.Database.Driver,
+		Datasource:      config.Database.Datasource,
+		MaxOpenConns:    config.Database.MaxOpenConns,
+		MaxIdleConns:    config.Database.MaxIdleConns,
+		ConnMaxLifetime: config.Database.ConnMaxLifetime,
 	}
 }
 
@@ -298,6 +333,8 @@ func ProvideWebhookConfig(config *types.Config) webhook.Config {
 		MaxRetries:          config.Webhook.MaxRetries,
 		AllowPrivateNetwork: config.Webhook.AllowPrivateNetwork,
 		AllowLoopback:       config.Webhook.AllowLoopback,
+		AllowLinkLocal:      config.Webhook.AllowLinkLocal,
+		InternalSecret:      config.Webhook.InternalSecret,
 	}
 }
 
@@ -318,7 +355,23 @@ func ProvideTriggerConfig(config *types.Config) trigger.Config {
 	}
 }
 
-// ProvideLockConfig generates the `lock` package config from the gitness config.
+func ProvideBranchConfig(config *types.Config) branch.Config {
+	return branch.Config{
+		EventReaderName: config.InstanceID,
+		Concurrency:     config.Branch.Concurrency,
+		MaxRetries:      config.Branch.MaxRetries,
+	}
+}
+
+func ProvideRepoActivityConfig(config *types.Config) repoactivity.Config {
+	return repoactivity.Config{
+		EventReaderName: config.InstanceID,
+		Concurrency:     config.Branch.Concurrency,
+		MaxRetries:      config.Branch.MaxRetries,
+	}
+}
+
+// ProvideLockConfig generates the `lock` package config from the Harness config.
 func ProvideLockConfig(config *types.Config) lock.Config {
 	return lock.Config{
 		App:           config.Lock.AppNamespace,
@@ -347,8 +400,10 @@ func ProvidePubsubConfig(config *types.Config) pubsub.Config {
 // ProvideCleanupConfig loads the cleanup service config from the main config.
 func ProvideCleanupConfig(config *types.Config) cleanup.Config {
 	return cleanup.Config{
-		WebhookExecutionsRetentionTime:   config.Webhook.RetentionTime,
-		DeletedRepositoriesRetentionTime: config.Repos.DeletedRetentionTime,
+		WebhookExecutionsRetentionTime:        config.Webhook.RetentionTime,
+		DeletedRepositoriesRetentionTime:      config.Repos.DeletedRetentionTime,
+		DeletedRepositoriesCleanupCron:        config.Repos.DeletedCleanupCron,
+		DeletedRepositoriesCleanupMaxDuration: config.Repos.DeletedCleanupMaxDuration,
 	}
 }
 
@@ -376,52 +431,22 @@ func ProvideJobsConfig(config *types.Config) job.Config {
 	}
 }
 
-// ProvideDockerConfig loads config for Docker.
-func ProvideDockerConfig(config *types.Config) *infraprovider.DockerConfig {
-	return &infraprovider.DockerConfig{
-		DockerHost:       config.Docker.Host,
-		DockerAPIVersion: config.Docker.APIVersion,
-		DockerCertPath:   config.Docker.CertPath,
-		DockerTLSVerify:  config.Docker.TLSVerify,
-	}
-}
-
-// ProvideIDEVSCodeWebConfig loads the VSCode Web IDE config from the main config.
-func ProvideIDEVSCodeWebConfig(config *types.Config) *container.VSCodeWebConfig {
-	return &container.VSCodeWebConfig{
-		Port: config.IDE.VSCodeWeb.Port,
-	}
-}
-
-// ProvideGitspaceContainerOrchestratorConfig loads the Gitspace container orchestrator config from the main config.
-func ProvideGitspaceContainerOrchestratorConfig(config *types.Config) (*container.Config, error) {
-	var bindMountSourceBasePath string
-
-	if config.Gitspace.DefaultBindMountSourceBasePath == "" {
-		var homedir string
-
-		homedir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("unable to determine home directory: %w", err)
-		}
-
-		bindMountSourceBasePath = filepath.Join(homedir, gitnessHomeDir, gitspacesDir)
-	} else {
-		bindMountSourceBasePath = filepath.Join(config.Gitspace.DefaultBindMountSourceBasePath, gitspacesDir)
-	}
-
-	return &container.Config{
-		DefaultBaseImage:               config.Gitspace.DefaultBaseImage,
-		DefaultBindMountTargetPath:     config.Gitspace.DefaultBindMountTargetPath,
-		DefaultBindMountSourceBasePath: bindMountSourceBasePath,
-	}, nil
-}
-
 // ProvideGitspaceEventConfig loads the gitspace event service config from the main config.
-func ProvideGitspaceEventConfig(config *types.Config) gitspaceevent.Config {
-	return gitspaceevent.Config{
+func ProvideGitspaceEventConfig(config *types.Config) *gitspaceevent.Config {
+	return &gitspaceevent.Config{
 		EventReaderName: config.InstanceID,
 		Concurrency:     config.Gitspace.Events.Concurrency,
 		MaxRetries:      config.Gitspace.Events.MaxRetries,
+		TimeoutInMins:   config.Gitspace.Events.TimeoutInMins,
+	}
+}
+
+// ProvideGitspaceDeleteEventConfig loads the gitspace delete event service config from the main config.
+func ProvideGitspaceDeleteEventConfig(config *types.Config) *gitspacedeleteevent.Config {
+	return &gitspacedeleteevent.Config{
+		EventReaderName: config.InstanceID,
+		Concurrency:     config.Gitspace.Events.Concurrency,
+		MaxRetries:      config.Gitspace.Events.MaxRetries,
+		TimeoutInMins:   config.Gitspace.Events.TimeoutInMins,
 	}
 }

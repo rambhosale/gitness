@@ -33,7 +33,7 @@ func Limit(size int) uint64 {
 	if size == 0 {
 		size = defaultLimit
 	}
-	return uint64(size)
+	return uint64(size) //nolint:gosec
 }
 
 // offset converts the page to a sql offset.
@@ -45,14 +45,14 @@ func Offset(page, size int) uint64 {
 		size = defaultLimit
 	}
 	page--
-	return uint64(page * size)
+	return uint64(page * size) //nolint:gosec
 }
 
 // Logs the error and message, returns either the provided message.
 // Always logs the full message with error as warning.
 //
 //nolint:unparam // revisit error processing
-func ProcessSQLErrorf(ctx context.Context, err error, format string, args ...interface{}) error {
+func ProcessSQLErrorf(ctx context.Context, err error, format string, args ...any) error {
 	// If it's a known error, return converted error instead.
 	translatedError := err
 	switch {
@@ -60,6 +60,8 @@ func ProcessSQLErrorf(ctx context.Context, err error, format string, args ...int
 		translatedError = store.ErrResourceNotFound
 	case isSQLUniqueConstraintError(err):
 		translatedError = store.ErrDuplicate
+	case isSQLForeignKeyViolationError(err):
+		translatedError = store.ErrForeignKeyViolation
 	default:
 	}
 

@@ -8,10 +8,12 @@ export interface StringsMap {
   accessControl: string
   accountEmail: string
   accountSetting: string
+  accounts: string
   active: string
   activeBranches: string
   add: string
   addComment: string
+  addCustomHeader: string
   addDescription: string
   addGitIgnore: string
   addLabel: string
@@ -36,9 +38,14 @@ export interface StringsMap {
   applyChanges: string
   approve: string
   approved: string
+  approvedBy: string
+  archive: string
+  archived: string
+  artifacts: string
   ascending: string
   assignPeople: string
   at: string
+  atSubTitle: string
   attachText: string
   basedOn: string
   behindDivergence: string
@@ -58,73 +65,10 @@ export interface StringsMap {
   branchDoesNotHaveFile: string
   branchName: string
   branchNotFound: string
-  'branchProtection.allRepoOwners': string
-  'branchProtection.autoDeleteText': string
-  'branchProtection.autoDeleteTitle': string
-  'branchProtection.blockBranchCreation': string
-  'branchProtection.blockBranchCreationText': string
-  'branchProtection.blockBranchDeletion': string
-  'branchProtection.blockBranchDeletionText': string
-  'branchProtection.bypassList': string
-  'branchProtection.commitDirectlyAlertBtn': string
-  'branchProtection.commitDirectlyAlertText': string
-  'branchProtection.commitDirectlyBlockText': string
-  'branchProtection.commitNewBranchAlertBtn': string
-  'branchProtection.commitNewBranchAlertText': string
-  'branchProtection.commitNewBranchBlockText': string
-  'branchProtection.create': string
-  'branchProtection.createBranchAlertBtn': string
-  'branchProtection.createBranchAlertText': string
-  'branchProtection.createBranchBlockText': string
-  'branchProtection.createRule': string
-  'branchProtection.defaultBranch': string
-  'branchProtection.deleteBranchAlertBtn': string
-  'branchProtection.deleteBranchAlertText': string
-  'branchProtection.deleteBranchBlockText': string
-  'branchProtection.deleteProtectionRule': string
-  'branchProtection.deleteRule': string
-  'branchProtection.deleteText': string
-  'branchProtection.descPlaceholder': string
-  'branchProtection.disableTheRule': string
-  'branchProtection.edit': string
-  'branchProtection.editRule': string
-  'branchProtection.enableTheRule': string
-  'branchProtection.limitMergeStrategies': string
-  'branchProtection.limitMergeStrategiesText': string
-  'branchProtection.mergeCheckboxAlert': string
-  'branchProtection.mergePrAlertText': string
-  'branchProtection.mergePrAlertTitle': string
-  'branchProtection.minNumber': string
-  'branchProtection.minNumberPlaceholder': string
-  'branchProtection.namePlaceholder': string
-  'branchProtection.newRule': string
-  'branchProtection.prFailedText': string
-  'branchProtection.protectionSelectAll': string
-  'branchProtection.reqCommentResolutionText': string
-  'branchProtection.reqCommentResolutionTitle': string
-  'branchProtection.reqNewChangesText': string
-  'branchProtection.reqNewChangesTitle': string
-  'branchProtection.reqResOfChanges': string
-  'branchProtection.reqResOfChangesText': string
-  'branchProtection.reqReviewFromCodeOwnerText': string
-  'branchProtection.reqReviewFromCodeOwnerTitle': string
-  'branchProtection.reqStatusChecksText': string
-  'branchProtection.reqStatusChecksTitle': string
-  'branchProtection.requireMinReviewersContent': string
-  'branchProtection.requireMinReviewersTitle': string
-  'branchProtection.requirePr': string
-  'branchProtection.requirePrText': string
-  'branchProtection.ruleCreated': string
-  'branchProtection.ruleDeleted': string
-  'branchProtection.ruleEmpty': string
-  'branchProtection.ruleUpdated': string
-  'branchProtection.saveRule': string
-  'branchProtection.statusCheck': string
-  'branchProtection.targetBranches': string
-  'branchProtection.targetPatternHint': string
-  'branchProtection.targetPlaceholder': string
-  'branchProtection.title': string
+  branchNotFoundError: string
+  branchNotFoundMessage: string
   branchProtectionRules: string
+  branchRestored: string
   branchSource: string
   branchSourceDesc: string
   branchTagCreation: string
@@ -139,127 +83,46 @@ export interface StringsMap {
   cancelImport: string
   cancelImportConfirm: string
   cancelledImport: string
-  'cde.branchPlaceholder': string
-  'cde.branchValidationMessage': string
-  'cde.cloudDeveloperExperience': string
-  'cde.cpu': string
-  'cde.create.branchPlaceholder': string
-  'cde.create.gitnessRepositories': string
-  'cde.create.gitspaceCreateFailed': string
-  'cde.create.gitspaceCreateSuccess': string
-  'cde.create.repoNotFound': string
-  'cde.create.repositoryDetails': string
-  'cde.create.searchBranchPlaceholder': string
-  'cde.create.searchRepositoryPlaceholder': string
-  'cde.create.selectBranchPlaceholder': string
-  'cde.create.thirdPartyGitRepositories': string
-  'cde.create.unsaved.message': string
-  'cde.create.unsaved.title': string
-  'cde.createGitspace': string
-  'cde.createRepo': string
-  'cde.deleteGitspace': string
-  'cde.deleteGitspaceText': string
-  'cde.deleteGitspaceTitle': string
-  'cde.deleteSuccess': string
-  'cde.details.actions': string
-  'cde.details.fetchingDetails': string
-  'cde.details.fetchingGitspace': string
-  'cde.details.fetchingLogs': string
-  'cde.details.gitspaceRunning': string
-  'cde.details.gitspaceStopped': string
-  'cde.details.goToDashboard': string
-  'cde.details.logsFailed': string
-  'cde.details.noData': string
-  'cde.details.noLogsFound': string
-  'cde.details.openBrowser': string
-  'cde.details.openEditor': string
-  'cde.details.provisioningGitspace': string
-  'cde.details.startGitspace': string
-  'cde.details.stopGitspace': string
-  'cde.details.stopProvising': string
-  'cde.details.wrongIdentifier': string
-  'cde.disk': string
-  'cde.editGitspace': string
-  'cde.eventTimeline': string
-  'cde.gitspaceDetail': string
-  'cde.gitspaceUpdateSuccess': string
-  'cde.gitspaces': string
-  'cde.hours': string
-  'cde.ide.browser': string
-  'cde.ide.desktop': string
-  'cde.ide.openBrowser': string
-  'cde.ide.openVSCode': string
-  'cde.ide.selectIDE': string
-  'cde.ide.title': string
-  'cde.ide.vsCode': string
-  'cde.introText1': string
-  'cde.introText2': string
-  'cde.introText3': string
-  'cde.listing.error': string
-  'cde.listing.offline': string
-  'cde.listing.online': string
-  'cde.logs': string
-  'cde.machine': string
-  'cde.machineValidationMessage': string
-  'cde.manageGitspaces': string
-  'cde.memory': string
-  'cde.na': string
-  'cde.newGitspace': string
-  'cde.noChange': string
-  'cde.noData': string
-  'cde.noGitspaces': string
-  'cde.noRepo': string
-  'cde.or': string
-  'cde.region': string
-  'cde.regionSelectWarning': string
-  'cde.regionValidationMessage': string
-  'cde.repoValidationMessage': string
-  'cde.repository.continueWith': string
-  'cde.repository.pasteRepo': string
-  'cde.repository.pasterRepoSubtext': string
-  'cde.repository.privateRepoWarning': string
-  'cde.repository.publicRepo': string
-  'cde.repository.repo': string
-  'cde.repository.repositoryURL': string
-  'cde.repository.selectRepository': string
-  'cde.repositoryAndBranch': string
-  'cde.retry': string
-  'cde.sessionDuration': string
-  'cde.startingGitspace': string
-  'cde.status': string
-  'cde.stopingGitspace': string
-  'cde.updateGitspace': string
-  'cde.used': string
-  'cde.viewGitspace': string
+  cautionZone: string
   changePassword: string
-  changePasswordSuccesfully: string
+  changePasswordSuccessfully: string
   changeRepoVis: string
   changeRepoVisContent: string
   changeRole: string
   changedSinceLastView: string
   changes: string
+  changesRequested: string
   changesRequestedBy: string
   'changesSection.approvalPending': string
   'changesSection.changesAppByRev': string
   'changesSection.changesApproved': string
   'changesSection.changesApprovedByXReviewers': string
   'changesSection.changesWereAppByCodeOwner': string
+  'changesSection.changesWereAppByDefaultReviewers': string
   'changesSection.changesWereAppByLatestReqRev': string
   'changesSection.codeOwnerReqChanges': string
   'changesSection.codeOwnerReqChangesToPr': string
+  'changesSection.defaultReviewersChangesToPr': string
+  'changesSection.defaultReviewersStatus': string
   'changesSection.latestChangesApprovedByXReviewers': string
   'changesSection.latestChangesPendingReqRev': string
   'changesSection.latestChangesWereAppByCodeOwner': string
+  'changesSection.latestChangesWereAppByDefaultReviewers': string
   'changesSection.latestChangesWereApprovedByReq': string
   'changesSection.noCodeOwnerReviewsReq': string
   'changesSection.noReviewsReq': string
   'changesSection.pendingAppFromCodeOwners': string
   'changesSection.pendingLatestApprovalCodeOwners': string
+  'changesSection.pendingLatestApprovalDefaultReviewers': string
+  'changesSection.prMergeBlockedMessage': string
+  'changesSection.prMergeBlockedTitle': string
   'changesSection.pullReqWithoutAnyReviews': string
   'changesSection.reqChangeFromCodeOwners': string
   'changesSection.someChangesWereAppByCodeOwner': string
   'changesSection.waitingOnCodeOwner': string
+  'changesSection.waitingOnDefaultReviewers': string
   'changesSection.waitingOnLatestCodeOwner': string
+  'changesSection.waitingOnLatestDefaultReviewers': string
   'changesSection.waitingOnReviewers': string
   'changesSection.xApprovalsArePending': string
   characterLimit: string
@@ -321,6 +184,7 @@ export interface StringsMap {
   commitsOn: string
   committed: string
   compare: string
+  compareAndPullRequest: string
   compareEmptyDiffMessage: string
   compareEmptyDiffTitle: string
   comparingChanges: string
@@ -372,28 +236,35 @@ export interface StringsMap {
   created: string
   creationDate: string
   customDay: string
+  customHeaders: string
   customHour: string
   customMin: string
   customSecond: string
   customTime: string
   customizeMergeCommitMessage: string
-  dangerDeleteRepo: string
+  dangerDeletePipeline: string
+  dangerDeleteProject: string
   defaultBranch: string
   defaultBranchTitle: string
+  defaultReviewers: string
   delete: string
   deleteBranch: string
   deleteBranchConfirm: string
+  deleteBranchDryRunFailed: string
   deleteBranchText: string
   deleteCommentConfirm: string
   deleteFailedImport: string
   deleteFile: string
   deleteImport: string
   deleteNotAllowed: string
+  deleteRepo: string
+  deleteRepoMsg: string
   deleteRepoText: string
   deleteRepoTitle: string
   deleteSpace: string
   deleteTag: string
   deleteTagConfirm: string
+  deleteTagDryRunFailed: string
   deleteToken: string
   deleteTokenMsg: string
   deleteUser: string
@@ -447,6 +318,10 @@ export interface StringsMap {
   enterUser: string
   error: string
   error404Text: string
+  event: string
+  exclude: string
+  executionHistory: string
+  executionId: string
   'executions.canceledTime': string
   'executions.completedTime': string
   'executions.description': string
@@ -501,17 +376,28 @@ export interface StringsMap {
   failedToFetchFileContent: string
   failedToImportSpace: string
   failedToSavePipeline: string
+  failureIgnored: string
+  fastForwardMerge: string
+  'favorite.add': string
+  'favorite.errorFavorite': string
+  'favorite.errorUnFavorite': string
+  'favorite.remove': string
   featureRoadmap: string
   fileDeleted: string
   fileTooLarge: string
   files: string
   filesChanged: string
+  filterByAuthor: string
   findATag: string
   findAUser: string
+  findAUserOrUserGroup: string
   findBranch: string
   findOrCreateBranch: string
   firstTimeTitle: string
   general: string
+  'generalSetting.features': string
+  'generalSetting.gitLFSEnable': string
+  'generalSetting.gitLFSEnableDesc': string
   generate: string
   generateCloneCred: string
   generateCloneText: string
@@ -520,6 +406,11 @@ export interface StringsMap {
   getMyCloneTitle: string
   gitIgnore: string
   gitness: string
+  goToDefaultBranch: string
+  headerKey: string
+  headerKeyPlaceholder: string
+  headerValue: string
+  headerValuePlaceholder: string
   heading: string
   help: string
   hideCommitHistory: string
@@ -586,6 +477,8 @@ export interface StringsMap {
   'importSpace.title': string
   in: string
   inactiveBranches: string
+  include: string
+  includeSubspacePR: string
   invalidResponse: string
   isRequired: string
   italic: string
@@ -596,8 +489,70 @@ export interface StringsMap {
   'keywordSearch.sampleQueries.searchForPattern': string
   keywordSearchPlaceholder: string
   killed: string
+  'labels.addNewValue': string
+  'labels.addValue': string
+  'labels.addaValue': string
+  'labels.allowDynamic': string
+  'labels.anyValue': string
+  'labels.anyValueOption': string
+  'labels.applied': string
+  'labels.appliedLabel': string
+  'labels.canbeAddedByUsers': string
+  'labels.createLabel': string
+  'labels.createdIn': string
+  'labels.deleteLabel': string
+  'labels.deleteLabelConfirm': string
+  'labels.deletedLabel': string
+  'labels.descriptionOptional': string
+  'labels.failedToDeleteLabel': string
+  'labels.failedtoFetchLabels': string
+  'labels.failedtoFetchValues': string
+  'labels.filterByLabels': string
+  'labels.findALabel': string
+  'labels.findOrAdd': string
+  'labels.findaValue': string
+  'labels.intentText': string
+  'labels.label': string
+  'labels.labelCreated': string
+  'labels.labelCreationFailed': string
+  'labels.labelName': string
+  'labels.labelNameReq': string
+  'labels.labelNotFound': string
+  'labels.labelPreview': string
+  'labels.labelTo': string
+  'labels.labelUpdateFailed': string
+  'labels.labelUpdated': string
+  'labels.labelValue': string
+  'labels.labelValueReq': string
+  'labels.labelValuesOptional': string
+  'labels.labels': string
+  'labels.labelsApplied': string
+  'labels.newLabel': string
+  'labels.noLabels': string
+  'labels.noLabelsFound': string
+  'labels.noNewLine': string
+  'labels.noRepoLabelsFound': string
+  'labels.noResults': string
+  'labels.noScopeLabelsFound': string
+  'labels.placeholderDescription': string
+  'labels.prCount': string
+  'labels.provideLabelName': string
+  'labels.provideLabelValue': string
+  'labels.removeLabel': string
+  'labels.removed': string
+  'labels.removedLabel': string
+  'labels.scopeMessage': string
+  'labels.showLabelsScope': string
+  'labels.stringMax': string
+  'labels.updateLabel': string
+  'labels.updated': string
   language: string
+  lastCommit: string
+  lastCommitDate: string
+  lastTriggeredAt: string
+  lastUpdated: string
   leaveAComment: string
+  lfsInfo: string
   license: string
   lineBreaks: string
   loading: string
@@ -607,7 +562,10 @@ export interface StringsMap {
   makeRequired: string
   manageApiToken: string
   manageCredText: string
+  manageRepositories: string
+  manageRepository: string
   markAsDraft: string
+  masked: string
   matchPassword: string
   mergeBranchTitle: string
   mergeCheckInProgress: string
@@ -657,29 +615,38 @@ export interface StringsMap {
   noCommits: string
   noCommitsMessage: string
   noCommitsPR: string
+  noExecutionsFound: string
+  noExecutionsFoundForWebhook: string
   noExpiration: string
   noExpirationDate: string
+  noFilterResultMessage: string
   noOptionalReviewers: string
   noRequiredReviewers: string
   noResultMessage: string
   noResultTitle: string
   noReviewers: string
+  noUsersFound: string
   noWebHooks: string
   none: string
   noneYet: string
+  notRetriggerableMessage: string
   off: string
   ok: string
   on: string
   onDate: string
+  onLatestChanges: string
   oneMustBeSelected: string
   open: string
   optional: string
   optionalExtendedDescription: string
   overview: string
   owner: string
+  owners: string
+  ownersHeading: string
   pageLoading: string
   pageNotFound: string
   'pageTitle.accessControl': string
+  'pageTitle.artifactRegistries': string
   'pageTitle.branches': string
   'pageTitle.changePassword': string
   'pageTitle.compare': string
@@ -705,6 +672,7 @@ export interface StringsMap {
   password: string
   passwordApi: string
   passwordRequired: string
+  patterns: string
   payloadUrl: string
   payloadUrlLabel: string
   pending: string
@@ -776,15 +744,19 @@ export interface StringsMap {
   'pr.branchHasNoConflicts': string
   'pr.cantBeMerged': string
   'pr.cantMerge': string
+  'pr.changesRequested': string
   'pr.checkingToMerge': string
   'pr.checks': string
   'pr.checksFailure': string
+  'pr.closedPrBranchDelete': string
   'pr.collapseFullFile': string
   'pr.commentLineNumbers': string
   'pr.commitSuggestion': string
   'pr.commitSuggestions': string
   'pr.copyLinkToComment': string
   'pr.createDraftPR': string
+  'pr.createPRBannerInfo': string
+  'pr.createRevertPR': string
   'pr.descHasTooLongLine': string
   'pr.descIsRequired': string
   'pr.descIsTooLong': string
@@ -812,6 +784,8 @@ export interface StringsMap {
   'pr.mergeOptions.createAMergeCommit': string
   'pr.mergeOptions.createMergeCommit': string
   'pr.mergeOptions.createMergeCommitDesc': string
+  'pr.mergeOptions.fastForwardMerge': string
+  'pr.mergeOptions.fastForwardMergeDesc': string
   'pr.mergeOptions.rebaseAndMerge': string
   'pr.mergeOptions.rebaseAndMergeDesc': string
   'pr.mergeOptions.squashAndMerge': string
@@ -820,24 +794,34 @@ export interface StringsMap {
   'pr.metaLine': string
   'pr.modalTitle': string
   'pr.moreComments': string
+  'pr.myPRs': string
   'pr.openForReview': string
+  'pr.openForReviewSuccess': string
   'pr.outdated': string
   'pr.prBranchDeleteInfo': string
+  'pr.prBranchForcePushInfo': string
   'pr.prBranchPushInfo': string
+  'pr.prBranchRestoreInfo': string
   'pr.prCanBeMerged': string
   'pr.prClosed': string
   'pr.prMerged': string
   'pr.prMergedBannerInfo': string
+  'pr.prMergedBannerInfoWithBypassingRules': string
   'pr.prMergedInfo': string
-  'pr.prRebasedInfo': string
+  'pr.prMergedInfoWithBypassingRules': string
   'pr.prReviewSubmit': string
   'pr.prStateChanged': string
   'pr.prStateChangedDraft': string
   'pr.readyForReview': string
+  'pr.rebaseMergePossible': string
   'pr.removeSuggestion': string
   'pr.requestSubmitted': string
   'pr.requestedChanges': string
+  'pr.revert': string
+  'pr.revertBranchSuccess': string
+  'pr.revertOpFailed': string
   'pr.reviewChanges': string
+  'pr.reviewRequested': string
   'pr.reviewSubmitted': string
   'pr.showDiff': string
   'pr.showLink': string
@@ -847,15 +831,20 @@ export interface StringsMap {
   'pr.statusLine': string
   'pr.suggestedChange': string
   'pr.suggestionApplied': string
+  'pr.targetBranchUpdated': string
+  'pr.titleAndBranchUpdated': string
   'pr.titleChanged': string
   'pr.titleChangedTable': string
   'pr.titleIsRequired': string
   'pr.titlePlaceHolder': string
+  'pr.titleUpdated': string
   'pr.toggleComments': string
   'pr.unified': string
+  'pr.updatedLine': string
   'pr.useCmdLineToResolveConflicts': string
   'prChecks.error': string
   'prChecks.failure': string
+  'prChecks.failureIgnored': string
   'prChecks.killed': string
   'prChecks.notFound': string
   'prChecks.pending': string
@@ -866,6 +855,19 @@ export interface StringsMap {
   prGenSummary: string
   prHasNoConflicts: string
   prMustSelectSourceAndTargetBranches: string
+  'prReview.assigned': string
+  'prReview.codeowners': string
+  'prReview.defaultReviewers': string
+  'prReview.filterByReviews': string
+  'prReview.labelsAssigned': string
+  'prReview.removed': string
+  'prReview.requested': string
+  'prReview.selfAssigned': string
+  'prReview.selfRemoved': string
+  'prReview.targetBranchChange': string
+  'prReview.ugCodeowners': string
+  'prReview.ugDefaultReviewers': string
+  'prReview.ugRemoved': string
   prSourceAndTargetMustBeDifferent: string
   'prState.draftDesc': string
   'prState.draftHeading': string
@@ -876,17 +878,124 @@ export interface StringsMap {
   privacyPolicy: string
   private: string
   profile: string
+  'protectionRules.addCodeownersToReviewText': string
+  'protectionRules.addCodeownersToReviewTitle': string
+  'protectionRules.allRepoOwners': string
+  'protectionRules.atLeastMinReviewer': string
+  'protectionRules.atLeastMinReviewers': string
+  'protectionRules.autoDeleteText': string
+  'protectionRules.autoDeleteTitle': string
+  'protectionRules.blockCreation': string
+  'protectionRules.blockCreationText': string
+  'protectionRules.blockDeletion': string
+  'protectionRules.blockDeletionText': string
+  'protectionRules.blockForcePush': string
+  'protectionRules.blockForcePushText': string
+  'protectionRules.blockUpdate': string
+  'protectionRules.blockUpdateText': string
+  'protectionRules.bypassList': string
+  'protectionRules.commitDirectlyAlertBtn': string
+  'protectionRules.commitDirectlyAlertText': string
+  'protectionRules.commitDirectlyBlockText': string
+  'protectionRules.commitNewBranchAlertBtn': string
+  'protectionRules.commitNewBranchAlertText': string
+  'protectionRules.commitNewBranchBlockText': string
+  'protectionRules.create': string
+  'protectionRules.createRefAlertBtn': string
+  'protectionRules.createRefAlertText': string
+  'protectionRules.createRefBlockText': string
+  'protectionRules.createRule': string
+  'protectionRules.defaultBranch': string
+  'protectionRules.defaultReviewersList': string
+  'protectionRules.deleteProtectionRule': string
+  'protectionRules.deleteRefAlertBtn': string
+  'protectionRules.deleteRefAlertText': string
+  'protectionRules.deleteRefBlockText': string
+  'protectionRules.deleteRule': string
+  'protectionRules.deleteText': string
+  'protectionRules.descPlaceholder': string
+  'protectionRules.disableTheRule': string
+  'protectionRules.edit': string
+  'protectionRules.editRule': string
+  'protectionRules.enableDefaultReviewersText': string
+  'protectionRules.enableDefaultReviewersTitle': string
+  'protectionRules.enableTheRule': string
+  'protectionRules.fileSizePlaceholder': string
+  'protectionRules.fileSizeRequired': string
+  'protectionRules.limitFileSize': string
+  'protectionRules.limitFileSizeText': string
+  'protectionRules.limitMergeStrategies': string
+  'protectionRules.limitMergeStrategiesText': string
+  'protectionRules.mergeCheckboxAlert': string
+  'protectionRules.mergePrAlertText': string
+  'protectionRules.mergePrAlertTitle': string
+  'protectionRules.minNumber': string
+  'protectionRules.minNumberPlaceholder': string
+  'protectionRules.namePlaceholder': string
+  'protectionRules.newRule': string
+  'protectionRules.numberOfRulesApplied': string
+  'protectionRules.prFailedText': string
+  'protectionRules.principalCommitterMatch': string
+  'protectionRules.principalCommitterMatchText': string
+  'protectionRules.protectionSelectAll': string
+  'protectionRules.repoSelectionHint': string
+  'protectionRules.reqCommentResolutionText': string
+  'protectionRules.reqCommentResolutionTitle': string
+  'protectionRules.reqNewChangesText': string
+  'protectionRules.reqNewChangesTitle': string
+  'protectionRules.reqResOfChanges': string
+  'protectionRules.reqResOfChangesText': string
+  'protectionRules.reqReviewFromCodeOwnerText': string
+  'protectionRules.reqReviewFromCodeOwnerTitle': string
+  'protectionRules.reqStatusChecksText': string
+  'protectionRules.reqStatusChecksTitle': string
+  'protectionRules.requireMinDefaultReviewersContent': string
+  'protectionRules.requireMinDefaultReviewersTitle': string
+  'protectionRules.requireMinReviewersContent': string
+  'protectionRules.requireMinReviewersTitle': string
+  'protectionRules.requirePr': string
+  'protectionRules.requirePrText': string
+  'protectionRules.ruleCreated': string
+  'protectionRules.ruleDeleted': string
+  'protectionRules.ruleEmpty': string
+  'protectionRules.ruleUpdated': string
+  'protectionRules.saveRule': string
+  'protectionRules.secretScanningEnabled': string
+  'protectionRules.secretScanningEnabledText': string
+  'protectionRules.showRulesScope': string
+  'protectionRules.statusCheck': string
+  'protectionRules.targetPatternHint': string
+  'protectionRules.targetPatterns': string
+  'protectionRules.targetPlaceholder': string
+  'protectionRules.targetRepositories': string
+  'protectionRules.title': string
   public: string
   pullMustBeMadeFromBranches: string
   pullRequestEmpty: string
+  pullRequestNotFoundforFilter: string
   pullRequestalreadyExists: string
   pullRequests: string
+  push: string
+  pushBlockedMessage: string
   quote: string
+  reTriggeredExecution: string
   reactivate: string
   readMe: string
   reader: string
+  rebase: string
+  rebaseBranch: string
   rebaseMerge: string
+  'rebaseSource.message': string
+  'rebaseSource.title': string
+  recursiveSearchLabel: string
+  recursiveSearchTooltip: string
   refresh: string
+  'regex.disable': string
+  'regex.disabled': string
+  'regex.enable': string
+  'regex.enabled': string
+  'regex.string': string
+  'regex.tooltip': string
   reject: string
   rejected: string
   remove: string
@@ -896,6 +1005,16 @@ export interface StringsMap {
   replyAndReactivate: string
   replyAndResolve: string
   replyHere: string
+  'repoArchive.archive': string
+  'repoArchive.archiveInfo': string
+  'repoArchive.archiveWarning': string
+  'repoArchive.confirmButton': string
+  'repoArchive.infoText': string
+  'repoArchive.titleArchive': string
+  'repoArchive.titleUnarchive': string
+  'repoArchive.unarchive': string
+  'repoArchive.unarchiveInfo': string
+  'repoArchive.unarchiveWarning': string
   repoCloneHeader: string
   repoCloneLabel: string
   'repoDelete.deleteConfirm1': string
@@ -912,38 +1031,52 @@ export interface StringsMap {
   repoUpdate: string
   repoVisibility: string
   'repos.activities': string
+  'repos.confirmSelection': string
+  'repos.createNewRepoMessage': string
   'repos.data': string
   'repos.enterBranchName': string
   'repos.lastChange': string
+  'repos.lastPush': string
   'repos.name': string
   'repos.noDataMessage': string
-  'repos.updated': string
+  'repos.specificRepositories': string
   repositories: string
   repositoryName: string
   reqChanges: string
   requestChanges: string
+  requestHeaders: string
+  requestPayload: string
   required: string
   resetZoom: string
   resolve: string
   resolveComments: string
   resolved: string
   resolvedComments: string
+  restoreBranch: string
   results: string
+  retriggerExecution: string
   reviewProjectSettings: string
-  reviewerNotFound: string
   reviewers: string
   role: string
+  ruleBlockedMessage: string
   run: string
   running: string
   samplePayloadUrl: string
   save: string
   scanAlerts: string
+  scope: string
   scrollToTop: string
   search: string
   searchBranches: string
   searchExamples: string
   searchHeader: string
   searchResult: string
+  'searchScope.accOnly': string
+  'searchScope.allScopes': string
+  'searchScope.base': string
+  'searchScope.orgAndProj': string
+  'searchScope.orgOnly': string
+  'searchScope.title': string
   secret: string
   'secrets.create': string
   'secrets.createSecret': string
@@ -971,6 +1104,8 @@ export interface StringsMap {
   'securitySettings.scanningSecret': string
   'securitySettings.scanningSecretDesc': string
   'securitySettings.updateSuccess': string
+  'securitySettings.verifyCommitterIdentity': string
+  'securitySettings.verifyCommitterIdentityDesc': string
   'securitySettings.vulnerabilityScanning': string
   'securitySettings.vulnerabilityScanningDesc': string
   seeNMoreMatches: string
@@ -978,13 +1113,19 @@ export interface StringsMap {
   selectLanguagePlaceholder: string
   selectMergeStrat: string
   selectRange: string
+  selectRepositories: string
   selectRepositoryPlaceholder: string
+  selectReviewers: string
   selectSpace: string
   selectSpaceText: string
   selectStatuses: string
   selectToViewMore: string
   selectUsers: string
+  selectUsersAndServiceAcc: string
+  selectUsersAndUserGroups: string
+  selectUsersUserGroupsAndServiceAcc: string
   'semanticSearch.sampleQueries': string
+  serverResponse: string
   setAsAdmin: string
   setting: string
   settings: string
@@ -1060,6 +1201,7 @@ export interface StringsMap {
   token: string
   tooltipRepoEdit: string
   top: string
+  triggeredEvent: string
   'triggers.actions': string
   'triggers.createSuccess': string
   'triggers.createTrigger': string
@@ -1075,6 +1217,7 @@ export interface StringsMap {
   'triggers.updateSuccess': string
   turnOnSemanticSearch: string
   unableToGetDivergence: string
+  unarchive: string
   unorderedList: string
   unrsolvedComment: string
   'unsavedChanges.leave': string
@@ -1085,7 +1228,10 @@ export interface StringsMap {
   updateLabel: string
   updateUser: string
   updateWebhook: string
+  updateWithRebase: string
   updated: string
+  updatedBranchMessageRebase: string
+  updatedDate: string
   upload: string
   uploadAFileError: string
   user: string
@@ -1105,11 +1251,14 @@ export interface StringsMap {
   userUpdateSuccess: string
   users: string
   'validation.confirmPasswordRequired': string
+  'validation.connectorRequired': string
   'validation.emailInvalid': string
   'validation.emailRequired': string
   'validation.expirationDateRequired': string
   'validation.gitBranchNameInvalid': string
   'validation.gitTagNameInvalid': string
+  'validation.imagePathIsRequired': string
+  'validation.invalidImage': string
   'validation.key': string
   'validation.nameInvalid': string
   'validation.nameIsRequired': string
@@ -1117,6 +1266,7 @@ export interface StringsMap {
   'validation.nameTooLong': string
   'validation.nameTooShort': string
   'validation.newPasswordRequired': string
+  'validation.pathIsRequired': string
   'validation.repoNamePatternIsNotValid': string
   'validation.spaceNamePatternIsNotValid': string
   'validation.uidInvalid': string
@@ -1150,12 +1300,19 @@ export interface StringsMap {
   webhookPRBranchUpdated: string
   webhookPRClosed: string
   webhookPRCommentCreated: string
+  webhookPRCommentStatusUpdated: string
+  webhookPRCommentUpdated: string
   webhookPRCreated: string
+  webhookPRLabelAssigned: string
   webhookPRMerged: string
   webhookPRReopened: string
+  webhookPRReviewSubmitted: string
+  webhookPRUpdated: string
+  webhookPage: string
   webhookSelectAllEvents: string
   webhookSelectIndividualEvents: string
   webhookSelectPushEvents: string
+  webhookTabs: string
   webhookTagCreated: string
   webhookTagDeleted: string
   webhookTagUpdated: string
@@ -1168,4 +1325,514 @@ export interface StringsMap {
   yours: string
   zoomIn: string
   zoomOut: string
+  'cde.Aws.VpcCidrBlock': string
+  'cde.Aws.availabilityZone': string
+  'cde.Aws.configureNewRegion': string
+  'cde.Aws.configureRegionsAndZones': string
+  'cde.Aws.domainExample': string
+  'cde.Aws.gatewayAmi': string
+  'cde.Aws.gatewayAmiId': string
+  'cde.Aws.gatewayAmiImage': string
+  'cde.Aws.gatewayInstanceType': string
+  'cde.Aws.instanceName': string
+  'cde.Aws.instanceType': string
+  'cde.Aws.invalidAmiIdFormat': string
+  'cde.Aws.machineAmiId': string
+  'cde.Aws.machineAmiIdPlaceholder': string
+  'cde.Aws.machineAmiIdRequired': string
+  'cde.Aws.numberOfAvailabilityZone': string
+  'cde.Aws.numberOfRegions': string
+  'cde.Aws.privateSubnet': string
+  'cde.Aws.privateSubnetCidr': string
+  'cde.Aws.publicSubnet': string
+  'cde.Aws.publicSubnetCidr': string
+  'cde.Aws.regionConfigNote': string
+  'cde.Aws.runnerAmiId': string
+  'cde.Aws.runnerAmiIdPlaceholder': string
+  'cde.Aws.runnerAmiIdRequired': string
+  'cde.Aws.selectAwsRegion': string
+  'cde.Aws.singleRegionRestriction': string
+  'cde.Aws.title': string
+  'cde.account': string
+  'cde.aiTasks.create.addContext': string
+  'cde.aiTasks.create.aiTaskCreateFailed': string
+  'cde.aiTasks.create.aiTaskCreateSuccess': string
+  'cde.aiTasks.create.claudeAI': string
+  'cde.aiTasks.create.createTask': string
+  'cde.aiTasks.create.createTaskNote': string
+  'cde.aiTasks.create.loadingGitspaces': string
+  'cde.aiTasks.create.noGitspacesFound': string
+  'cde.aiTasks.create.promptPlaceholder': string
+  'cde.aiTasks.create.runTask': string
+  'cde.aiTasks.create.selectAIAgent': string
+  'cde.aiTasks.create.selectActiveGitspace': string
+  'cde.aiTasks.create.selectContext': string
+  'cde.aiTasks.create.selectedGitspace': string
+  'cde.aiTasks.create.startWithActiveGitspace': string
+  'cde.aiTasks.create.welcome': string
+  'cde.aiTasks.details.aiUsageMetrics': string
+  'cde.aiTasks.details.claudeAgentLabel': string
+  'cde.aiTasks.details.duration': string
+  'cde.aiTasks.details.errorFallback': string
+  'cde.aiTasks.details.ideTooltip.gitspaceInactive': string
+  'cde.aiTasks.details.ideTooltip.taskError': string
+  'cde.aiTasks.details.ideTooltip.taskWaiting': string
+  'cde.aiTasks.details.inputTokens': string
+  'cde.aiTasks.details.llmModels': string
+  'cde.aiTasks.details.openIde': string
+  'cde.aiTasks.details.outputTokens': string
+  'cde.aiTasks.details.responseError': string
+  'cde.aiTasks.details.totalCost': string
+  'cde.aiTasks.details.waitingForAgent': string
+  'cde.aiTasks.errorCard.title': string
+  'cde.aiTasks.listing.aiAgent': string
+  'cde.aiTasks.listing.aiAgents': string
+  'cde.aiTasks.listing.contextDetails': string
+  'cde.aiTasks.listing.newTask': string
+  'cde.aiTasks.listing.noTasksFound': string
+  'cde.aiTasks.tasks': string
+  'cde.allRegionDisabled': string
+  'cde.atleastOneRegion': string
+  'cde.awsInfrastructure': string
+  'cde.awsInfrastructureName': string
+  'cde.branchPlaceholder': string
+  'cde.branchValidationMessage': string
+  'cde.changes': string
+  'cde.changesTooltip.description': string
+  'cde.changesTooltip.learnMore': string
+  'cde.cloudDeveloperExperience': string
+  'cde.configureAWSInfra': string
+  'cde.configureGCPInfra': string
+  'cde.configureGitspaceInfra': string
+  'cde.configureInfra.NumberOfInstance': string
+  'cde.configureInfra.applyYamlAndVerifyConnection': string
+  'cde.configureInfra.basicDetails': string
+  'cde.configureInfra.basicNoteText': string
+  'cde.configureInfra.cancel': string
+  'cde.configureInfra.configure': string
+  'cde.configureInfra.configureLocationNote': string
+  'cde.configureInfra.configureLocations': string
+  'cde.configureInfra.configureZones': string
+  'cde.configureInfra.defaultImageNoteText': string
+  'cde.configureInfra.domain': string
+  'cde.configureInfra.downloadAndApply': string
+  'cde.configureInfra.downloadInfraYaml': string
+  'cde.configureInfra.gateway': string
+  'cde.configureInfra.gatewayDetails': string
+  'cde.configureInfra.gatewayImageName': string
+  'cde.configureInfra.gatewayImageNamePlaceholder': string
+  'cde.configureInfra.gatewayImageNameRequired': string
+  'cde.configureInfra.gatewayMachineType': string
+  'cde.configureInfra.gatewayNoteText': string
+  'cde.configureInfra.id': string
+  'cde.configureInfra.infraName': string
+  'cde.configureInfra.instanceNoteText': string
+  'cde.configureInfra.learnMore': string
+  'cde.configureInfra.learnMoreAboutHybrid': string
+  'cde.configureInfra.machineImageName': string
+  'cde.configureInfra.machineType': string
+  'cde.configureInfra.name': string
+  'cde.configureInfra.newZone': string
+  'cde.configureInfra.numberOfInstance': string
+  'cde.configureInfra.numberOfLocations': string
+  'cde.configureInfra.project': string
+  'cde.configureInfra.provideInfraDetails': string
+  'cde.configureInfra.subdomain': string
+  'cde.configureInfra.updateTime': string
+  'cde.configureInfra.vmRunnerDetails': string
+  'cde.configureInfra.yamlLoading': string
+  'cde.configureInfra.yamlNotAvailable': string
+  'cde.copied': string
+  'cde.cpu': string
+  'cde.create.branchPlaceholder': string
+  'cde.create.githubOauthhelpertext2': string
+  'cde.create.githubOauthhelpertext3': string
+  'cde.create.githubOauthhelpertext5': string
+  'cde.create.gitnessRepositories': string
+  'cde.create.gitprovider': string
+  'cde.create.gitspaceCreateFailed': string
+  'cde.create.gitspaceCreateSuccess': string
+  'cde.create.gitspaceNameHelpertext1': string
+  'cde.create.gitspaceNameHelpertext2': string
+  'cde.create.gitspaceNameLabel': string
+  'cde.create.gitspaceNamePlaceholder': string
+  'cde.create.gitspaceSSHAddNote': string
+  'cde.create.gitspaceSSHhelpertext1': string
+  'cde.create.gitspaceSSHhelpertext2': string
+  'cde.create.ideEmpty': string
+  'cde.create.ideNote': string
+  'cde.create.importWarning': string
+  'cde.create.infraProviderFailed': string
+  'cde.create.infraProviderSuccess': string
+  'cde.create.infraProviderType': string
+  'cde.create.infraProviderTypeText': string
+  'cde.create.machineCreateFailed': string
+  'cde.create.machineCreateSuccess': string
+  'cde.create.machineType': string
+  'cde.create.machineTypeNote': string
+  'cde.create.region': string
+  'cde.create.regionText': string
+  'cde.create.repoNotFound': string
+  'cde.create.repositoryDetails': string
+  'cde.create.scmEmpty': string
+  'cde.create.searchBranchPlaceholder': string
+  'cde.create.searchRepositoryPlaceholder': string
+  'cde.create.selectBranchPlaceholder': string
+  'cde.create.selectGitProvider': string
+  'cde.create.selectIde': string
+  'cde.create.sshKey': string
+  'cde.create.subtext': string
+  'cde.create.thirdPartyGitRepositories': string
+  'cde.create.unsaved.message': string
+  'cde.create.unsaved.title': string
+  'cde.createGitspace': string
+  'cde.createImport': string
+  'cde.createRepo': string
+  'cde.created': string
+  'cde.delegate.DelegateSelector': string
+  'cde.delegate.delegateSelectorTags': string
+  'cde.delegate.noDelegateSelectors': string
+  'cde.deleteGitspace': string
+  'cde.deleteGitspaceText': string
+  'cde.deleteGitspaceTitle': string
+  'cde.deleteInfraSuccess': string
+  'cde.deleteMachineSuccess': string
+  'cde.deleteSuccess': string
+  'cde.details.actions': string
+  'cde.details.connectToWindsurf': string
+  'cde.details.containerLogs': string
+  'cde.details.containerLogsSubText': string
+  'cde.details.fetchingDetails': string
+  'cde.details.fetchingGitspace': string
+  'cde.details.fetchingLogs': string
+  'cde.details.gitspaceActivity': string
+  'cde.details.gitspaceRunning': string
+  'cde.details.gitspaceStopped': string
+  'cde.details.goToDashboard': string
+  'cde.details.logsFailed': string
+  'cde.details.noData': string
+  'cde.details.noLogsFound': string
+  'cde.details.openBrowser': string
+  'cde.details.openCursor': string
+  'cde.details.openEditor': string
+  'cde.details.openJetBrain': string
+  'cde.details.provisioningGitspace': string
+  'cde.details.startGitspace': string
+  'cde.details.stopGitspace': string
+  'cde.details.stopProvising': string
+  'cde.details.wrongIdentifier': string
+  'cde.disk': string
+  'cde.downloadAndApplySection.applyYamlText': string
+  'cde.downloadAndApplySection.back': string
+  'cde.downloadAndApplySection.done': string
+  'cde.downloadAndApplySection.downloadGeneratedYaml': string
+  'cde.downloadAndApplySection.downloadYaml': string
+  'cde.downloadAndApplySection.title': string
+  'cde.edit': string
+  'cde.editGitspace': string
+  'cde.errorCard.contactUs': string
+  'cde.errorCard.learnMore': string
+  'cde.errorCard.retryGitspace': string
+  'cde.errorCard.title': string
+  'cde.errorCard.unabletoResolve': string
+  'cde.errorCard.viewLog': string
+  'cde.eventTimeline': string
+  'cde.gcpInfrastructure': string
+  'cde.gcpInfrastructureName': string
+  'cde.getStarted': string
+  'cde.gitspaceDetail': string
+  'cde.gitspaceInfra': string
+  'cde.gitspaceInfraHome.addMachineNote': string
+  'cde.gitspaceInfraHome.addMachineType': string
+  'cde.gitspaceInfraHome.addnewRegion': string
+  'cde.gitspaceInfraHome.architecture': string
+  'cde.gitspaceInfraHome.architectureRequired': string
+  'cde.gitspaceInfraHome.bootDisk': string
+  'cde.gitspaceInfraHome.bootDiskSize': string
+  'cde.gitspaceInfraHome.bootDiskType': string
+  'cde.gitspaceInfraHome.bootSize': string
+  'cde.gitspaceInfraHome.bootSizeColumn': string
+  'cde.gitspaceInfraHome.bootSizeMessage': string
+  'cde.gitspaceInfraHome.bootType': string
+  'cde.gitspaceInfraHome.bootTypeMessage': string
+  'cde.gitspaceInfraHome.configureAWSButton': string
+  'cde.gitspaceInfraHome.configureGCPButton': string
+  'cde.gitspaceInfraHome.configureVMRunnerImage': string
+  'cde.gitspaceInfraHome.configureVMRunnerImageNote': string
+  'cde.gitspaceInfraHome.cpu': string
+  'cde.gitspaceInfraHome.cpuMessage': string
+  'cde.gitspaceInfraHome.create': string
+  'cde.gitspaceInfraHome.createNewMachine': string
+  'cde.gitspaceInfraHome.dangerZone': string
+  'cde.gitspaceInfraHome.defaultSubnet': string
+  'cde.gitspaceInfraHome.deleteInfraText': string
+  'cde.gitspaceInfraHome.deleteInfraTitle': string
+  'cde.gitspaceInfraHome.deleteMachineTitle': string
+  'cde.gitspaceInfraHome.deleteThisInfra': string
+  'cde.gitspaceInfraHome.deleteWarning': string
+  'cde.gitspaceInfraHome.description': string
+  'cde.gitspaceInfraHome.diskSize': string
+  'cde.gitspaceInfraHome.diskSizeMessage': string
+  'cde.gitspaceInfraHome.diskType': string
+  'cde.gitspaceInfraHome.diskTypeMessage': string
+  'cde.gitspaceInfraHome.dnsManagedZone': string
+  'cde.gitspaceInfraHome.domainMessage': string
+  'cde.gitspaceInfraHome.envoyHealth': string
+  'cde.gitspaceInfraHome.gatewayGroupHealth': string
+  'cde.gitspaceInfraHome.gatewayGroupName': string
+  'cde.gitspaceInfraHome.gatewayInstanceName': string
+  'cde.gitspaceInfraHome.gatewayversionnumber': string
+  'cde.gitspaceInfraHome.gcpSupportText': string
+  'cde.gitspaceInfraHome.healthy': string
+  'cde.gitspaceInfraHome.infraDetails': string
+  'cde.gitspaceInfraHome.instanceMessage': string
+  'cde.gitspaceInfraHome.instanceTypeMessage': string
+  'cde.gitspaceInfraHome.invalidImageNameFormat': string
+  'cde.gitspaceInfraHome.lastHeartbeat': string
+  'cde.gitspaceInfraHome.learnMore': string
+  'cde.gitspaceInfraHome.locationAndMachine': string
+  'cde.gitspaceInfraHome.locationDetails': string
+  'cde.gitspaceInfraHome.locationName': string
+  'cde.gitspaceInfraHome.machine': string
+  'cde.gitspaceInfraHome.machineImageName': string
+  'cde.gitspaceInfraHome.machineImageNamePlaceholder': string
+  'cde.gitspaceInfraHome.machineImageNameRequired': string
+  'cde.gitspaceInfraHome.machineName': string
+  'cde.gitspaceInfraHome.machineType': string
+  'cde.gitspaceInfraHome.machineTypeMessage': string
+  'cde.gitspaceInfraHome.machines': string
+  'cde.gitspaceInfraHome.maxMessage': string
+  'cde.gitspaceInfraHome.memoryInGb': string
+  'cde.gitspaceInfraHome.memoryMessage': string
+  'cde.gitspaceInfraHome.minMessage': string
+  'cde.gitspaceInfraHome.minNumber': string
+  'cde.gitspaceInfraHome.nameMessage': string
+  'cde.gitspaceInfraHome.newMachine': string
+  'cde.gitspaceInfraHome.newRegion': string
+  'cde.gitspaceInfraHome.noMachineAvailable': string
+  'cde.gitspaceInfraHome.noRegionConfigured': string
+  'cde.gitspaceInfraHome.noRegionConfiguredText': string
+  'cde.gitspaceInfraHome.noZonesAvailable': string
+  'cde.gitspaceInfraHome.operatingSystem': string
+  'cde.gitspaceInfraHome.osRequired': string
+  'cde.gitspaceInfraHome.persistentDisk': string
+  'cde.gitspaceInfraHome.proxySubnet': string
+  'cde.gitspaceInfraHome.region': string
+  'cde.gitspaceInfraHome.regionsAndMachines': string
+  'cde.gitspaceInfraHome.runnerVMRegion': string
+  'cde.gitspaceInfraHome.runnerVMZone': string
+  'cde.gitspaceInfraHome.status': string
+  'cde.gitspaceInfraHome.troubleshoot': string
+  'cde.gitspaceInfraHome.unhealthy': string
+  'cde.gitspaceInfraHome.unknown': string
+  'cde.gitspaceInfraHome.waitingForConnection': string
+  'cde.gitspaceInfraHome.waitingMessage': string
+  'cde.gitspaceInfraHome.zone': string
+  'cde.gitspaceInfraHome.zoneDetails': string
+  'cde.gitspaceInfraHome.zoneMessage': string
+  'cde.gitspaceNameFormatValidation': string
+  'cde.gitspaceNameMaxLengthValidation': string
+  'cde.gitspaceNameValidation': string
+  'cde.gitspaceOwners.allGitspaces': string
+  'cde.gitspaceOwners.myGitspaces': string
+  'cde.gitspaceStatus.active': string
+  'cde.gitspaceStatus.error': string
+  'cde.gitspaceStatus.stopped': string
+  'cde.gitspaceUpdateSuccess': string
+  'cde.gitspaces': string
+  'cde.hasChange': string
+  'cde.homePage.getStartedNow': string
+  'cde.homePage.learnMoreAboutGitspaces': string
+  'cde.homePage.noSetupRequired': string
+  'cde.homePage.noteOne': string
+  'cde.homePage.noteTwo': string
+  'cde.homePage.start': string
+  'cde.hours': string
+  'cde.id': string
+  'cde.ide.browser': string
+  'cde.ide.byainative': string
+  'cde.ide.byjetbrain': string
+  'cde.ide.bymircosoft': string
+  'cde.ide.clion': string
+  'cde.ide.cursor': string
+  'cde.ide.desktop': string
+  'cde.ide.errorEmptyURL': string
+  'cde.ide.goland': string
+  'cde.ide.intellij': string
+  'cde.ide.openBrowser': string
+  'cde.ide.openVSCode': string
+  'cde.ide.phpstorm': string
+  'cde.ide.pycharm': string
+  'cde.ide.rider': string
+  'cde.ide.rubymine': string
+  'cde.ide.selectIDE': string
+  'cde.ide.title': string
+  'cde.ide.vsCode': string
+  'cde.ide.webstorm': string
+  'cde.ide.windsurf': string
+  'cde.importInto': string
+  'cde.infraProvider': string
+  'cde.introText1': string
+  'cde.introText2': string
+  'cde.introText3': string
+  'cde.lastActivated': string
+  'cde.lastStarted': string
+  'cde.lastStartedTooltip': string
+  'cde.lastUsed': string
+  'cde.lastUsedTooltip': string
+  'cde.listing.cleaning': string
+  'cde.listing.error': string
+  'cde.listing.infrastructureDetails': string
+  'cde.listing.offline': string
+  'cde.listing.online': string
+  'cde.listing.ownerAndCreated': string
+  'cde.listing.starting': string
+  'cde.listing.stopping': string
+  'cde.listing.uninitialized': string
+  'cde.logs': string
+  'cde.machine': string
+  'cde.machineValidationMessage': string
+  'cde.manageGitspaces': string
+  'cde.memory': string
+  'cde.minuteUsage': string
+  'cde.na': string
+  'cde.newGitspace': string
+  'cde.noChange': string
+  'cde.noData': string
+  'cde.noGitspaces': string
+  'cde.noRepo': string
+  'cde.or': string
+  'cde.owners': string
+  'cde.project': string
+  'cde.region': string
+  'cde.regionAndMachineSize': string
+  'cde.regionMachineType': string
+  'cde.regionSelectWarning': string
+  'cde.regionValidationMessage': string
+  'cde.remainingOfTotal': string
+  'cde.renewTooltip.contactUs': string
+  'cde.renewTooltip.haveQuestion': string
+  'cde.renewTooltip.line1': string
+  'cde.renewTooltip.line2': string
+  'cde.renewsEveryMonth': string
+  'cde.repoValidationMessage': string
+  'cde.repository.continueWith': string
+  'cde.repository.pasteRepo': string
+  'cde.repository.pasterRepoSubtext': string
+  'cde.repository.privateRepoWarning': string
+  'cde.repository.publicRepo': string
+  'cde.repository.repo': string
+  'cde.repository.repositoryURL': string
+  'cde.repository.selectRepository': string
+  'cde.repositoryAndBranch': string
+  'cde.reset': string
+  'cde.resetGitspace': string
+  'cde.resetGitspaceSuccess': string
+  'cde.resetGitspaceText': string
+  'cde.resetGitspaceTitle': string
+  'cde.retry': string
+  'cde.sessionDuration': string
+  'cde.settings.accessMethods': string
+  'cde.settings.availableCodeEditors': string
+  'cde.settings.availableGitProviders': string
+  'cde.settings.cloudRegionsAndMachineTypes': string
+  'cde.settings.codeEditorsDescription': string
+  'cde.settings.editors.aiNative': string
+  'cde.settings.editors.jetbrains': string
+  'cde.settings.editors.vsCode': string
+  'cde.settings.gitProviders': string
+  'cde.settings.gitProvidersDescription': string
+  'cde.settings.gitspaceImages': string
+  'cde.settings.images.allowedImagePathsAndRegistries': string
+  'cde.settings.images.allowedImagePathsDescription': string
+  'cde.settings.images.apply': string
+  'cde.settings.images.artifactRegistryConnector': string
+  'cde.settings.images.cancel': string
+  'cde.settings.images.defaultGitspaceImage': string
+  'cde.settings.images.defaultImageDescription': string
+  'cde.settings.images.defaultPathToPrivateGitspaceImagePath': string
+  'cde.settings.images.defaultPathToPublicGitspaceImagePath': string
+  'cde.settings.images.imagePath': string
+  'cde.settings.images.imagePathPlaceholder': string
+  'cde.settings.images.imageRegistryOrPath': string
+  'cde.settings.images.manageGitspaceImages': string
+  'cde.settings.images.manageGitspaceImagesDescription': string
+  'cde.settings.images.newImagePath': string
+  'cde.settings.images.private': string
+  'cde.settings.images.privateRegistryDescription': string
+  'cde.settings.images.provideDefaultImage': string
+  'cde.settings.images.provideDefaultImagePathOrRegistry': string
+  'cde.settings.images.public': string
+  'cde.settings.images.publicRegistryDescription': string
+  'cde.settings.images.selectConnector': string
+  'cde.settings.images.selectImageRegistryAccessType': string
+  'cde.settings.images.selectImageRegistryConnector': string
+  'cde.settings.other': string
+  'cde.settings.providers.bitbucket': string
+  'cde.settings.providers.github': string
+  'cde.settings.providers.gitlab': string
+  'cde.settings.providers.other': string
+  'cde.settings.regions.availableCloudRegions': string
+  'cde.settings.regions.availableCloudRegionsDesc': string
+  'cde.settings.regions.machinesSelected': string
+  'cde.settings.regions.region': string
+  'cde.settings.regions.regionsAvailable': string
+  'cde.settings.regions.selectAllMachineTypes': string
+  'cde.settings.regions.selectMachineTypes': string
+  'cde.settings.regions.selectRegionsDesc': string
+  'cde.settings.saveSuccess': string
+  'cde.settings.selectAllCodeEditors': string
+  'cde.settings.selectAllGitProviders': string
+  'cde.sortBy': string
+  'cde.sshDetails.congratsText': string
+  'cde.sshDetails.connectViaSSH': string
+  'cde.sshDetails.connectWithSSH': string
+  'cde.sshDetails.sshDisabledText': string
+  'cde.sshDetails.sshDisabledVSCodeWeb1': string
+  'cde.sshDetails.sshDisabledVSCodeWeb2': string
+  'cde.sshDetails.sshDisabledVSCodeWeb3': string
+  'cde.sshDetails.step1': string
+  'cde.sshDetails.step2': string
+  'cde.sshDetails.step3': string
+  'cde.sshSelect.180days': string
+  'cde.sshSelect.30days': string
+  'cde.sshSelect.90days': string
+  'cde.sshSelect.deleteToken': string
+  'cde.sshSelect.noexpiration': string
+  'cde.sshValidationMessage': string
+  'cde.startingGitspace': string
+  'cde.status': string
+  'cde.stopingGitspace': string
+  'cde.total': string
+  'cde.update.allMachineDisabled': string
+  'cde.update.editGitspace': string
+  'cde.update.errorAllIDE': string
+  'cde.update.errorAllResources': string
+  'cde.update.errorChosenIDE': string
+  'cde.update.gitspaceUpdateFailed': string
+  'cde.update.gitspaceUpdateNote': string
+  'cde.update.gitspaceUpdateSuccess': string
+  'cde.update.infraProviderFailed': string
+  'cde.update.infraProviderSuccess': string
+  'cde.update.updateGitspace': string
+  'cde.updateGitspace': string
+  'cde.usageDashboard.allProjects': string
+  'cde.usageDashboard.clearAll': string
+  'cde.usageDashboard.comingSoon': string
+  'cde.usageDashboard.gitspacesTab': string
+  'cde.usageDashboard.loadMore': string
+  'cde.usageDashboard.loading': string
+  'cde.usageDashboard.noResultsFound': string
+  'cde.usageDashboard.organizations': string
+  'cde.usageDashboard.projects': string
+  'cde.usageDashboard.searchOrgPlaceholder': string
+  'cde.usageDashboard.searchPlaceholder': string
+  'cde.usageDashboard.searchProjectPlaceholder': string
+  'cde.usageDashboard.sortBy': string
+  'cde.usageDashboard.title': string
+  'cde.usageDashboard.total': string
+  'cde.usageDashboard.tryDifferentKeywords': string
+  'cde.usageDashboard.usageTab': string
+  'cde.used': string
+  'cde.viewGitspace': string
 }

@@ -150,7 +150,7 @@ func (t *triggerer) Trigger(
 		}
 	}()
 
-	event := string(base.Action.GetTriggerEvent())
+	event := base.Action.GetTriggerEvent()
 
 	repo, err := t.repoStore.Find(ctx, pipeline.RepoID)
 	if err != nil {
@@ -178,7 +178,7 @@ func (t *triggerer) Trigger(
 		Parent:     base.Parent,
 		Status:     enum.CIStatusPending,
 		Event:      event,
-		Action:     string(base.Action),
+		Action:     base.Action,
 		Link:       base.Link,
 		// Timestamp:    base.Timestamp,
 		Title:        trunc(base.Title, 2000),
@@ -254,7 +254,7 @@ func (t *triggerer) Trigger(
 			switch {
 			case skipBranch(pipeline, base.Target):
 				log.Info().Str("pipeline", name).Msg("trigger: skipping pipeline, does not match branch")
-			case skipEvent(pipeline, event):
+			case skipEvent(pipeline, string(event)):
 				log.Info().Str("pipeline", name).Msg("trigger: skipping pipeline, does not match event")
 			case skipAction(pipeline, string(base.Action)):
 				log.Info().Str("pipeline", name).Msg("trigger: skipping pipeline, does not match action")
@@ -356,7 +356,7 @@ func (t *triggerer) Trigger(
 	// TODO: this can be made better. We are setting this later since otherwise any parsing failure
 	// would lead to an incremented pipeline sequence number.
 	execution.Number = pipeline.Seq
-	execution.Params = combine(execution.Params, Envs(repo, pipeline, t.urlProvider))
+	execution.Params = combine(execution.Params, Envs(ctx, repo, pipeline, t.urlProvider))
 
 	err = t.createExecutionWithStages(ctx, execution, stages)
 	if err != nil {
@@ -430,7 +430,7 @@ func parseV1Stages(
 		return nil, fmt.Errorf("could not check repo public access: %w", err)
 	}
 
-	inputParams := map[string]interface{}{}
+	inputParams := map[string]any{}
 	inputParams["repo"] = inputs.Repo(manager.ConvertToDroneRepo(repo, repoIsPublic))
 	inputParams["build"] = inputs.Build(manager.ConvertToDroneBuild(execution))
 
@@ -557,8 +557,8 @@ func (t *triggerer) createExecutionWithError(
 		Parent:       base.Parent,
 		Status:       enum.CIStatusError,
 		Error:        message,
-		Event:        string(base.Action.GetTriggerEvent()),
-		Action:       string(base.Action),
+		Event:        base.Action.GetTriggerEvent(),
+		Action:       base.Action,
 		Link:         base.Link,
 		Title:        base.Title,
 		Message:      base.Message,

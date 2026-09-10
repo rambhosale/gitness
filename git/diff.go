@@ -33,10 +33,11 @@ import (
 
 type DiffParams struct {
 	ReadParams
-	BaseRef      string
-	HeadRef      string
-	MergeBase    bool
-	IncludePatch bool
+	BaseRef          string
+	HeadRef          string
+	MergeBase        bool
+	IncludePatch     bool
+	IgnoreWhitespace bool
 }
 
 func (p DiffParams) Validate() error {
@@ -72,6 +73,7 @@ func (s *Service) rawDiff(ctx context.Context, w io.Writer, params *DiffParams, 
 		params.BaseRef,
 		params.HeadRef,
 		params.MergeBase,
+		params.IgnoreWhitespace,
 		params.AlternateObjectDirs,
 		files...,
 	)
@@ -83,7 +85,13 @@ func (s *Service) rawDiff(ctx context.Context, w io.Writer, params *DiffParams, 
 
 func (s *Service) CommitDiff(ctx context.Context, params *GetCommitParams, out io.Writer) error {
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-	err := s.git.CommitDiff(ctx, repoPath, params.Revision, out)
+	err := s.git.CommitDiff(
+		ctx,
+		repoPath,
+		params.Revision,
+		params.IgnoreWhitespace,
+		out,
+	)
 	if err != nil {
 		return err
 	}
@@ -107,6 +115,7 @@ func (s *Service) DiffShortStat(ctx context.Context, params *DiffParams) (DiffSh
 		params.BaseRef,
 		params.HeadRef,
 		params.MergeBase,
+		params.IgnoreWhitespace,
 	)
 	if err != nil {
 		return DiffShortStatOutput{}, err
@@ -121,6 +130,8 @@ func (s *Service) DiffShortStat(ctx context.Context, params *DiffParams) (DiffSh
 type DiffStatsOutput struct {
 	Commits      int
 	FilesChanged int
+	Additions    int
+	Deletions    int
 }
 
 func (s *Service) DiffStats(ctx context.Context, params *DiffParams) (DiffStatsOutput, error) {
@@ -130,6 +141,8 @@ func (s *Service) DiffStats(ctx context.Context, params *DiffParams) (DiffStatsO
 	var (
 		totalCommits int
 		totalFiles   int
+		additions    int
+		deletions    int
 	)
 
 	errGroup, groupCtx := errgroup.WithContext(ctx)
@@ -160,15 +173,18 @@ func (s *Service) DiffStats(ctx context.Context, params *DiffParams) (DiffStatsO
 	errGroup.Go(func() error {
 		// read short stat
 		stat, err := s.DiffShortStat(groupCtx, &DiffParams{
-			ReadParams: params.ReadParams,
-			BaseRef:    params.BaseRef,
-			HeadRef:    params.HeadRef,
-			MergeBase:  true, // must be true, because commitDivergences use tripple dot notation
+			ReadParams:       params.ReadParams,
+			BaseRef:          params.BaseRef,
+			HeadRef:          params.HeadRef,
+			MergeBase:        true, // must be true, because commitDivergences use triple dot notation
+			IgnoreWhitespace: params.IgnoreWhitespace,
 		})
 		if err != nil {
 			return err
 		}
 		totalFiles = stat.Files
+		additions = stat.Additions
+		deletions = stat.Deletions
 		return nil
 	})
 
@@ -180,6 +196,8 @@ func (s *Service) DiffStats(ctx context.Context, params *DiffParams) (DiffStatsO
 	return DiffStatsOutput{
 		Commits:      totalCommits,
 		FilesChanged: totalFiles,
+		Additions:    additions,
+		Deletions:    deletions,
 	}, nil
 }
 
@@ -214,7 +232,12 @@ func (s *Service) GetDiffHunkHeaders(
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
 
-	hunkHeaders, err := s.git.GetDiffHunkHeaders(ctx, repoPath, params.TargetCommitSHA, params.SourceCommitSHA)
+	hunkHeaders, err := s.git.GetDiffHunkHeaders(
+		ctx,
+		repoPath,
+		params.TargetCommitSHA,
+		params.SourceCommitSHA,
+	)
 	if err != nil {
 		return GetDiffHunkHeadersOutput{}, err
 	}
@@ -245,14 +268,15 @@ type DiffCutOutput struct {
 
 type DiffCutParams struct {
 	ReadParams
-	SourceCommitSHA string
-	TargetCommitSHA string
-	Path            string
-	LineStart       int
-	LineStartNew    bool
-	LineEnd         int
-	LineEndNew      bool
-	LineLimit       int
+	SourceCommitSHA  string
+	TargetCommitSHA  string
+	Path             string
+	LineStart        int
+	LineStartNew     bool
+	LineEnd          int
+	LineEndNew       bool
+	LineLimit        int
+	IgnoreWhitespace bool
 }
 
 // DiffCut extracts diff snippet from a git diff hunk.
@@ -264,16 +288,19 @@ func (s *Service) DiffCut(ctx context.Context, params *DiffCutParams) (DiffCutOu
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
 
-	mergeBaseSHA, _, err := s.git.GetMergeBase(ctx, repoPath, "", params.TargetCommitSHA, params.SourceCommitSHA)
+	mergeBaseSHA, _, err := s.git.GetMergeBase(ctx, repoPath, "",
+		params.TargetCommitSHA, params.SourceCommitSHA, false)
 	if err != nil {
 		return DiffCutOutput{}, fmt.Errorf("failed to find merge base: %w", err)
 	}
 
-	header, linesHunk, err := s.git.DiffCut(ctx,
+	header, linesHunk, err := s.git.DiffCut(
+		ctx,
 		repoPath,
 		params.TargetCommitSHA,
 		params.SourceCommitSHA,
 		params.Path,
+		params.IgnoreWhitespace,
 		parser.DiffCutParams{
 			LineStart:    params.LineStart,
 			LineStartNew: params.LineStartNew,
@@ -282,7 +309,8 @@ func (s *Service) DiffCut(ctx context.Context, params *DiffCutParams) (DiffCutOu
 			BeforeLines:  2,
 			AfterLines:   2,
 			LineLimit:    params.LineLimit,
-		})
+		},
+	)
 	if err != nil {
 		return DiffCutOutput{}, fmt.Errorf("DiffCut: failed to get diff hunk: %w", err)
 	}
@@ -344,9 +372,7 @@ func (s *Service) Diff(
 
 	pr, pw := io.Pipe()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer pw.Close()
 
 		if err := params.Validate(); err != nil {
@@ -359,11 +385,9 @@ func (s *Service) Diff(
 			cherr <- err
 			return
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer pr.Close()
 
 		parser := diff.Parser{
@@ -391,7 +415,7 @@ func (s *Service) Diff(
 			cherr <- err
 			return
 		}
-	}()
+	})
 
 	go func() {
 		wg.Wait()
@@ -417,6 +441,7 @@ func (s *Service) DiffFileNames(ctx context.Context, params *DiffParams) (DiffFi
 		params.BaseRef,
 		params.HeadRef,
 		params.MergeBase,
+		params.IgnoreWhitespace,
 	)
 	if err != nil {
 		return DiffFileNamesOutput{}, fmt.Errorf("failed to get diff file data between '%s' and '%s': %w",

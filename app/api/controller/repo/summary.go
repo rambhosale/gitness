@@ -30,9 +30,14 @@ func (c *Controller) Summary(
 	session *auth.Session,
 	repoRef string,
 ) (*types.RepositorySummary, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	repoCore, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
 	if err != nil {
 		return nil, fmt.Errorf("access check failed: %w", err)
+	}
+
+	repo, err := c.repoStore.Find(ctx, repoCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find repo by ID: %w", err)
 	}
 
 	summary, err := c.git.Summary(ctx, git.SummaryParams{ReadParams: git.CreateReadParams(repo)})

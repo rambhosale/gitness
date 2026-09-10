@@ -15,6 +15,7 @@
 package webhook
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -77,17 +78,50 @@ type PullReqSegment struct {
 // PullReqCommentSegment contains details for all pull req comment related payloads for webhooks.
 type PullReqCommentSegment struct {
 	CommentInfo CommentInfo `json:"comment"`
+	*CodeCommentInfo
+}
+
+type PullReqCommentStatusUpdatedSegment struct {
+	Status enum.PullReqCommentStatus `json:"status"`
+}
+
+// PullReqLabelSegment contains details for all pull req label related payloads for webhooks.
+type PullReqLabelSegment struct {
+	LabelInfo LabelInfo `json:"label"`
+}
+
+// PullReqUpdateSegment contains details what has been updated in the pull request.
+type PullReqUpdateSegment struct {
+	TitleChanged       bool   `json:"title_changed"`
+	TitleOld           string `json:"title_old"`
+	TitleNew           string `json:"title_new"`
+	DescriptionChanged bool   `json:"description_changed"`
+	DescriptionOld     string `json:"description_old"`
+	DescriptionNew     string `json:"description_new"`
+}
+
+type PullReqReviewSegment struct {
+	ReviewDecision enum.PullReqReviewDecision `json:"review_decision"`
+	ReviewerInfo   PrincipalInfo              `json:"reviewer"`
+}
+
+type PullReqTargetBrancheChangedSegment struct {
+	OldTargetBranch string `json:"old_target_branch"`
+	OldMergeBaseSHA string `json:"old_merge_base_sha"`
 }
 
 // RepositoryInfo describes the repo related info for a webhook payload.
 // NOTE: don't use types package as we want webhook payload to be independent from API calls.
 type RepositoryInfo struct {
-	ID            int64  `json:"id"`
-	Path          string `json:"path"`
-	Identifier    string `json:"identifier"`
-	DefaultBranch string `json:"default_branch"`
-	GitURL        string `json:"git_url"`
-	GitSSHURL     string `json:"git_ssh_url"`
+	ID            int64           `json:"id"`
+	Path          string          `json:"path"`
+	Identifier    string          `json:"identifier"`
+	Description   string          `json:"description"`
+	DefaultBranch string          `json:"default_branch"`
+	URL           string          `json:"url"`
+	GitURL        string          `json:"git_url"`
+	GitSSHURL     string          `json:"git_ssh_url"`
+	Tags          json.RawMessage `json:"tags,omitempty"`
 }
 
 // TODO [CODE-1363]: remove after identifier migration.
@@ -103,15 +137,22 @@ func (r RepositoryInfo) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// repositoryInfoFrom gets the RespositoryInfo from a types.Repository.
-func repositoryInfoFrom(repo *types.Repository, urlProvider url.Provider) RepositoryInfo {
+// repositoryInfoFrom gets the RepositoryInfo from a types.Repository.
+func repositoryInfoFrom(ctx context.Context, repo *types.Repository, urlProvider url.Provider) RepositoryInfo {
+	if repo == nil {
+		return RepositoryInfo{}
+	}
+
 	return RepositoryInfo{
 		ID:            repo.ID,
 		Path:          repo.Path,
 		Identifier:    repo.Identifier,
+		Description:   repo.Description,
 		DefaultBranch: repo.DefaultBranch,
-		GitURL:        urlProvider.GenerateGITCloneURL(repo.Path),
-		GitSSHURL:     urlProvider.GenerateGITCloneSSHURL(repo.Path),
+		URL:           urlProvider.GenerateUIRepoURL(ctx, repo.Path),
+		GitURL:        urlProvider.GenerateGITCloneURL(ctx, repo.Path),
+		GitSSHURL:     urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path),
+		Tags:          repo.Tags,
 	}
 }
 
@@ -123,17 +164,23 @@ type PullReqInfo struct {
 	IsDraft       bool              `json:"is_draft"`
 	Title         string            `json:"title"`
 	Description   string            `json:"description"`
-	SourceRepoID  int64             `json:"source_repo_id"`
+	SourceRepoID  *int64            `json:"source_repo_id"`
 	SourceBranch  string            `json:"source_branch"`
 	TargetRepoID  int64             `json:"target_repo_id"`
 	TargetBranch  string            `json:"target_branch"`
+	MergeBaseSHA  string            `json:"merge_base_sha"`
 	MergeStrategy *enum.MergeMethod `json:"merge_strategy,omitempty"`
 	Author        PrincipalInfo     `json:"author"`
 	PrURL         string            `json:"pr_url"`
 }
 
 // pullReqInfoFrom gets the PullReqInfo from a types.PullReq.
-func pullReqInfoFrom(pr *types.PullReq, repo *types.Repository, urlProvider url.Provider) PullReqInfo {
+func pullReqInfoFrom(
+	ctx context.Context,
+	pr *types.PullReq,
+	repo *types.Repository,
+	urlProvider url.Provider,
+) PullReqInfo {
 	return PullReqInfo{
 		Number:        pr.Number,
 		State:         pr.State,
@@ -144,9 +191,10 @@ func pullReqInfoFrom(pr *types.PullReq, repo *types.Repository, urlProvider url.
 		SourceBranch:  pr.SourceBranch,
 		TargetRepoID:  pr.TargetRepoID,
 		TargetBranch:  pr.TargetBranch,
+		MergeBaseSHA:  pr.MergeBaseSHA,
 		MergeStrategy: pr.MergeMethod,
 		Author:        principalInfoFrom(&pr.Author),
-		PrURL:         urlProvider.GenerateUIPRURL(repo.Path, pr.Number),
+		PrURL:         urlProvider.GenerateUIPRURL(ctx, repo.Path, pr.Number),
 	}
 }
 
@@ -182,6 +230,7 @@ type CommitInfo struct {
 	Message   string        `json:"message"`
 	Author    SignatureInfo `json:"author"`
 	Committer SignatureInfo `json:"committer"`
+	URL       string        `json:"url"`
 
 	Added    []string `json:"added"`
 	Removed  []string `json:"removed"`
@@ -189,23 +238,28 @@ type CommitInfo struct {
 }
 
 // commitInfoFrom gets the CommitInfo from a git.Commit.
-func commitInfoFrom(commit git.Commit) CommitInfo {
+func commitInfoFrom(
+	ctx context.Context,
+	repoPath string,
+	commit git.Commit,
+	urlProvider url.Provider,
+) CommitInfo {
 	added := []string{}
 	removed := []string{}
 	modified := []string{}
 
 	for _, stat := range commit.FileStats {
-		switch {
-		case stat.Status == gitenum.FileDiffStatusModified:
+		switch stat.Status {
+		case gitenum.FileDiffStatusModified:
 			modified = append(modified, stat.Path)
-		case stat.Status == gitenum.FileDiffStatusRenamed:
+		case gitenum.FileDiffStatusRenamed:
 			added = append(added, stat.Path)
 			removed = append(removed, stat.OldPath)
-		case stat.Status == gitenum.FileDiffStatusDeleted:
+		case gitenum.FileDiffStatusDeleted:
 			removed = append(removed, stat.Path)
-		case stat.Status == gitenum.FileDiffStatusAdded || stat.Status == gitenum.FileDiffStatusCopied:
+		case gitenum.FileDiffStatusAdded, gitenum.FileDiffStatusCopied:
 			added = append(added, stat.Path)
-		case stat.Status == gitenum.FileDiffStatusUndefined:
+		case gitenum.FileDiffStatusUndefined:
 		default:
 			log.Warn().Msgf("unknown status %q for path %q", stat.Status, stat.Path)
 		}
@@ -216,6 +270,7 @@ func commitInfoFrom(commit git.Commit) CommitInfo {
 		Message:   commit.Message,
 		Author:    signatureInfoFrom(commit.Author),
 		Committer: signatureInfoFrom(commit.Committer),
+		URL:       urlProvider.GenerateUIRefURL(ctx, repoPath, commit.SHA.String()),
 		Added:     added,
 		Removed:   removed,
 		Modified:  modified,
@@ -223,10 +278,15 @@ func commitInfoFrom(commit git.Commit) CommitInfo {
 }
 
 // commitsInfoFrom gets the ExtendedCommitInfo from a []git.Commit.
-func commitsInfoFrom(commits []git.Commit) []CommitInfo {
+func commitsInfoFrom(
+	ctx context.Context,
+	repoPath string,
+	commits []git.Commit,
+	urlProvider url.Provider,
+) []CommitInfo {
 	commitsInfo := make([]CommitInfo, len(commits))
 	for i, commit := range commits {
-		commitsInfo[i] = commitInfoFrom(commit)
+		commitsInfo[i] = commitInfoFrom(ctx, repoPath, commit, urlProvider)
 	}
 	return commitsInfo
 }
@@ -261,7 +321,7 @@ func identityInfoFrom(identity git.Identity) IdentityInfo {
 	}
 }
 
-// ReferenceInfo describes a unique reference in gitness.
+// ReferenceInfo describes a unique reference in Harness.
 // It contains both the reference name as well as the repo the reference belongs to.
 type ReferenceInfo struct {
 	Name string         `json:"name"`
@@ -269,7 +329,35 @@ type ReferenceInfo struct {
 }
 
 type CommentInfo struct {
-	ID       int64  `json:"id"`
-	ParentID *int64 `json:"parent_id,omitempty"`
-	Text     string `json:"text"`
+	ID       int64                    `json:"id"`
+	ParentID *int64                   `json:"parent_id,omitempty"`
+	Text     string                   `json:"text"`
+	Created  int64                    `json:"created"`
+	Updated  int64                    `json:"updated"`
+	Kind     enum.PullReqActivityKind `json:"kind"`
+}
+
+type LabelInfo struct {
+	ID      int64   `json:"id"`
+	Key     string  `json:"key"`
+	ValueID *int64  `json:"value_id,omitempty"`
+	Value   *string `json:"value,omitempty"`
+}
+
+type CodeCommentInfo struct {
+	Outdated     bool   `json:"outdated"`
+	MergeBaseSHA string `json:"merge_base_sha"`
+	SourceSHA    string `json:"source_sha"`
+	Path         string `json:"path"`
+	LineNew      int    `json:"line_new"`
+	SpanNew      int    `json:"span_new"`
+	LineOld      int    `json:"line_old"`
+	SpanOld      int    `json:"span_old"`
+}
+
+type ParentResource struct {
+	ID         int64
+	Identifier string
+	Type       enum.WebhookParent
+	Path       string
 }

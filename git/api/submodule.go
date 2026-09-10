@@ -39,15 +39,15 @@ func (g *Git) GetSubmodule(
 	treePath = cleanTreePath(treePath)
 
 	// Get the commit object for the ref
-	commit, err := g.GetFullCommitID(ctx, repoPath, ref)
+	commitSHA, err := g.ResolveRev(ctx, repoPath, ref)
 	if err != nil {
 		return nil, processGitErrorf(err, "error getting commit for ref '%s'", ref)
 	}
 
-	node, err := g.GetTreeNode(ctx, repoPath, commit.String(), ".gitmodules")
+	node, err := g.GetTreeNode(ctx, repoPath, commitSHA.String(), ".gitmodules")
 	if err != nil {
 		return nil, processGitErrorf(err, "error reading  tree node for ref '%s' with commit '%s'",
-			ref, commit)
+			ref, commitSHA)
 	}
 
 	reader, err := GetBlob(ctx, repoPath, nil, node.SHA, 0)
@@ -78,9 +78,10 @@ func GetSubModules(rd *BlobReader) (map[string]*Submodule, error) {
 		if isModule {
 			fields := strings.Split(scanner.Text(), "=")
 			k := strings.TrimSpace(fields[0])
-			if k == "path" {
+			switch k {
+			case "path":
 				path = strings.TrimSpace(fields[1])
-			} else if k == "url" {
+			case "url":
 				submodules[path] = &Submodule{path, strings.TrimSpace(fields[1])}
 				isModule = false
 			}

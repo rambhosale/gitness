@@ -15,29 +15,38 @@
 package keywordsearch
 
 import (
-	"github.com/harness/gitness/app/api/controller/repo"
-	"github.com/harness/gitness/app/api/controller/space"
-	"github.com/harness/gitness/app/auth/authz"
+	"context"
+
+	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/services/keywordsearch"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/store"
 )
 
 type Controller struct {
-	authorizer authz.Authorizer
-	repoCtrl   *repo.Controller
-	searcher   keywordsearch.Searcher
-	spaceCtrl  *space.Controller
+	searcher    keywordsearch.Searcher
+	repoStore   store.RepoStore
+	spaceFinder refcache.SpaceFinder
+	repoFinder  refcache.RepoFinder
+	repoFilter  ViewAccessFilterer
+}
+
+type ViewAccessFilterer interface {
+	ViewAccessFilter(ctx context.Context, session *auth.Session, repoMap map[int64]string) ([]int64, error)
 }
 
 func NewController(
-	authorizer authz.Authorizer,
 	searcher keywordsearch.Searcher,
-	repoCtrl *repo.Controller,
-	spaceCtrl *space.Controller,
+	repoStore store.RepoStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	repoFilter ViewAccessFilterer,
 ) *Controller {
 	return &Controller{
-		authorizer: authorizer,
-		searcher:   searcher,
-		repoCtrl:   repoCtrl,
-		spaceCtrl:  spaceCtrl,
+		searcher:    searcher,
+		repoStore:   repoStore,
+		spaceFinder: spaceFinder,
+		repoFinder:  repoFinder,
+		repoFilter:  repoFilter,
 	}
 }

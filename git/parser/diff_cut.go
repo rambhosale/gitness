@@ -66,12 +66,8 @@ func DiffCut(r io.Reader, params DiffCutParams) (HunkHeader, Hunk, error) {
 
 	linesBeforeBuf := newStrCircBuf(params.BeforeLines)
 
-	for {
-		if params.LineEndNew && currentNewLine > params.LineEnd ||
-			!params.LineEndNew && currentOldLine > params.LineEnd {
-			break // exceeded the requested line range
-		}
-
+	for (!params.LineEndNew || currentNewLine <= params.LineEnd) &&
+		(params.LineEndNew || currentOldLine <= params.LineEnd) {
 		var line string
 		var action diffAction
 
@@ -370,7 +366,7 @@ func (b *strCircBuf) lines() []string {
 	}
 
 	res := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := (b.head + 1 + i) % n
 		res[i] = b.entries[idx]
 	}

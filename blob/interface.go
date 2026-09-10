@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 var (
@@ -30,8 +31,14 @@ type Store interface {
 	Upload(ctx context.Context, file io.Reader, filePath string) error
 
 	// GetSignedURL returns the URL for a file in the blob store.
-	GetSignedURL(ctx context.Context, filePath string) (string, error)
+	GetSignedURL(ctx context.Context, filePath string, expire time.Time, opts ...SignURLOption) (string, error)
 
 	// Download returns a reader for a file in the blob store.
 	Download(ctx context.Context, filePath string) (io.ReadCloser, error)
+
+	// Move moves a file from srcPath to dstPath within the blob store.
+	Move(ctx context.Context, srcPath, dstPath string) error
+
+	// Delete removes a file from the blob store.
+	Delete(ctx context.Context, filePath string) error
 }

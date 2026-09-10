@@ -15,12 +15,12 @@
 package reposettings
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/harness/gitness/app/api/controller/reposettings"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
+	"github.com/harness/gitness/app/services/settings"
 )
 
 func HandleSecurityUpdate(repoSettingCtrl *reposettings.Controller) http.HandlerFunc {
@@ -33,8 +33,8 @@ func HandleSecurityUpdate(repoSettingCtrl *reposettings.Controller) http.Handler
 			return
 		}
 
-		in := new(reposettings.SecuritySettings)
-		err = json.NewDecoder(r.Body).Decode(in)
+		in := new(settings.SecuritySettings)
+		err = request.DecodeBody(r, in)
 		if err != nil {
 			render.BadRequestf(ctx, w, "Invalid request body: %s.", err)
 			return

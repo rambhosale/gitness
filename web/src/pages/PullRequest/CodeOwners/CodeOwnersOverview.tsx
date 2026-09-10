@@ -25,24 +25,32 @@ import {
   ButtonSize,
   Utils,
   TableV2,
-  Layout,
-  Avatar,
-  stringSubstitute
+  Layout
 } from '@harnessio/uicore'
 import cx from 'classnames'
 import { Color, FontVariation } from '@harnessio/design-system'
 import type { CellProps, Column } from 'react-table'
 import type { GitInfoProps } from 'utils/GitUtils'
 import { useStrings } from 'framework/strings'
-import { ExecutionState, ExecutionStatus } from 'components/ExecutionStatus/ExecutionStatus'
+import { ExecutionStatus } from 'components/ExecutionStatus/ExecutionStatus'
 import { useShowRequestError } from 'hooks/useShowRequestError'
-import type { TypesCodeOwnerEvaluation, TypesCodeOwnerEvaluationEntry } from 'services/code'
+import type { TypesCodeOwnerEvaluation, TypesCodeOwnerEvaluationEntry, TypesUserGroupInfo } from 'services/code'
 import type { PRChecksDecisionResult } from 'hooks/usePRChecksDecision'
-import { CodeOwnerReqDecision, findChangeReqDecisions, findWaitingDecisions } from 'utils/Utils'
+import { CodeOwnerReqDecision, UNKNOWN_GROUP } from 'utils/Utils'
+import {
+  PullReqReviewDecision,
+  checkEntries,
+  getCombinedEvaluations,
+  findReviewDecisions,
+  findWaitingDecisions
+} from '../PullRequestUtils'
+import ReviewersPanel from '../Conversation/PullRequestOverviewPanel/sections/ReviewersPanel'
 import css from './CodeOwnersOverview.module.scss'
+import prCss from '../PullRequest.module.scss'
 
 interface ChecksOverviewProps extends Pick<GitInfoProps, 'repoMetadata' | 'pullReqMetadata'> {
   prChecksDecisionResult: PRChecksDecisionResult
+  reqCodeOwnerLatestApproval: boolean
   codeOwners?: TypesCodeOwnerEvaluation
   standalone: boolean
 }
@@ -52,6 +60,7 @@ export function CodeOwnersOverview({
   repoMetadata,
   pullReqMetadata,
   prChecksDecisionResult,
+  reqCodeOwnerLatestApproval,
   standalone
 }: ChecksOverviewProps) {
   const { getString } = useStrings()
@@ -60,44 +69,25 @@ export function CodeOwnersOverview({
 
   useShowRequestError(error)
 
-  const changeReqEntries = findChangeReqDecisions(codeOwners?.evaluation_entries, CodeOwnerReqDecision.CHANGEREQ)
-  const waitingEntries = findWaitingDecisions(codeOwners?.evaluation_entries)
+  const changeReqEntries = findReviewDecisions(codeOwners?.evaluation_entries, CodeOwnerReqDecision.CHANGEREQ)
+  const approvalEntries = findReviewDecisions(codeOwners?.evaluation_entries, CodeOwnerReqDecision.APPROVED)
+  const waitingEntries = findWaitingDecisions(
+    pullReqMetadata,
+    reqCodeOwnerLatestApproval,
+    codeOwners?.evaluation_entries
+  )
 
-  const approvalEntries = findChangeReqDecisions(codeOwners?.evaluation_entries, CodeOwnerReqDecision.APPROVED)
-
-  const checkEntries = (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    changeReqArr: any[], // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    waitingEntriesArr: any[], // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    approvalEntriesArr: any[]
-  ): { borderColor: string; message: string; overallStatus: ExecutionState } => {
-    if (changeReqArr.length !== 0) {
-      return {
-        borderColor: 'red800',
-        overallStatus: ExecutionState.FAILURE,
-        message: stringSubstitute(getString('codeOwner.changesRequested'), { count: changeReqArr.length }) as string
-      }
-    } else if (waitingEntriesArr.length !== 0) {
-      return {
-        borderColor: 'orange800',
-        message: stringSubstitute(getString('codeOwner.waitToApprove'), { count: waitingEntriesArr.length }) as string,
-        overallStatus: ExecutionState.PENDING
-      }
-    }
-    return {
-      borderColor: 'green800',
-      message: stringSubstitute(getString('codeOwner.approvalCompleted'), {
-        count: approvalEntriesArr.length || '0',
-        total: codeOwners?.evaluation_entries?.length
-      }) as string,
-      overallStatus: ExecutionState.SUCCESS
-    }
-  }
-  const { borderColor, message, overallStatus } = checkEntries(changeReqEntries, waitingEntries, approvalEntries)
+  const { borderColor, message, overallStatus } = checkEntries(
+    getString,
+    changeReqEntries,
+    waitingEntries,
+    approvalEntries,
+    codeOwners?.evaluation_entries?.length || 0
+  )
   return codeOwners?.evaluation_entries?.length ? (
     <Container
       className={cx(css.main, { [css.codeOwner]: !standalone })}
-      margin={{ top: 'medium', bottom: pullReqMetadata.description ? undefined : 'large' }}
+      margin={{ top: 'medium', bottom: pullReqMetadata?.description ? undefined : 'large' }}
       style={{ '--border-color': Utils.getRealCSSColor(borderColor) } as React.CSSProperties}>
       <Match expr={isExpanded}>
         <Truthy>
@@ -133,6 +123,7 @@ export function CodeOwnersOverview({
 
 interface CodeOwnerSectionsProps extends Pick<GitInfoProps, 'repoMetadata' | 'pullReqMetadata'> {
   data: TypesCodeOwnerEvaluation
+  reqCodeOwnerLatestApproval?: boolean
 }
 
 const CodeOwnerSections: React.FC<CodeOwnerSectionsProps> = ({ repoMetadata, pullReqMetadata, data }) => {
@@ -145,7 +136,11 @@ const CodeOwnerSections: React.FC<CodeOwnerSectionsProps> = ({ repoMetadata, pul
   )
 }
 
-export const CodeOwnerSection: React.FC<CodeOwnerSectionsProps> = ({ data }) => {
+export const CodeOwnerSection: React.FC<CodeOwnerSectionsProps> = ({
+  data,
+  pullReqMetadata,
+  reqCodeOwnerLatestApproval
+}) => {
   const { getString } = useStrings()
 
   const columns = useMemo(
@@ -153,13 +148,17 @@ export const CodeOwnerSection: React.FC<CodeOwnerSectionsProps> = ({ data }) => 
       [
         {
           id: 'CODE',
-          width: '45%',
+          width: '36%',
+          Header: getString('code'),
           sort: true,
-          Header: 'CODE',
           accessor: 'CODE',
           Cell: ({ row }: CellProps<TypesCodeOwnerEvaluationEntry>) => {
             return (
-              <Text lineClamp={1} padding={{ left: 'small', right: 'small' }} color={Color.BLACK}>
+              <Text
+                lineClamp={1}
+                padding={{ left: 'small', right: 'small' }}
+                color={Color.BLACK}
+                flex={{ justifyContent: 'space-between' }}>
                 {row.original.pattern}
               </Text>
             )
@@ -167,169 +166,56 @@ export const CodeOwnerSection: React.FC<CodeOwnerSectionsProps> = ({ data }) => 
         },
         {
           id: 'Owners',
-          width: '13%',
-          sort: true,
-          Header: 'OWNERS',
+          width: '20%',
+          Header: getString('ownersHeading'),
           accessor: 'OWNERS',
-          Cell: ({ row }: CellProps<TypesCodeOwnerEvaluationEntry>) => {
-            return (
-              <Layout.Horizontal
-                key={`keyContainer-${row.original.pattern}`}
-                className={css.ownerContainer}
-                spacing="tiny">
-                {row.original.owner_evaluations?.map(({ owner }, idx) => {
-                  if (idx < 2) {
-                    return (
-                      <Avatar
-                        key={`text-${owner?.display_name}-${idx}-avatar`}
-                        hoverCard={true}
-                        email={owner?.email || ' '}
-                        size="small"
-                        name={owner?.display_name || ''}
-                      />
-                    )
-                  }
-                  if (
-                    idx === 2 &&
-                    row.original.owner_evaluations?.length &&
-                    row.original.owner_evaluations?.length > 2
-                  ) {
-                    return (
-                      <Text
-                        key={`text-${owner?.display_name}-${idx}-top`}
-                        padding={{ top: 'xsmall' }}
-                        tooltipProps={{ isDark: true }}
-                        tooltip={
-                          <Container width={215} padding={'small'}>
-                            <Layout.Horizontal key={`tooltip-${idx}`} className={css.ownerTooltip}>
-                              {row.original.owner_evaluations?.map((entry, entryidx) => (
-                                <Text
-                                  key={`text-${entry.owner?.display_name}-${entryidx}`}
-                                  lineClamp={1}
-                                  color={Color.GREY_0}
-                                  padding={{ right: 'small' }}>
-                                  {row.original.owner_evaluations?.length === entryidx + 1
-                                    ? `${entry.owner?.display_name}`
-                                    : `${entry.owner?.display_name}, `}
-                                </Text>
-                              ))}
-                            </Layout.Horizontal>
-                          </Container>
-                        }
-                        flex={{ alignItems: 'center' }}>{`+${row.original.owner_evaluations?.length - 2}`}</Text>
-                    )
-                  }
-                  return null
-                })}
-              </Layout.Horizontal>
-            )
-          }
+          Cell: ({ row }: CellProps<TypesCodeOwnerEvaluationEntry>) => (
+            <ReviewersPanel
+              principals={(row.original.owner_evaluations || []).map(evaluation => evaluation?.owner || {})}
+              userGroups={
+                row.original.user_group_owner_evaluations?.map(
+                  group =>
+                    ({
+                      identifier: group?.id || '',
+                      name: group?.name || group?.id || UNKNOWN_GROUP
+                    } as TypesUserGroupInfo)
+                ) || []
+              }
+            />
+          )
         },
         {
           id: 'changesRequested',
           Header: getString('changesRequestedBy'),
           width: '24%',
-          sort: true,
           accessor: 'ChangesRequested',
           Cell: ({ row }: CellProps<TypesCodeOwnerEvaluationEntry>) => {
-            const changeReqEvaluations = row?.original?.owner_evaluations?.filter(
-              evaluation => evaluation.review_decision === 'changereq'
-            )
-            return (
-              <Layout.Horizontal className={css.ownerContainer} spacing="tiny">
-                {changeReqEvaluations?.map(({ owner }, idx) => {
-                  if (idx < 2) {
-                    return (
-                      <Avatar
-                        key={`approved-${owner?.display_name}-avatar`}
-                        hoverCard={true}
-                        email={owner?.email || ' '}
-                        size="small"
-                        name={owner?.display_name || ''}
-                      />
-                    )
-                  }
-                  if (idx === 2 && changeReqEvaluations.length && changeReqEvaluations.length > 2) {
-                    return (
-                      <Text
-                        key={`approved-${owner?.display_name}-text`}
-                        padding={{ top: 'xsmall' }}
-                        tooltipProps={{ isDark: true }}
-                        tooltip={
-                          <Container width={215} padding={'small'}>
-                            <Layout.Horizontal className={css.ownerTooltip}>
-                              {changeReqEvaluations?.map(entry => (
-                                <Text
-                                  key={`approved-${entry.owner?.display_name}`}
-                                  lineClamp={1}
-                                  color={Color.GREY_0}
-                                  padding={{ right: 'small' }}>{`${entry.owner?.display_name}, `}</Text>
-                              ))}
-                            </Layout.Horizontal>
-                          </Container>
-                        }
-                        flex={{ alignItems: 'center' }}>{`+${changeReqEvaluations.length - 2}`}</Text>
-                    )
-                  }
-                  return null
-                })}
-              </Layout.Horizontal>
-            )
+            const changeReqEvaluations = getCombinedEvaluations(row?.original)
+              ?.filter(evaluation => evaluation.review_decision === PullReqReviewDecision.CHANGEREQ)
+              .map(evaluation => evaluation?.owner || {})
+
+            return <ReviewersPanel principals={changeReqEvaluations || []} />
           }
         },
         {
           id: 'approvedBy',
-          Header: 'APPROVED BY',
-          sort: true,
-          width: '15%',
+          Header: getString('approvedBy'),
+          width: '20%',
           accessor: 'APPROVED BY',
           Cell: ({ row }: CellProps<TypesCodeOwnerEvaluationEntry>) => {
-            const approvedEvaluations = row?.original?.owner_evaluations?.filter(
-              evaluation => evaluation.review_decision === 'approved'
-            )
-            return (
-              <Layout.Horizontal className={css.ownerContainer} spacing="tiny">
-                {approvedEvaluations?.map(({ owner }, idx) => {
-                  if (idx < 2) {
-                    return (
-                      <Avatar
-                        key={`approved-${owner?.display_name}-avatar`}
-                        hoverCard={true}
-                        email={owner?.email || ' '}
-                        size="small"
-                        name={owner?.display_name || ''}
-                      />
-                    )
-                  }
-                  if (idx === 2 && approvedEvaluations.length && approvedEvaluations.length > 2) {
-                    return (
-                      <Text
-                        key={`approved-${owner?.display_name}-text`}
-                        padding={{ top: 'xsmall' }}
-                        tooltipProps={{ isDark: true }}
-                        tooltip={
-                          <Container width={215} padding={'small'}>
-                            <Layout.Horizontal className={css.ownerTooltip}>
-                              {approvedEvaluations?.map(entry => (
-                                <Text
-                                  key={`approved-${entry.owner?.display_name}`}
-                                  lineClamp={1}
-                                  color={Color.GREY_0}
-                                  padding={{ right: 'small' }}>{`${entry.owner?.display_name}, `}</Text>
-                              ))}
-                            </Layout.Horizontal>
-                          </Container>
-                        }
-                        flex={{ alignItems: 'center' }}>{`+${approvedEvaluations.length - 2}`}</Text>
-                    )
-                  }
-                  return null
-                })}
-              </Layout.Horizontal>
-            )
+            const approvedEvaluations = getCombinedEvaluations(row?.original)
+              ?.filter(
+                evaluation =>
+                  evaluation.review_decision === PullReqReviewDecision.APPROVED &&
+                  (reqCodeOwnerLatestApproval ? evaluation.review_sha === pullReqMetadata?.source_sha : true)
+              )
+              .map(evaluation => evaluation?.owner || {})
+
+            return <ReviewersPanel principals={approvedEvaluations || []} />
           }
         }
-      ] as unknown as Column<TypesCodeOwnerEvaluationEntry>[], // eslint-disable-next-line react-hooks/exhaustive-deps
+      ] as Column<TypesCodeOwnerEvaluationEntry>[],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )
   return (
@@ -337,11 +223,11 @@ export const CodeOwnerSection: React.FC<CodeOwnerSectionsProps> = ({ data }) => 
       <Container>
         <Layout.Vertical spacing="small">
           <TableV2
-            className={css.codeOwnerTable}
+            className={prCss.reviewerTable}
             sortable
             columns={columns}
             data={data?.evaluation_entries as TypesCodeOwnerEvaluationEntry[]}
-            getRowClassName={() => css.row}
+            getRowClassName={() => prCss.row}
           />
         </Layout.Vertical>
       </Container>

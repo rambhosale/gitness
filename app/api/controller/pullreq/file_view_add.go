@@ -34,10 +34,10 @@ type FileViewAddInput struct {
 
 func (f *FileViewAddInput) Validate() error {
 	if f.Path == "" {
-		return usererror.BadRequest("path can't be empty")
+		return usererror.BadRequest("Path can't be empty")
 	}
 	if !git.ValidateCommitSHA(f.CommitSHA) {
-		return usererror.BadRequest("commit_sha is invalid")
+		return usererror.BadRequest("Commit SHA is invalid")
 	}
 
 	return nil
@@ -62,7 +62,7 @@ func (c *Controller) FileViewAdd(
 		return nil, err
 	}
 
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}

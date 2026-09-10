@@ -15,87 +15,72 @@
 package webhook
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/harness/gitness/netpolicy"
 )
 
 var (
 	errLoopbackNotAllowed       = errors.New("loopback not allowed")
+	errLinkLocalNotAllowed      = errors.New("link-local address not allowed")
 	errPrivateNetworkNotAllowed = errors.New("private network not allowed")
 )
 
-func newHTTPClient(allowLoopback bool, allowPrivateNetwork bool, disableSSLVerification bool) *http.Client {
-	// no customizations? use default client
-	if allowLoopback && allowPrivateNetwork && !disableSSLVerification {
-		return http.DefaultClient
+// addrClassError maps the class of a blocked address to the error reported for
+// the webhook execution. The webhook URL is configured by a repository admin
+// and the reason is shown to them, so the class is not hidden here.
+func addrClassError(class netpolicy.Class) error {
+	switch class {
+	case netpolicy.ClassLoopback:
+		return errLoopbackNotAllowed
+	case netpolicy.ClassLinkLocal:
+		return errLinkLocalNotAllowed
+	case netpolicy.ClassPrivate, netpolicy.ClassReserved:
+		return errPrivateNetworkNotAllowed
+	case netpolicy.ClassPublic:
+		return nil
+	default:
+		return nil
 	}
+}
 
+func newHTTPClient(
+	allowLoopback bool,
+	allowPrivateNetwork bool,
+	allowLinkLocal bool,
+	disableSSLVerification bool,
+) *http.Client {
 	// Clone http.DefaultTransport (used by http.DefaultClient)
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr := http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck
 
 	tr.TLSClientConfig.InsecureSkipVerify = disableSSLVerification
 
-	// create basic net.Dialer (Similar to what is used by http.DefaultTransport)
+	policy := netpolicy.Policy{
+		AllowLoopback:       allowLoopback,
+		AllowPrivateNetwork: allowPrivateNetwork,
+		AllowLinkLocal:      allowLinkLocal,
+	}
+
+	// create basic net.Dialer (Similar to what is used by http.DefaultTransport),
+	// with a Control function that rejects blocked destinations.
+	// NOTE: Control runs on the resolved address before the connect syscall, so a
+	// blocked destination is never contacted and DNS resolution can't bypass it.
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
+		Control:   policy.ControlFunc(addrClassError),
 	}
 
-	// overwrite DialContext method to block sending data to localhost
-	// NOTE: this doesn't block establishing the connection, but closes it before data is send.
-	// WARNING: this allows scanning of IP addresses based on error types.
-	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// dial connection using
-		con, err := dialer.DialContext(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-
-		// by default close connection unless explicitly marked to keep it
-		keepConnection := false
-		defer func() {
-			// if we decided to keep the connection, nothing to do
-			if keepConnection {
-				return
-			}
-
-			// otherwise best effort close connection
-			cErr := con.Close()
-			if cErr != nil {
-				log.Ctx(ctx).Warn().Err(err).
-					Msgf("failed to close potentially malicious connection to '%s' (resolved: '%s')",
-						addr, con.RemoteAddr())
-			}
-		}()
-
-		// ensure a tcp address got established and close if it's localhost or private
-		tcpAddr, ok := con.RemoteAddr().(*net.TCPAddr)
-		if !ok {
-			// not expected to happen, but to be sure
-			return nil, fmt.Errorf("address resolved to a non-TCP address (original: '%s', resolved: '%s')",
-				addr, con.RemoteAddr())
-		}
-
-		if !allowLoopback && tcpAddr.IP.IsLoopback() {
-			return nil, errLoopbackNotAllowed
-		}
-
-		if !allowPrivateNetwork && tcpAddr.IP.IsPrivate() {
-			return nil, errPrivateNetworkNotAllowed
-		}
-
-		// otherwise keep connection
-		keepConnection = true
-
-		return con, nil
-	}
+	tr.DialContext = dialer.DialContext
 
 	// httpClient is similar to http.DefaultClient, just with custom http.Transport
-	return &http.Client{Transport: tr}
+	return &http.Client{
+		Transport: tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }

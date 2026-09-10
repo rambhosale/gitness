@@ -17,14 +17,15 @@ package protection
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
+	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
 )
 
@@ -35,51 +36,116 @@ type (
 	}
 
 	MergeVerifyInput struct {
-		Actor        *types.Principal
-		AllowBypass  bool
-		IsRepoOwner  bool
-		TargetRepo   *types.Repository
-		SourceRepo   *types.Repository
-		PullReq      *types.PullReq
-		Reviewers    []*types.PullReqReviewer
-		Method       enum.MergeMethod
-		CheckResults []types.CheckResult
-		CodeOwners   *codeowners.Evaluation
+		ResolveUserGroupIDs func(ctx context.Context, userGroupIDs []int64) ([]int64, error)
+		MapUserGroupIDs     func(ctx context.Context, userGroupIDs []int64) (map[int64][]*types.Principal, error)
+		Actor               *types.Principal
+		AllowBypass         bool
+		IsRepoOwner         bool
+		TargetRepo          *types.RepositoryCore
+		SourceRepo          *types.RepositoryCore
+		PullReq             *types.PullReq
+		Reviewers           []*types.PullReqReviewer
+		Method              enum.MergeMethod // the method can be empty for dry run or dry run rules
+		TargetIsAncestor    bool
+		CheckResults        []types.CheckResult
+		CodeOwners          *codeowners.Evaluation
+		OmitMQViolations    bool // should be set to true only by the merge queue service
 	}
 
 	MergeVerifyOutput struct {
-		AllowedMethods                      []enum.MergeMethod
-		DeleteSourceBranch                  bool
+		AllowedMethods []enum.MergeMethod
+
+		DeleteSourceBranch bool
+
 		MinimumRequiredApprovalsCount       int
 		MinimumRequiredApprovalsCountLatest int
-		RequiresCodeOwnersApproval          bool
-		RequiresCodeOwnersApprovalLatest    bool
-		RequiresCommentResolution           bool
-		RequiresNoChangeRequests            bool
+
+		DefaultReviewerApprovals []*types.DefaultReviewerApprovalsResponse
+
+		RequiresCodeOwnersApproval       bool
+		RequiresCodeOwnersApprovalLatest bool
+		RequiresCommentResolution        bool
+		RequiresTargetIsAncestor         bool
+		RequiresNoChangeRequests         bool
+		RequiresBypassMessage            bool
+		RequiresMergeQueue               bool
 	}
 
 	RequiredChecksInput struct {
-		Actor       *types.Principal
-		IsRepoOwner bool
-		Repo        *types.Repository
-		PullReq     *types.PullReq
+		ResolveUserGroupID func(ctx context.Context, userGroupIDs []int64) ([]int64, error)
+		Actor              *types.Principal
+		IsRepoOwner        bool
+		Repo               *types.RepositoryCore
+		PullReq            *types.PullReq
 	}
 
 	RequiredChecksOutput struct {
 		RequiredIdentifiers   map[string]struct{}
 		BypassableIdentifiers map[string]struct{}
 	}
+
+	MergeQueueSetup struct {
+		RequiredChecks          []string `json:"required_checks"`
+		GroupSize               int      `json:"group_size"`
+		ChecksConcurrency       int      `json:"checks_concurrency"`
+		MaxCheckDurationSeconds int      `json:"max_check_duration_seconds"`
+	}
+
+	MergeQueueBranchUpdateInput struct {
+		Repo         *types.RepositoryCore
+		TargetBranch string
+	}
+
+	MergeQueueBranchUpdateVerifier interface {
+		MergeQueueBranchUpdateVerify(in MergeQueueBranchUpdateInput) ([]types.RuleViolations, error)
+	}
+
+	MergeQueueSetupInput struct {
+		Repo         *types.RepositoryCore
+		TargetBranch string
+	}
+
+	MergeQueueSetupGetter interface {
+		GetMergeQueueSetup(in MergeQueueSetupInput) (MergeQueueSetup, error)
+	}
+
+	CreatePullReqVerifier interface {
+		CreatePullReqVerify(
+			ctx context.Context,
+			in CreatePullReqVerifyInput,
+		) (CreatePullReqVerifyOutput, []types.RuleViolations, error)
+	}
+
+	CreatePullReqVerifyInput struct {
+		ResolveUserGroupID func(ctx context.Context, userGroupIDs []int64) ([]int64, error)
+		Actor              *types.Principal
+		AllowBypass        bool
+		IsRepoOwner        bool
+		DefaultBranch      string
+		TargetBranch       string
+		RepoID             int64
+		RepoPath           string
+	}
+
+	CreatePullReqVerifyOutput struct {
+		RequestCodeOwners       bool
+		DefaultReviewerIDs      []int64
+		DefaultGroupReviewerIDs []int64
+	}
 )
 
-// ensures that the DefPullReq type implements Sanitizer and MergeVerifier interface.
+// Ensures that the DefPullReq type implements MergeVerifier and CreatePullReqVerifier interface.
 var (
-	_ Sanitizer     = (*DefPullReq)(nil)
-	_ MergeVerifier = (*DefPullReq)(nil)
+	_ MergeVerifier         = (*DefPullReq)(nil)
+	_ CreatePullReqVerifier = (*DefPullReq)(nil)
 )
 
 const (
-	codePullReqApprovalReqMinCount              = "pullreq.approvals.require_minimum_count"
-	codePullReqApprovalReqMinCountLatest        = "pullreq.approvals.require_minimum_count:latest_commit"
+	codePullReqApprovalReqMinCount                      = "pullreq.approvals.require_minimum_count"
+	codePullReqApprovalReqMinCountLatest                = "pullreq.approvals.require_minimum_count:latest_commit"
+	codePullReqApprovalReqDefaultReviewerMinCount       = "pullreq.approvals.require_default_reviewer_minimum_count"
+	codePullReqApprovalReqDefaultReviewerMinCountLatest = "pullreq.approvals.require_default_reviewer_minimum_count:latest_commit" //nolint:lll
+
 	codePullReqApprovalReqLatestCommit          = "pullreq.approvals.require_latest_commit"
 	codePullReqApprovalReqChangeRequested       = "pullreq.approvals.require_change_requested"
 	codePullReqApprovalReqChangeRequestedOldSHA = "pullreq.approvals.require_change_requested_old_SHA"
@@ -90,14 +156,19 @@ const (
 
 	codePullReqMergeStrategiesAllowed = "pullreq.merge.strategies_allowed"
 	codePullReqMergeDeleteBranch      = "pullreq.merge.delete_branch"
+	codePullReqMergeBlock             = "pullreq.merge.blocked"
+
+	codeMergeQueueBranchUpdateVerify = "pullreq.merge_queue.branch_change_block"
 
 	codePullReqCommentsReqResolveAll      = "pullreq.comments.require_resolve_all"
 	codePullReqStatusChecksReqIdentifiers = "pullreq.status_checks.required_identifiers"
+
+	codePullReqCommitsTargetIsAncestor = "pullreq.commits.require_target_is_ancestor"
 )
 
-//nolint:gocognit // well aware of this
+//nolint:gocognit,gocyclo,cyclop // well aware of this
 func (v *DefPullReq) MergeVerify(
-	_ context.Context,
+	ctx context.Context,
 	in MergeVerifyInput,
 ) (MergeVerifyOutput, []types.RuleViolations, error) {
 	var out MergeVerifyOutput
@@ -119,14 +190,16 @@ func (v *DefPullReq) MergeVerify(
 
 	// pullreq.approvals
 
-	approvedBy := make([]types.PrincipalInfo, 0, len(in.Reviewers))
+	reviewerMap := make(map[int64]*types.PullReqReviewer)
+	approvedBy := make(map[int64]struct{})
 	for _, reviewer := range in.Reviewers {
+		reviewerMap[reviewer.Reviewer.ID] = reviewer
 		switch reviewer.ReviewDecision {
 		case enum.PullReqReviewDecisionApproved:
 			if v.Approvals.RequireLatestCommit && reviewer.SHA != in.PullReq.SourceSHA {
 				continue
 			}
-			approvedBy = append(approvedBy, reviewer.Reviewer)
+			approvedBy[reviewer.Reviewer.ID] = struct{}{}
 		case enum.PullReqReviewDecisionChangeReq:
 			if v.Approvals.RequireNoChangeRequest {
 				if reviewer.SHA == in.PullReq.SourceSHA {
@@ -160,6 +233,81 @@ func (v *DefPullReq) MergeVerify(
 		}
 	}
 
+	defaultReviewerIDs := make([]int64, 0, len(v.Reviewers.DefaultReviewerIDs))
+	uniqueDefaultReviewerIDs := make(map[int64]struct{})
+	for _, id := range v.Reviewers.DefaultReviewerIDs {
+		if id != in.PullReq.Author.ID {
+			defaultReviewerIDs = append(defaultReviewerIDs, id)
+			uniqueDefaultReviewerIDs[id] = struct{}{}
+		}
+	}
+
+	if in.MapUserGroupIDs != nil {
+		userGroupsMap, err := in.MapUserGroupIDs(ctx, v.Reviewers.DefaultUserGroupReviewerIDs)
+		if err != nil {
+			return MergeVerifyOutput{}, []types.RuleViolations{},
+				fmt.Errorf("failed to map principals to user group ids: %w", err)
+		}
+
+		for _, principals := range userGroupsMap {
+			for _, principal := range principals {
+				uniqueDefaultReviewerIDs[principal.ID] = struct{}{}
+			}
+		}
+	}
+
+	effectiveDefaultReviewerIDs := maps.Keys(uniqueDefaultReviewerIDs)
+	var evaluations []*types.ReviewerEvaluation
+	for id := range uniqueDefaultReviewerIDs {
+		if reviewer, ok := reviewerMap[id]; ok {
+			evaluations = append(evaluations, &types.ReviewerEvaluation{
+				Reviewer: reviewer.Reviewer,
+				SHA:      reviewer.SHA,
+				Decision: reviewer.ReviewDecision,
+			})
+		}
+	}
+
+	// if author is default reviewer and required minimum == number of default reviewers, reduce minimum by one.
+	effectiveMinimumRequiredDefaultReviewerCount := v.Approvals.RequireMinimumDefaultReviewerCount
+	if len(effectiveDefaultReviewerIDs) < len(v.Reviewers.DefaultReviewerIDs) &&
+		len(v.Reviewers.DefaultReviewerIDs) == v.Approvals.RequireMinimumDefaultReviewerCount {
+		effectiveMinimumRequiredDefaultReviewerCount--
+	}
+
+	//nolint:nestif
+	if effectiveMinimumRequiredDefaultReviewerCount > 0 {
+		var defaultReviewerApprovalCount int
+		for _, id := range effectiveDefaultReviewerIDs {
+			if _, ok := approvedBy[id]; ok {
+				defaultReviewerApprovalCount++
+			}
+		}
+		if defaultReviewerApprovalCount < effectiveMinimumRequiredDefaultReviewerCount {
+			if v.Approvals.RequireLatestCommit {
+				violations.Addf(codePullReqApprovalReqDefaultReviewerMinCountLatest,
+					"Insufficient number of default reviewer approvals of the latest commit. Have %d but need at least %d.",
+					defaultReviewerApprovalCount, effectiveMinimumRequiredDefaultReviewerCount)
+			} else {
+				violations.Addf(codePullReqApprovalReqDefaultReviewerMinCount,
+					"Insufficient number of default reviewer approvals. Have %d but need at least %d.",
+					defaultReviewerApprovalCount, effectiveMinimumRequiredDefaultReviewerCount)
+			}
+		}
+
+		out.DefaultReviewerApprovals = []*types.DefaultReviewerApprovalsResponse{{
+			PrincipalIDs: defaultReviewerIDs,
+			UserGroupIDs: v.Reviewers.DefaultUserGroupReviewerIDs,
+			CurrentCount: defaultReviewerApprovalCount,
+			Evaluations:  evaluations,
+		}}
+		if v.Approvals.RequireLatestCommit {
+			out.DefaultReviewerApprovals[0].MinimumRequiredCountLatest = effectiveMinimumRequiredDefaultReviewerCount
+		} else {
+			out.DefaultReviewerApprovals[0].MinimumRequiredCount = effectiveMinimumRequiredDefaultReviewerCount
+		}
+	}
+
 	if v.Approvals.RequireCodeOwners {
 		for _, entry := range in.CodeOwners.EvaluationEntries {
 			reviewDecision, approvers := getCodeOwnerApprovalStatus(entry)
@@ -180,7 +328,7 @@ func (v *DefPullReq) MergeVerify(
 			if !v.Approvals.RequireLatestCommit {
 				continue
 			}
-			latestSHAApproved := slices.ContainsFunc(approvers, func(ev codeowners.OwnerEvaluation) bool {
+			latestSHAApproved := slices.ContainsFunc(approvers, func(ev codeowners.UserEvaluation) bool {
 				return ev.ReviewSHA == in.PullReq.SourceSHA
 			})
 			if !latestSHAApproved {
@@ -205,7 +353,7 @@ func (v *DefPullReq) MergeVerify(
 		var succeeded bool
 		for i := range in.CheckResults {
 			if in.CheckResults[i].Identifier == requiredIdentifier {
-				succeeded = in.CheckResults[i].Status == enum.CheckStatusSuccess
+				succeeded = in.CheckResults[i].Status.IsSuccess() || in.CheckResults[i].BypassedBy != nil
 				break
 			}
 		}
@@ -223,14 +371,28 @@ func (v *DefPullReq) MergeVerify(
 		)
 	}
 
+	// pullreq.commits
+
+	if v.Commits.RequireTargetIsAncestor && !in.TargetIsAncestor {
+		out.RequiresTargetIsAncestor = true
+
+		violations.Addf(
+			codePullReqCommitsTargetIsAncestor,
+			"The source branch is not up to date with %q. "+
+				"Please rebase or merge the target branch into your source branch.",
+			in.PullReq.TargetBranch,
+		)
+	}
+
 	// pullreq.merge
 
-	if in.Method == "" {
-		out.AllowedMethods = enum.MergeMethods
-	}
+	out.AllowedMethods = enum.MergeMethods
 
 	// Note: Empty allowed strategies list means all are allowed
 	if len(v.Merge.StrategiesAllowed) > 0 {
+		// if the Method isn't provided return allowed strategies
+		out.AllowedMethods = v.Merge.StrategiesAllowed
+
 		if in.Method != "" {
 			// if the Method is provided report violations if any
 			if !slices.Contains(v.Merge.StrategiesAllowed, in.Method) {
@@ -238,10 +400,25 @@ func (v *DefPullReq) MergeVerify(
 					"The requested merge strategy %q is not allowed. Allowed strategies are %v.",
 					in.Method, v.Merge.StrategiesAllowed)
 			}
-		} else {
-			// if the Method isn't provided return allowed strategies
-			out.AllowedMethods = v.Merge.StrategiesAllowed
 		}
+	}
+
+	if v.Merge.Block {
+		violations.Addf(
+			codePullReqMergeBlock,
+			"The merge for the branch %s is not allowed.", in.PullReq.TargetBranch)
+	}
+
+	// pullreq.merge_queue
+
+	if v.MergeQueue != nil && len(v.MergeQueue.StatusChecks.RequireIdentifiers) > 0 {
+		if !in.OmitMQViolations {
+			violations.Addf(codeMergeQueueBranchUpdateVerify,
+				"Direct modification of branch %q is not allowed: the branch has a merge queue configured.",
+				in.PullReq.TargetBranch)
+		}
+
+		out.RequiresMergeQueue = true
 	}
 
 	if len(violations.Violations) > 0 {
@@ -264,20 +441,36 @@ func (v *DefPullReq) RequiredChecks(
 	}, nil
 }
 
+func (v *DefPullReq) CreatePullReqVerify(
+	context.Context,
+	CreatePullReqVerifyInput,
+) (CreatePullReqVerifyOutput, []types.RuleViolations, error) {
+	var out CreatePullReqVerifyOutput
+
+	out.RequestCodeOwners = v.Reviewers.RequestCodeOwners
+	out.DefaultReviewerIDs = v.Reviewers.DefaultReviewerIDs
+	out.DefaultGroupReviewerIDs = v.Reviewers.DefaultUserGroupReviewerIDs
+
+	return out, nil, nil
+}
+
 type DefApprovals struct {
-	RequireCodeOwners      bool `json:"require_code_owners,omitempty"`
-	RequireMinimumCount    int  `json:"require_minimum_count,omitempty"`
-	RequireLatestCommit    bool `json:"require_latest_commit,omitempty"`
-	RequireNoChangeRequest bool `json:"require_no_change_request,omitempty"`
+	RequireCodeOwners                  bool `json:"require_code_owners,omitempty"`
+	RequireMinimumCount                int  `json:"require_minimum_count,omitempty"`
+	RequireLatestCommit                bool `json:"require_latest_commit,omitempty"`
+	RequireNoChangeRequest             bool `json:"require_no_change_request,omitempty"`
+	RequireMinimumDefaultReviewerCount int  `json:"require_minimum_default_reviewer_count,omitempty"`
 }
 
 func (v *DefApprovals) Sanitize() error {
 	if v.RequireMinimumCount < 0 {
-		return errors.New("minimum count must be zero or a positive integer")
+		return errors.InvalidArgument("Require minimum count must be zero or a positive integer.")
 	}
 
-	if v.RequireLatestCommit && v.RequireMinimumCount == 0 && !v.RequireCodeOwners {
-		return errors.New("require latest commit can only be used with require code owners or require minimum count")
+	if v.RequireLatestCommit && !v.RequireCodeOwners &&
+		v.RequireMinimumCount == 0 && v.RequireMinimumDefaultReviewerCount == 0 {
+		return errors.InvalidArgument("Require latest commit can only be used with require code owners, " +
+			"require minimum count or require default reviewer minimum count.")
 	}
 
 	return nil
@@ -338,20 +531,30 @@ func (c *DefStatusChecks) Sanitize() error {
 	return nil
 }
 
+type DefCommits struct {
+	RequireTargetIsAncestor bool `json:"require_target_is_ancestor,omitempty"`
+}
+
+func (v *DefCommits) Sanitize() error {
+	return nil
+}
+
 type DefMerge struct {
-	StrategiesAllowed []enum.MergeMethod `json:"strategies_allowed,omitempty"`
-	DeleteBranch      bool               `json:"delete_branch,omitempty"`
+	StrategiesAllowed    []enum.MergeMethod `json:"strategies_allowed,omitempty"`
+	DeleteBranch         bool               `json:"delete_branch,omitempty"`
+	Block                bool               `json:"block,omitempty"`
+	RequireBypassMessage bool               `json:"require_bypass_message,omitempty"`
 }
 
 func (v *DefMerge) Sanitize() error {
 	m := make(map[enum.MergeMethod]struct{}, 0)
 	for _, strategy := range v.StrategiesAllowed {
 		if _, ok := strategy.Sanitize(); !ok {
-			return fmt.Errorf("unrecognized merge strategy: %s", strategy)
+			return errors.InvalidArgumentf("Unrecognized merge strategy: %q.", strategy)
 		}
 
 		if _, ok := m[strategy]; ok {
-			return fmt.Errorf("duplicate entry in merge strategy list: %s", strategy)
+			return errors.InvalidArgumentf("Duplicate entry in merge strategy list: %q.", strategy)
 		}
 
 		m[strategy] = struct{}{}
@@ -362,19 +565,100 @@ func (v *DefMerge) Sanitize() error {
 	return nil
 }
 
-type DefPush struct {
-	Block bool `json:"block,omitempty"`
+type DefReviewers struct {
+	RequestCodeOwners           bool    `json:"request_code_owners,omitempty"`
+	DefaultReviewerIDs          []int64 `json:"default_reviewer_ids,omitempty"`
+	DefaultUserGroupReviewerIDs []int64 `json:"default_user_group_reviewer_ids,omitempty"`
 }
 
-func (v *DefPush) Sanitize() error {
+func (v *DefReviewers) Sanitize() error {
+	if err := validateIDSlice(v.DefaultReviewerIDs); err != nil {
+		return fmt.Errorf("default reviewer IDs error: %w", err)
+	}
+
+	if err := validateIDSlice(v.DefaultUserGroupReviewerIDs); err != nil {
+		return fmt.Errorf("default user group reviewer IDs error: %w", err)
+	}
+
 	return nil
+}
+
+const (
+	MaxGroupSize         = 10
+	MaxChecksConcurrency = 10
+)
+
+type DefMergeQueue struct {
+	StatusChecks            DefStatusChecks `json:"status_checks"`
+	GroupSize               int             `json:"group_size"`
+	ChecksConcurrency       int             `json:"checks_concurrency"`
+	MaxCheckDurationSeconds int             `json:"max_check_duration_seconds"`
+}
+
+func (v *DefMergeQueue) Sanitize() error {
+	if v == nil {
+		return nil
+	}
+
+	if len(v.StatusChecks.RequireIdentifiers) == 0 {
+		return errors.InvalidArgument(
+			"To define a merge queue at least one required check must be specified.")
+	}
+
+	if v.GroupSize <= 0 || v.GroupSize > MaxGroupSize {
+		return errors.InvalidArgumentf(
+			"Group size must be between 1 and %d.", MaxGroupSize)
+	}
+
+	if v.ChecksConcurrency <= 0 || v.ChecksConcurrency > MaxChecksConcurrency {
+		return errors.InvalidArgumentf(
+			"Checks concurrency must be between 1 and %d.", MaxChecksConcurrency)
+	}
+
+	if v.MaxCheckDurationSeconds <= 0 {
+		return errors.InvalidArgument("Max check duration in seconds must be greater than 0.")
+	}
+
+	if err := v.StatusChecks.Sanitize(); err != nil {
+		return fmt.Errorf("status checks: %w", err)
+	}
+
+	return nil
+}
+
+func (v *DefMergeQueue) MergeQueueBranchUpdateVerify(in MergeQueueBranchUpdateInput) ([]types.RuleViolations, error) {
+	if v == nil || len(v.StatusChecks.RequireIdentifiers) == 0 {
+		return nil, nil
+	}
+
+	var violations types.RuleViolations
+	violations.Addf(codeMergeQueueBranchUpdateVerify,
+		"Direct modification of branch %q is not allowed: the branch has a merge queue configured.",
+		in.TargetBranch)
+
+	return []types.RuleViolations{violations}, nil
+}
+
+func (v *DefMergeQueue) GetMergeQueueSetup(_ MergeQueueSetupInput) (MergeQueueSetup, error) {
+	if v == nil {
+		return MergeQueueSetup{}, nil
+	}
+	return MergeQueueSetup{
+		RequiredChecks:          v.StatusChecks.RequireIdentifiers,
+		GroupSize:               v.GroupSize,
+		ChecksConcurrency:       v.ChecksConcurrency,
+		MaxCheckDurationSeconds: v.MaxCheckDurationSeconds,
+	}, nil
 }
 
 type DefPullReq struct {
 	Approvals    DefApprovals    `json:"approvals"`
 	Comments     DefComments     `json:"comments"`
 	StatusChecks DefStatusChecks `json:"status_checks"`
+	Commits      DefCommits      `json:"commits"`
 	Merge        DefMerge        `json:"merge"`
+	Reviewers    DefReviewers    `json:"reviewers"`
+	MergeQueue   *DefMergeQueue  `json:"merge_queue,omitempty"`
 }
 
 func (v *DefPullReq) Sanitize() error {
@@ -390,20 +674,36 @@ func (v *DefPullReq) Sanitize() error {
 		return fmt.Errorf("status checks: %w", err)
 	}
 
+	if err := v.Commits.Sanitize(); err != nil {
+		return fmt.Errorf("commits: %w", err)
+	}
+
 	if err := v.Merge.Sanitize(); err != nil {
 		return fmt.Errorf("merge: %w", err)
+	}
+
+	if err := v.Reviewers.Sanitize(); err != nil {
+		return fmt.Errorf("reviewers: %w", err)
+	}
+
+	if err := v.MergeQueue.Sanitize(); err != nil {
+		return fmt.Errorf("merge queue: %w", err)
 	}
 
 	return nil
 }
 
+func (v MergeQueueSetup) IsActive() bool {
+	return len(v.RequiredChecks) > 0
+}
+
 func getCodeOwnerApprovalStatus(
 	entry codeowners.EvaluationEntry,
-) (enum.PullReqReviewDecision, []codeowners.OwnerEvaluation) {
-	approvers := make([]codeowners.OwnerEvaluation, 0)
+) (enum.PullReqReviewDecision, []codeowners.UserEvaluation) {
+	approvers := make([]codeowners.UserEvaluation, 0)
 
 	// users
-	for _, o := range entry.OwnerEvaluations {
+	for _, o := range entry.UserEvaluations {
 		if o.ReviewDecision == enum.PullReqReviewDecisionChangeReq {
 			return enum.PullReqReviewDecisionChangeReq, nil
 		}
@@ -413,7 +713,7 @@ func getCodeOwnerApprovalStatus(
 	}
 
 	// usergroups
-	for _, u := range entry.UserGroupOwnerEvaluations {
+	for _, u := range entry.UserGroupEvaluations {
 		for _, o := range u.Evaluations {
 			if o.ReviewDecision == enum.PullReqReviewDecisionChangeReq {
 				return enum.PullReqReviewDecisionChangeReq, nil

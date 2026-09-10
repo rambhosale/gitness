@@ -16,9 +16,9 @@ COPY ./web .
 RUN yarn && yarn build && yarn cache clean
 
 # ---------------------------------------------------------#
-#                   Build gitness image                    #
+#                   Build Harness image                    #
 # ---------------------------------------------------------#
-FROM --platform=$BUILDPLATFORM golang:1.20-alpine3.18 as builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine3.23 as builder
 
 RUN apk update \
     && apk add --no-cache protoc build-base git
@@ -27,7 +27,7 @@ RUN apk update \
 WORKDIR /app
 RUN git config --global --add safe.directory '/app'
 
-# Get dependancies - will also be cached if we won't change mod/sum
+# Get dependencies - will also be cached if we won't change mod/sum
 COPY go.mod .
 COPY go.sum .
 
@@ -69,7 +69,7 @@ RUN apk --update add ca-certificates
 # ---------------------------------------------------------#
 #                   Create final image                     #
 # ---------------------------------------------------------#
-FROM --platform=$TARGETPLATFORM alpine/git:2.43.0 as final
+FROM --platform=$TARGETPLATFORM alpine/git:2.49.1 as final
 
 # setup app dir and its content
 WORKDIR /app
@@ -77,16 +77,20 @@ VOLUME /data
 
 ENV XDG_CACHE_HOME /data
 ENV GITNESS_GIT_ROOT /data
+ENV GITNESS_REGISTRY_FILESYSTEM_ROOT_DIRECTORY /data/registry
 ENV GITNESS_DATABASE_DRIVER sqlite3
 ENV GITNESS_DATABASE_DATASOURCE /data/database.sqlite
 ENV GITNESS_METRIC_ENABLED=true
 ENV GITNESS_METRIC_ENDPOINT=https://stats.drone.ci/api/v1/gitness
 ENV GITNESS_TOKEN_COOKIE_NAME=token
+ENV GITNESS_DOCKER_API_VERSION 1.41
+ENV GITNESS_SSH_ENABLE=true
+ENV GITNESS_GITSPACE_ENABLE=true
 
 COPY --from=builder /app/gitness /app/gitness
 COPY --from=cert-image /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 3000
-EXPOSE 3001
+EXPOSE 3022
 
 ENTRYPOINT [ "/app/gitness", "server" ]

@@ -15,15 +15,29 @@
 package services
 
 import (
+	"github.com/harness/gitness/app/services/aitaskevent"
+	"github.com/harness/gitness/app/services/branch"
 	"github.com/harness/gitness/app/services/cleanup"
+	"github.com/harness/gitness/app/services/gitspace"
+	"github.com/harness/gitness/app/services/gitspacedeleteevent"
+	"github.com/harness/gitness/app/services/gitspaceevent"
+	"github.com/harness/gitness/app/services/gitspaceinfraevent"
+	"github.com/harness/gitness/app/services/gitspaceoperationsevent"
+	"github.com/harness/gitness/app/services/infraprovider"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/app/services/keywordsearch"
+	"github.com/harness/gitness/app/services/languageanalyzer"
 	"github.com/harness/gitness/app/services/metric"
 	"github.com/harness/gitness/app/services/notification"
 	"github.com/harness/gitness/app/services/pullreq"
 	"github.com/harness/gitness/app/services/repo"
+	"github.com/harness/gitness/app/services/repoactivity"
 	"github.com/harness/gitness/app/services/trigger"
 	"github.com/harness/gitness/app/services/webhook"
 	"github.com/harness/gitness/job"
+	"github.com/harness/gitness/registry/job/handler"
+	registryasyncprocessing "github.com/harness/gitness/registry/services/asyncprocessing"
+	registrywebhooks "github.com/harness/gitness/registry/services/webhook"
 
 	"github.com/google/wire"
 )
@@ -33,16 +47,55 @@ var WireSet = wire.NewSet(
 )
 
 type Services struct {
-	Webhook            *webhook.Service
-	PullReq            *pullreq.Service
-	Trigger            *trigger.Service
-	JobScheduler       *job.Scheduler
-	MetricCollector    *metric.Collector
-	RepoSizeCalculator *repo.SizeCalculator
-	Repo               *repo.Service
-	Cleanup            *cleanup.Service
-	Notification       *notification.Service
-	Keywordsearch      *keywordsearch.Service
+	Webhook                        *webhook.Service
+	PullReq                        *pullreq.Service
+	Trigger                        *trigger.Service
+	JobScheduler                   *job.Scheduler
+	MetricCollector                *metric.CollectorJob
+	RepoSizeCalculator             *repo.SizeCalculator
+	Repo                           *repo.Service
+	Cleanup                        *cleanup.Service
+	Notification                   *notification.Service
+	Keywordsearch                  *keywordsearch.Service
+	GitspaceService                *GitspaceServices
+	Instrumentation                instrument.Service
+	instrumentConsumer             instrument.Consumer
+	instrumentRepoCounter          *instrument.RepositoryCount
+	registryWebhooksService        *registrywebhooks.Service
+	Branch                         *branch.Service
+	repoActivity                   *repoactivity.Service
+	registryAsyncProcessingService *registryasyncprocessing.Service
+	languageAnalyzer               languageanalyzer.LanguageAnalyzer
+}
+
+type GitspaceServices struct {
+	GitspaceEvent              *gitspaceevent.Service
+	infraProvider              *infraprovider.Service
+	gitspace                   *gitspace.Service
+	gitspaceInfraEventSvc      *gitspaceinfraevent.Service
+	gitspaceOperationsEventSvc *gitspaceoperationsevent.Service
+	gitspaceDeleteEventSvc     *gitspacedeleteevent.Service
+	aiTaskEventSvc             *aitaskevent.Service
+}
+
+func ProvideGitspaceServices(
+	gitspaceEventSvc *gitspaceevent.Service,
+	gitspaceDeleteEventSvc *gitspacedeleteevent.Service,
+	infraProviderSvc *infraprovider.Service,
+	gitspaceSvc *gitspace.Service,
+	gitspaceInfraEventSvc *gitspaceinfraevent.Service,
+	gitspaceOperationsEventSvc *gitspaceoperationsevent.Service,
+	aiTaskEventSvc *aitaskevent.Service,
+) *GitspaceServices {
+	return &GitspaceServices{
+		GitspaceEvent:              gitspaceEventSvc,
+		infraProvider:              infraProviderSvc,
+		gitspace:                   gitspaceSvc,
+		gitspaceInfraEventSvc:      gitspaceInfraEventSvc,
+		gitspaceOperationsEventSvc: gitspaceOperationsEventSvc,
+		gitspaceDeleteEventSvc:     gitspaceDeleteEventSvc,
+		aiTaskEventSvc:             aiTaskEventSvc,
+	}
 }
 
 func ProvideServices(
@@ -50,23 +103,42 @@ func ProvideServices(
 	pullReqSvc *pullreq.Service,
 	triggerSvc *trigger.Service,
 	jobScheduler *job.Scheduler,
-	metricCollector *metric.Collector,
+	metricCollector *metric.CollectorJob,
 	repoSizeCalculator *repo.SizeCalculator,
 	repo *repo.Service,
 	cleanupSvc *cleanup.Service,
 	notificationSvc *notification.Service,
 	keywordsearchSvc *keywordsearch.Service,
+	gitspaceSvc *GitspaceServices,
+	instrumentation instrument.Service,
+	instrumentConsumer instrument.Consumer,
+	instrumentRepoCounter *instrument.RepositoryCount,
+	registryWebhooksService *registrywebhooks.Service,
+	branchSvc *branch.Service,
+	repoActivitySvc *repoactivity.Service,
+	registryAsyncProcessingService *registryasyncprocessing.Service,
+	registryJobRpmRegistryIndex *handler.JobRpmRegistryIndex,
+	languageAnalyzer languageanalyzer.LanguageAnalyzer,
 ) Services {
 	return Services{
-		Webhook:            webhooksSvc,
-		PullReq:            pullReqSvc,
-		Trigger:            triggerSvc,
-		JobScheduler:       jobScheduler,
-		MetricCollector:    metricCollector,
-		RepoSizeCalculator: repoSizeCalculator,
-		Repo:               repo,
-		Cleanup:            cleanupSvc,
-		Notification:       notificationSvc,
-		Keywordsearch:      keywordsearchSvc,
+		Webhook:                        webhooksSvc,
+		PullReq:                        pullReqSvc,
+		Trigger:                        triggerSvc,
+		JobScheduler:                   jobScheduler,
+		MetricCollector:                metricCollector,
+		RepoSizeCalculator:             repoSizeCalculator,
+		Repo:                           repo,
+		Cleanup:                        cleanupSvc,
+		Notification:                   notificationSvc,
+		Keywordsearch:                  keywordsearchSvc,
+		GitspaceService:                gitspaceSvc,
+		Instrumentation:                instrumentation,
+		instrumentConsumer:             instrumentConsumer,
+		instrumentRepoCounter:          instrumentRepoCounter,
+		registryWebhooksService:        registryWebhooksService,
+		Branch:                         branchSvc,
+		repoActivity:                   repoActivitySvc,
+		registryAsyncProcessingService: registryAsyncProcessingService,
+		languageAnalyzer:               languageAnalyzer,
 	}
 }

@@ -15,7 +15,6 @@
 package repo
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/harness/gitness/app/api/controller/repo"
@@ -35,13 +34,13 @@ func HandleCreateBranch(repoCtrl *repo.Controller) http.HandlerFunc {
 		}
 
 		in := new(repo.CreateBranchInput)
-		err = json.NewDecoder(r.Body).Decode(in)
+		err = request.DecodeBody(r, in)
 		if err != nil {
 			render.BadRequestf(ctx, w, "Invalid request body: %s.", err)
 			return
 		}
 
-		branch, violations, err := repoCtrl.CreateBranch(ctx, session, repoRef, in)
+		out, violations, err := repoCtrl.CreateBranch(ctx, session, repoRef, in)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
@@ -50,7 +49,11 @@ func HandleCreateBranch(repoCtrl *repo.Controller) http.HandlerFunc {
 			render.Violations(w, violations)
 			return
 		}
+		if in.DryRunRules {
+			render.JSON(w, http.StatusOK, out)
+			return
+		}
 
-		render.JSON(w, http.StatusCreated, branch)
+		render.JSON(w, http.StatusCreated, out)
 	}
 }

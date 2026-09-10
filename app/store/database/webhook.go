@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
 	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
@@ -48,14 +50,15 @@ type WebhookStore struct {
 
 // webhook is an internal representation used to store webhook data in the database.
 type webhook struct {
-	ID        int64    `db:"webhook_id"`
-	Version   int64    `db:"webhook_version"`
-	RepoID    null.Int `db:"webhook_repo_id"`
-	SpaceID   null.Int `db:"webhook_space_id"`
-	CreatedBy int64    `db:"webhook_created_by"`
-	Created   int64    `db:"webhook_created"`
-	Updated   int64    `db:"webhook_updated"`
-	Internal  bool     `db:"webhook_internal"`
+	ID        int64            `db:"webhook_id"`
+	Version   int64            `db:"webhook_version"`
+	RepoID    null.Int         `db:"webhook_repo_id"`
+	SpaceID   null.Int         `db:"webhook_space_id"`
+	CreatedBy int64            `db:"webhook_created_by"`
+	Created   int64            `db:"webhook_created"`
+	Updated   int64            `db:"webhook_updated"`
+	Type      enum.WebhookType `db:"webhook_type"`
+	Scope     int64            `db:"webhook_scope"`
 
 	Identifier string `db:"webhook_uid"`
 	// TODO [CODE-1364]: Remove once UID/Identifier migration is completed.
@@ -67,6 +70,7 @@ type webhook struct {
 	Insecure              bool        `db:"webhook_insecure"`
 	Triggers              string      `db:"webhook_triggers"`
 	LatestExecutionResult null.String `db:"webhook_latest_execution_result"`
+	ExtraHeaders          null.String `db:"webhook_extra_headers"`
 }
 
 const (
@@ -87,7 +91,9 @@ const (
 		,webhook_insecure
 		,webhook_triggers
 		,webhook_latest_execution_result
-		,webhook_internal`
+		,webhook_type
+		,webhook_scope
+		,webhook_extra_headers`
 
 	webhookSelectBase = `
 	SELECT` + webhookColumns + `
@@ -131,6 +137,7 @@ func (s *WebhookStore) FindByIdentifier(
 		stmt = stmt.Where("webhook_repo_id = ?", parentID)
 	case enum.WebhookParentSpace:
 		stmt = stmt.Where("webhook_space_id = ?", parentID)
+	case enum.WebhookParentRegistry:
 	default:
 		return nil, fmt.Errorf("webhook parent type '%s' is not supported", parentType)
 	}
@@ -173,7 +180,9 @@ func (s *WebhookStore) Create(ctx context.Context, hook *types.Webhook) error {
 			,webhook_insecure
 			,webhook_triggers
 			,webhook_latest_execution_result
-			,webhook_internal
+			,webhook_type
+			,webhook_scope
+			,webhook_extra_headers
 		) values (
 			:webhook_repo_id
 			,:webhook_space_id
@@ -189,7 +198,9 @@ func (s *WebhookStore) Create(ctx context.Context, hook *types.Webhook) error {
 			,:webhook_insecure
 			,:webhook_triggers
 			,:webhook_latest_execution_result
-			,:webhook_internal
+			,:webhook_type
+			,:webhook_scope
+			,:webhook_extra_headers
 		) RETURNING webhook_id`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -227,7 +238,7 @@ func (s *WebhookStore) Update(ctx context.Context, hook *types.Webhook) error {
 			,webhook_insecure = :webhook_insecure
 			,webhook_triggers = :webhook_triggers
 			,webhook_latest_execution_result = :webhook_latest_execution_result
-			,webhook_internal = :webhook_internal
+			,webhook_extra_headers = :webhook_extra_headers
 		WHERE webhook_id = :webhook_id and webhook_version = :webhook_version - 1`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -267,8 +278,10 @@ func (s *WebhookStore) Update(ctx context.Context, hook *types.Webhook) error {
 }
 
 // UpdateOptLock updates the webhook using the optimistic locking mechanism.
-func (s *WebhookStore) UpdateOptLock(ctx context.Context, hook *types.Webhook,
-	mutateFn func(hook *types.Webhook) error) (*types.Webhook, error) {
+func (s *WebhookStore) UpdateOptLock(
+	ctx context.Context, hook *types.Webhook,
+	mutateFn func(hook *types.Webhook) error,
+) (*types.Webhook, error) {
 	for {
 		dup := *hook
 
@@ -323,6 +336,7 @@ func (s *WebhookStore) DeleteByIdentifier(
 		stmt = stmt.Where("webhook_repo_id = ?", parentID)
 	case enum.WebhookParentSpace:
 		stmt = stmt.Where("webhook_space_id = ?", parentID)
+	case enum.WebhookParentRegistry:
 	default:
 		return fmt.Errorf("webhook parent type '%s' is not supported", parentType)
 	}
@@ -342,24 +356,21 @@ func (s *WebhookStore) DeleteByIdentifier(
 }
 
 // Count counts the webhooks for a given parent type and id.
-func (s *WebhookStore) Count(ctx context.Context, parentType enum.WebhookParent, parentID int64,
-	opts *types.WebhookFilter) (int64, error) {
+func (s *WebhookStore) Count(
+	ctx context.Context,
+	parents []types.WebhookParentInfo,
+	opts *types.WebhookFilter,
+) (int64, error) {
 	stmt := database.Builder.
 		Select("count(*)").
 		From("webhooks")
 
-	switch parentType {
-	case enum.WebhookParentRepo:
-		stmt = stmt.Where("webhook_repo_id = ?", parentID)
-	case enum.WebhookParentSpace:
-		stmt = stmt.Where("webhook_space_id = ?", parentID)
-	default:
-		return 0, fmt.Errorf("webhook parent type '%s' is not supported", parentType)
+	err := selectWebhookParents(parents, &stmt)
+	if err != nil {
+		return 0, fmt.Errorf("failed to select webhook parents: %w", err)
 	}
 
-	if opts.Query != "" {
-		stmt = stmt.Where("LOWER(webhook_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
-	}
+	stmt = applyWebhookFilter(opts, stmt)
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
@@ -377,29 +388,21 @@ func (s *WebhookStore) Count(ctx context.Context, parentType enum.WebhookParent,
 	return count, nil
 }
 
-// List lists the webhooks for a given parent type and id.
-func (s *WebhookStore) List(ctx context.Context, parentType enum.WebhookParent, parentID int64,
-	opts *types.WebhookFilter) ([]*types.Webhook, error) {
+func (s *WebhookStore) List(
+	ctx context.Context,
+	parents []types.WebhookParentInfo,
+	opts *types.WebhookFilter,
+) ([]*types.Webhook, error) {
 	stmt := database.Builder.
 		Select(webhookColumns).
 		From("webhooks")
 
-	switch parentType {
-	case enum.WebhookParentRepo:
-		stmt = stmt.Where("webhook_repo_id = ?", parentID)
-	case enum.WebhookParentSpace:
-		stmt = stmt.Where("webhook_space_id = ?", parentID)
-	default:
-		return nil, fmt.Errorf("webhook parent type '%s' is not supported", parentType)
+	err := selectWebhookParents(parents, &stmt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select webhook parents: %w", err)
 	}
 
-	if opts.Query != "" {
-		stmt = stmt.Where("LOWER(webhook_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(opts.Query)))
-	}
-
-	if opts.SkipInternal {
-		stmt = stmt.Where("webhook_internal != ?", true)
-	}
+	stmt = applyWebhookFilter(opts, stmt)
 
 	stmt = stmt.Limit(database.Limit(opts.Size))
 	stmt = stmt.Offset(database.Offset(opts.Page, opts.Size))
@@ -445,6 +448,36 @@ func (s *WebhookStore) List(ctx context.Context, parentType enum.WebhookParent, 
 	return res, nil
 }
 
+func (s *WebhookStore) UpdateParentSpace(
+	ctx context.Context,
+	srcParentSpaceID int64,
+	targetParentSpaceID int64,
+) (int64, error) {
+	stmt := database.Builder.
+		Update("webhooks").
+		Set("webhook_space_id", targetParentSpaceID).
+		Where("webhook_space_id = ?", srcParentSpaceID)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, fmt.Errorf("failed to convert query to sql: %w", err)
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	result, err := db.ExecContext(ctx, sql, args...)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "the update query failed")
+	}
+
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get number of updated rows")
+	}
+
+	return count, nil
+}
+
 func mapToWebhook(hook *webhook) (*types.Webhook, error) {
 	res := &types.Webhook{
 		ID:         hook.ID,
@@ -453,6 +486,7 @@ func mapToWebhook(hook *webhook) (*types.Webhook, error) {
 		Created:    hook.Created,
 		Updated:    hook.Updated,
 		Identifier: hook.Identifier,
+		Scope:      hook.Scope,
 		// TODO [CODE-1364]: Remove once UID/Identifier migration is completed
 		DisplayName:           hook.DisplayName,
 		Description:           hook.Description,
@@ -462,7 +496,8 @@ func mapToWebhook(hook *webhook) (*types.Webhook, error) {
 		Insecure:              hook.Insecure,
 		Triggers:              triggersFromString(hook.Triggers),
 		LatestExecutionResult: (*enum.WebhookExecutionResult)(hook.LatestExecutionResult.Ptr()),
-		Internal:              hook.Internal,
+		Type:                  hook.Type,
+		ExtraHeaders:          extraHeadersFromString(hook.ExtraHeaders.String),
 	}
 
 	switch {
@@ -489,6 +524,7 @@ func mapToInternalWebhook(hook *types.Webhook) (*webhook, error) {
 		Created:    hook.Created,
 		Updated:    hook.Updated,
 		Identifier: hook.Identifier,
+		Scope:      hook.Scope,
 		// TODO [CODE-1364]: Remove once UID/Identifier migration is completed
 		DisplayName:           hook.DisplayName,
 		Description:           hook.Description,
@@ -498,7 +534,8 @@ func mapToInternalWebhook(hook *types.Webhook) (*webhook, error) {
 		Insecure:              hook.Insecure,
 		Triggers:              triggersToString(hook.Triggers),
 		LatestExecutionResult: null.StringFromPtr((*string)(hook.LatestExecutionResult)),
-		Internal:              hook.Internal,
+		Type:                  hook.Type,
+		ExtraHeaders:          extraHeadersToNullString(hook.ExtraHeaders),
 	}
 
 	switch hook.ParentType {
@@ -506,8 +543,9 @@ func mapToInternalWebhook(hook *types.Webhook) (*webhook, error) {
 		res.RepoID = null.IntFrom(hook.ParentID)
 	case enum.WebhookParentSpace:
 		res.SpaceID = null.IntFrom(hook.ParentID)
+	case enum.WebhookParentRegistry:
 	default:
-		return nil, fmt.Errorf("webhook parent type '%s' is not supported", hook.ParentType)
+		return nil, fmt.Errorf("webhook parent type %q is not supported", hook.ParentType)
 	}
 
 	return res, nil
@@ -535,11 +573,15 @@ func triggersFromString(triggersString string) []enum.WebhookTrigger {
 	}
 
 	rawTriggers := strings.Split(triggersString, triggersSeparator)
+	triggers := make([]enum.WebhookTrigger, 0, len(rawTriggers))
 
-	triggers := make([]enum.WebhookTrigger, len(rawTriggers))
-	for i, rawTrigger := range rawTriggers {
+	for _, rawTrigger := range rawTriggers {
+		rawTrigger = strings.TrimSpace(rawTrigger)
+		if rawTrigger == "" {
+			continue
+		}
 		// ASSUMPTION: trigger is valid value (as we wrote it to DB)
-		triggers[i] = enum.WebhookTrigger(rawTrigger)
+		triggers = append(triggers, enum.WebhookTrigger(rawTrigger))
 	}
 
 	return triggers
@@ -552,4 +594,71 @@ func triggersToString(triggers []enum.WebhookTrigger) string {
 	}
 
 	return strings.Join(rawTriggers, triggersSeparator)
+}
+
+// extraHeadersToNullString converts a slice of ExtraHeader to a null.String.
+// Returns an invalid null.String (NULL) when headers is empty to avoid
+// inserting an empty string into PostgreSQL JSONB columns.
+func extraHeadersToNullString(headers []types.ExtraHeader) null.String {
+	if len(headers) == 0 {
+		return null.String{}
+	}
+	jsonData, err := json.Marshal(headers)
+	if err != nil {
+		return null.String{}
+	}
+	return null.StringFrom(string(jsonData))
+}
+
+// extraHeadersFromString converts a JSON string back to a slice of ExtraHeader.
+func extraHeadersFromString(jsonStr string) []types.ExtraHeader {
+	if jsonStr == "" {
+		return nil
+	}
+	var headers []types.ExtraHeader
+	if err := json.Unmarshal([]byte(jsonStr), &headers); err != nil {
+		return nil
+	}
+	return headers
+}
+
+func applyWebhookFilter(
+	opts *types.WebhookFilter,
+	stmt squirrel.SelectBuilder,
+) squirrel.SelectBuilder {
+	if opts.Query != "" {
+		stmt = stmt.Where(PartialMatch("webhook_uid", opts.Query))
+	}
+
+	if opts.SkipInternal {
+		stmt = stmt.Where("webhook_type = ?", enum.WebhookTypeExternal)
+	}
+
+	return stmt
+}
+
+func selectWebhookParents(
+	parents []types.WebhookParentInfo,
+	stmt *squirrel.SelectBuilder,
+) error {
+	var parentSelector squirrel.Or
+	for _, parent := range parents {
+		switch parent.Type {
+		case enum.WebhookParentRepo:
+			parentSelector = append(parentSelector, squirrel.Eq{
+				"webhook_repo_id": parent.ID,
+			})
+		case enum.WebhookParentSpace:
+			parentSelector = append(parentSelector, squirrel.Eq{
+				"webhook_space_id": parent.ID,
+			})
+		case enum.WebhookParentRegistry:
+		default:
+			return fmt.Errorf("webhook parent type '%s' is not supported", parent.Type)
+		}
+	}
+
+	*stmt = stmt.Where(parentSelector)
+
+	return nil
 }

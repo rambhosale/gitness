@@ -73,6 +73,7 @@ type DeleteBranchParams struct {
 	WriteParams
 	// BranchName is the name of the branch
 	BranchName string
+	SHA        string
 }
 
 type ListBranchesParams struct {
@@ -98,21 +99,21 @@ func (s *Service) CreateBranch(ctx context.Context, params *CreateBranchParams) 
 	}
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-	targetCommit, err := s.git.GetCommit(ctx, repoPath, strings.TrimSpace(params.Target))
+	targetCommit, err := s.git.GetCommitFromRev(ctx, repoPath, strings.TrimSpace(params.Target))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get target commit: %w", err)
 	}
 
-	branchRef := api.GetReferenceFromBranchName(params.BranchName)
-
-	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath, branchRef)
+	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ref updater to create the branch: %w", err)
 	}
 
-	err = refUpdater.Do(ctx, sha.Nil, targetCommit.SHA)
+	branchRef := api.GetReferenceFromBranchName(params.BranchName)
+
+	err = refUpdater.DoOne(ctx, branchRef, sha.Nil, targetCommit.SHA)
 	if errors.IsConflict(err) {
-		return nil, errors.Conflict("branch %q already exists", params.BranchName)
+		return nil, errors.Conflictf("branch %q already exists", params.BranchName)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create branch reference: %w", err)
@@ -161,16 +162,18 @@ func (s *Service) DeleteBranch(ctx context.Context, params *DeleteBranchParams) 
 	}
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-	branchRef := api.GetReferenceFromBranchName(params.BranchName)
+	commitSha, _ := sha.NewOrEmpty(params.SHA)
 
-	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath, branchRef)
+	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to create ref updater to create the branch: %w", err)
 	}
 
-	err = refUpdater.Do(ctx, sha.None, sha.Nil) // delete whatever is there
+	branchRef := api.GetReferenceFromBranchName(params.BranchName)
+
+	err = refUpdater.DoOne(ctx, branchRef, commitSha, sha.Nil)
 	if errors.IsNotFound(err) {
-		return errors.NotFound("branch %q does not exist", params.BranchName)
+		return errors.NotFoundf("branch %q does not exist", params.BranchName)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to delete branch reference: %w", err)
@@ -200,19 +203,19 @@ func (s *Service) ListBranches(ctx context.Context, params *ListBranchesParams) 
 
 	// get commits if needed (single call for perf savings: 1s-4s vs 5s-20s)
 	if params.IncludeCommit {
-		commitSHAs := make([]string, len(gitBranches))
+		commitSHAs := make([]sha.SHA, len(gitBranches))
 		for i := range gitBranches {
-			commitSHAs[i] = gitBranches[i].SHA.String()
+			commitSHAs[i] = gitBranches[i].SHA
 		}
 
-		var gitCommits []*api.Commit
+		var gitCommits []api.Commit
 		gitCommits, err = s.git.GetCommits(ctx, repoPath, commitSHAs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get commit: %w", err)
 		}
 
 		for i := range gitCommits {
-			gitBranches[i].Commit = gitCommits[i]
+			gitBranches[i].Commit = &gitCommits[i]
 		}
 	}
 
@@ -244,7 +247,7 @@ func (s *Service) listBranchesLoadReferenceData(
 		filter.PageSize,
 	)
 	if err != nil {
-		return nil, errors.InvalidArgument("invalid pagination details: %v", err)
+		return nil, errors.InvalidArgumentf("invalid pagination details: %v", err)
 	}
 
 	opts := &api.WalkReferencesOptions{

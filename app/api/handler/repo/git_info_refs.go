@@ -15,7 +15,7 @@
 package repo
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"net/http"
 
@@ -23,8 +23,10 @@ import (
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
-	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/errors"
+	"github.com/harness/gitness/git/api"
 )
 
 // HandleGitInfoRefs handles the info refs part of git's smart http protocol.
@@ -34,14 +36,15 @@ func HandleGitInfoRefs(repoCtrl *repo.Controller, urlProvider url.Provider) http
 		session, _ := request.AuthSessionFrom(ctx)
 		repoRef, err := request.GetRepoRefFromPath(r)
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			w.WriteHeader(http.StatusNotFound)
+			pktError(ctx, w, err)
 			return
 		}
 
 		gitProtocol := request.GetGitProtocolFromHeadersOrDefault(r, "")
 		service, err := request.GetGitServiceTypeFromQuery(r)
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			pktError(ctx, w, err)
 			return
 		}
 
@@ -52,21 +55,19 @@ func HandleGitInfoRefs(repoCtrl *repo.Controller, urlProvider url.Provider) http
 		w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-advertisement", service))
 
 		err = repoCtrl.GitInfoRefs(ctx, session, repoRef, service, gitProtocol, w)
-		if errors.Is(err, apiauth.ErrNotAuthorized) && auth.IsAnonymousSession(session) {
-			renderBasicAuth(w, urlProvider)
+		if errors.Is(err, apiauth.ErrUnauthorized) {
+			render.GitBasicAuth(ctx, w, urlProvider)
 			return
 		}
 		if err != nil {
-			render.TranslatedUserError(ctx, w, err)
+			pktError(ctx, w, err)
 			return
 		}
 	}
 }
 
-// renderBasicAuth renders a response that indicates that the client (GIT) requires basic authentication.
-// This is required in order to tell git CLI to query user credentials.
-func renderBasicAuth(w http.ResponseWriter, urlProvider url.Provider) {
-	// Git doesn't seem to handle "realm" - so it doesn't seem to matter for basic user CLI interactions.
-	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, urlProvider.GetAPIHostname()))
-	w.WriteHeader(http.StatusUnauthorized)
+func pktError(ctx context.Context, w http.ResponseWriter, err error) {
+	terr := usererror.Translate(ctx, err)
+	w.WriteHeader(terr.Status)
+	api.PktError(w, terr)
 }

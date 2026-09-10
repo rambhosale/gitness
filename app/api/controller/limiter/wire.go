@@ -20,8 +20,13 @@ import (
 
 var WireSet = wire.NewSet(
 	ProvideLimiter,
+	ProvideGitspaceLimiter,
 )
 
 func ProvideLimiter() (ResourceLimiter, error) {
 	return NewResourceLimiter(), nil
+}
+
+func ProvideGitspaceLimiter() Gitspace {
+	return NewUnlimitedUsage()
 }

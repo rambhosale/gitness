@@ -16,7 +16,8 @@ package request
 
 import (
 	"net/http"
-	"net/url"
+
+	"github.com/harness/gitness/types"
 )
 
 const (
@@ -26,17 +27,12 @@ const (
 	PathParamStepNumber         = "step_number"
 	PathParamTriggerIdentifier  = "trigger_identifier"
 	QueryParamLatest            = "latest"
+	QueryParamLastExecutions    = "last_executions"
 	QueryParamBranch            = "branch"
 )
 
 func GetPipelineIdentifierFromPath(r *http.Request) (string, error) {
-	rawRef, err := PathParamOrError(r, PathParamPipelineIdentifier)
-	if err != nil {
-		return "", err
-	}
-
-	// paths are unescaped
-	return url.PathUnescape(rawRef)
+	return PathParamOrError(r, PathParamPipelineIdentifier)
 }
 
 func GetBranchFromQuery(r *http.Request) string {
@@ -56,16 +52,26 @@ func GetStepNumberFromPath(r *http.Request) (int64, error) {
 }
 
 func GetLatestFromPath(r *http.Request) bool {
-	v, _ := QueryParam(r, QueryParamLatest)
-	return v == "true"
+	l, _ := QueryParamAsBoolOrDefault(r, QueryParamLatest, false)
+	return l
 }
 
 func GetTriggerIdentifierFromPath(r *http.Request) (string, error) {
-	rawRef, err := PathParamOrError(r, PathParamTriggerIdentifier)
+	return PathParamOrError(r, PathParamTriggerIdentifier)
+}
+
+func ParseListPipelinesFilterFromRequest(r *http.Request) (types.ListPipelinesFilter, error) {
+	lastExecs, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamLastExecutions, 10)
 	if err != nil {
-		return "", err
+		return types.ListPipelinesFilter{}, err
 	}
 
-	// paths are unescaped
-	return url.PathUnescape(rawRef)
+	return types.ListPipelinesFilter{
+		ListQueryFilter: types.ListQueryFilter{
+			Query:      ParseQuery(r),
+			Pagination: ParsePaginationFromRequest(r),
+		},
+		Latest:         GetLatestFromPath(r),
+		LastExecutions: lastExecs,
+	}, nil
 }

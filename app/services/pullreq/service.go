@@ -16,37 +16,47 @@ package pullreq
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
+	"github.com/harness/gitness/app/auth/authz"
 	"github.com/harness/gitness/app/bootstrap"
 	gitevents "github.com/harness/gitness/app/events/git"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/app/githook"
 	"github.com/harness/gitness/app/services/codecomments"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/pubsub"
+	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/stream"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 )
 
 type Service struct {
-	pullreqEvReporter   *pullreqevents.Reporter
-	git                 git.Interface
-	repoGitInfoCache    store.RepoGitInfoCache
-	repoStore           store.RepoStore
-	pullreqStore        store.PullReqStore
-	activityStore       store.PullReqActivityStore
-	codeCommentView     store.CodeCommentView
-	codeCommentMigrator *codecomments.Migrator
-	fileViewStore       store.PullReqFileViewStore
-	sseStreamer         sse.Streamer
-	urlProvider         url.Provider
+	pullreqEvReporter       *pullreqevents.Reporter
+	tx                      dbtx.Transactor
+	authorizer              authz.Authorizer
+	git                     git.Interface
+	repoFinder              refcache.RepoFinder
+	repoStore               store.RepoStore
+	pullreqStore            store.PullReqStore
+	activityStore           store.PullReqActivityStore
+	autoMergeStore          store.AutoMergeStore
+	principalStore          store.PrincipalStore
+	reviewerStore           store.PullReqReviewerStore
+	reviewerSuggestionStore store.PullReqReviewerSuggestionStore
+	codeCommentView         store.CodeCommentView
+	principalInfoCache      store.PrincipalInfoCache
+	codeCommentMigrator     *codecomments.Migrator
+	fileViewStore           store.PullReqFileViewStore
+	sseStreamer             sse.Streamer
+	urlProvider             url.Provider
 
 	cancelMutex        sync.Mutex
 	cancelMergeability map[string]context.CancelFunc
@@ -60,32 +70,46 @@ func New(ctx context.Context,
 	gitReaderFactory *events.ReaderFactory[*gitevents.Reader],
 	pullreqEvReaderFactory *events.ReaderFactory[*pullreqevents.Reader],
 	pullreqEvReporter *pullreqevents.Reporter,
+	tx dbtx.Transactor,
+	authorizer authz.Authorizer,
 	git git.Interface,
-	repoGitInfoCache store.RepoGitInfoCache,
+	repoFinder refcache.RepoFinder,
 	repoStore store.RepoStore,
 	pullreqStore store.PullReqStore,
 	activityStore store.PullReqActivityStore,
+	autoMergeStore store.AutoMergeStore,
+	principalStore store.PrincipalStore,
+	reviewerStore store.PullReqReviewerStore,
+	reviewerSuggestionStore store.PullReqReviewerSuggestionStore,
 	codeCommentView store.CodeCommentView,
 	codeCommentMigrator *codecomments.Migrator,
 	fileViewStore store.PullReqFileViewStore,
+	principalInfoCache store.PrincipalInfoCache,
 	bus pubsub.PubSub,
 	urlProvider url.Provider,
 	sseStreamer sse.Streamer,
 ) (*Service, error) {
 	service := &Service{
-		pullreqEvReporter:   pullreqEvReporter,
-		git:                 git,
-		repoGitInfoCache:    repoGitInfoCache,
-		repoStore:           repoStore,
-		pullreqStore:        pullreqStore,
-		activityStore:       activityStore,
-		codeCommentView:     codeCommentView,
-		urlProvider:         urlProvider,
-		codeCommentMigrator: codeCommentMigrator,
-		fileViewStore:       fileViewStore,
-		cancelMergeability:  make(map[string]context.CancelFunc),
-		pubsub:              bus,
-		sseStreamer:         sseStreamer,
+		pullreqEvReporter:       pullreqEvReporter,
+		tx:                      tx,
+		authorizer:              authorizer,
+		git:                     git,
+		repoFinder:              repoFinder,
+		repoStore:               repoStore,
+		pullreqStore:            pullreqStore,
+		activityStore:           activityStore,
+		autoMergeStore:          autoMergeStore,
+		principalStore:          principalStore,
+		reviewerStore:           reviewerStore,
+		reviewerSuggestionStore: reviewerSuggestionStore,
+		principalInfoCache:      principalInfoCache,
+		codeCommentView:         codeCommentView,
+		urlProvider:             urlProvider,
+		codeCommentMigrator:     codeCommentMigrator,
+		fileViewStore:           fileViewStore,
+		cancelMergeability:      make(map[string]context.CancelFunc),
+		pubsub:                  bus,
+		sseStreamer:             sseStreamer,
 	}
 
 	var err error
@@ -97,37 +121,14 @@ func New(ctx context.Context,
 		func(r *gitevents.Reader) error {
 			const idleTimeout = 15 * time.Second
 			r.Configure(
-				stream.WithConcurrency(1),
+				stream.WithConcurrency(config.PullReq.GitEventsConcurrency),
 				stream.WithHandlerOptions(
 					stream.WithIdleTimeout(idleTimeout),
 					stream.WithMaxRetries(3),
 				))
 
-			_ = r.RegisterBranchUpdated(service.triggerPREventOnBranchUpdate)
-			_ = r.RegisterBranchDeleted(service.closePullReqOnBranchDelete)
-
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	// pull request ref maintenance
-
-	const groupPullReqHeadRef = "gitness:pullreq:headref"
-	_, err = pullreqEvReaderFactory.Launch(ctx, groupPullReqHeadRef, config.InstanceID,
-		func(r *pullreqevents.Reader) error {
-			const idleTimeout = 10 * time.Second
-			r.Configure(
-				stream.WithConcurrency(1),
-				stream.WithHandlerOptions(
-					stream.WithIdleTimeout(idleTimeout),
-					stream.WithMaxRetries(3),
-				))
-
-			_ = r.RegisterCreated(service.createHeadRefOnCreated)
-			_ = r.RegisterBranchUpdated(service.updateHeadRefOnBranchUpdate)
-			_ = r.RegisterReopened(service.updateHeadRefOnReopen)
+			_ = r.RegisterBranchUpdated(service.updatePullReqOnBranchUpdate)
+			_ = r.RegisterBranchDeleted(service.handleBranchDeleted)
 
 			return nil
 		})
@@ -142,7 +143,7 @@ func New(ctx context.Context,
 		func(r *pullreqevents.Reader) error {
 			const idleTimeout = 30 * time.Second
 			r.Configure(
-				stream.WithConcurrency(3),
+				stream.WithConcurrency(config.PullReq.FileViewedConcurrency),
 				stream.WithHandlerOptions(
 					stream.WithIdleTimeout(idleTimeout),
 					stream.WithMaxRetries(1),
@@ -156,35 +157,13 @@ func New(ctx context.Context,
 		return nil, err
 	}
 
-	const groupPullReqCounters = "gitness:pullreq:counters"
-	_, err = pullreqEvReaderFactory.Launch(ctx, groupPullReqCounters, config.InstanceID,
-		func(r *pullreqevents.Reader) error {
-			const idleTimeout = 10 * time.Second
-			r.Configure(
-				stream.WithConcurrency(1),
-				stream.WithHandlerOptions(
-					stream.WithIdleTimeout(idleTimeout),
-					stream.WithMaxRetries(2),
-				))
-
-			_ = r.RegisterCreated(service.updatePRCountersOnCreated)
-			_ = r.RegisterReopened(service.updatePRCountersOnReopened)
-			_ = r.RegisterClosed(service.updatePRCountersOnClosed)
-			_ = r.RegisterMerged(service.updatePRCountersOnMerged)
-
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
 	// mergeability check
 	const groupPullReqMergeable = "gitness:pullreq:mergeable"
 	_, err = pullreqEvReaderFactory.Launch(ctx, groupPullReqMergeable, config.InstanceID,
 		func(r *pullreqevents.Reader) error {
 			const idleTimeout = 30 * time.Second
 			r.Configure(
-				stream.WithConcurrency(3),
+				stream.WithConcurrency(config.PullReq.MergeabilityConcurrency),
 				stream.WithHandlerOptions(
 					stream.WithIdleTimeout(idleTimeout),
 					stream.WithMaxRetries(2),
@@ -193,8 +172,7 @@ func New(ctx context.Context,
 			_ = r.RegisterCreated(service.mergeCheckOnCreated)
 			_ = r.RegisterBranchUpdated(service.mergeCheckOnBranchUpdate)
 			_ = r.RegisterReopened(service.mergeCheckOnReopen)
-			_ = r.RegisterClosed(service.mergeCheckOnClosed)
-			_ = r.RegisterMerged(service.mergeCheckOnMerged)
+			_ = r.RegisterTargetBranchChanged(service.mergeCheckOnTargetBranchChange)
 
 			return nil
 		})
@@ -229,7 +207,7 @@ func New(ctx context.Context,
 		func(r *pullreqevents.Reader) error {
 			const idleTimeout = 10 * time.Second
 			r.Configure(
-				stream.WithConcurrency(3),
+				stream.WithConcurrency(config.PullReq.CodeCommentsConcurrency),
 				stream.WithHandlerOptions(
 					stream.WithIdleTimeout(idleTimeout),
 					stream.WithMaxRetries(2),
@@ -247,8 +225,8 @@ func New(ctx context.Context,
 	return service, nil
 }
 
-// createSystemRPCWriteParams creates base write parameters for write operations.
-func createSystemRPCWriteParams(
+// createRPCSystemReferencesWriteParams creates base write parameters for write operations.
+func createRPCSystemReferencesWriteParams(
 	ctx context.Context,
 	urlProvider url.Provider,
 	repoID int64,
@@ -256,25 +234,17 @@ func createSystemRPCWriteParams(
 ) (git.WriteParams, error) {
 	principal := bootstrap.NewSystemServiceSession().Principal
 
-	// generate envars (add everything githook CLI needs for execution)
-	envVars, err := githook.GenerateEnvironmentVariables(
+	return githook.CreateWriteParamsForOperation(
 		ctx,
-		urlProvider.GetInternalAPIURL(),
-		repoID,
-		principal.ID,
-		false,
-		true,
-	)
-	if err != nil {
-		return git.WriteParams{}, fmt.Errorf("failed to generate git hook environment variables: %w", err)
-	}
-
-	return git.WriteParams{
-		Actor: git.Identity{
+		urlProvider.GetInternalAPIURL(ctx),
+		git.Identity{
 			Name:  principal.DisplayName,
 			Email: principal.Email,
 		},
-		RepoUID: repoGITUID,
-		EnvVars: envVars,
-	}, nil
+		repoID,
+		repoGITUID,
+		principal.ID,
+		true,
+		enum.GitOpTypeAPISystemRefs,
+	)
 }

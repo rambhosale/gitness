@@ -18,9 +18,9 @@ import React, { useEffect, useState } from 'react'
 import { Container } from '@harnessio/uicore'
 import { useGet } from 'restful-react'
 import { useHistory } from 'react-router-dom'
-import type { RepoCommitTag } from 'services/code'
+import type { TypesCommitTag } from 'services/code'
 import { usePageIndex } from 'hooks/usePageIndex'
-import { LIST_FETCHING_LIMIT, permissionProps, PageBrowserProps } from 'utils/Utils'
+import { LIST_FETCHING_LIMIT, permissionProps, PageBrowserProps, OrderSortDate } from 'utils/Utils'
 import { useQueryParams } from 'hooks/useQueryParams'
 import { useUpdateQueryParams } from 'hooks/useUpdateQueryParams'
 import { useAppContext } from 'AppContext'
@@ -30,7 +30,7 @@ import { useShowRequestError } from 'hooks/useShowRequestError'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import { useStrings } from 'framework/strings'
 import { NoResultCard } from 'components/NoResultCard/NoResultCard'
-import { useCreateTagModal } from 'components/CreateTagModal/CreateTagModal'
+import { useCreateTagModal } from 'components/CreateRefModal/CreateTagModal/CreateTagModal'
 import { LoadingSpinner } from 'components/LoadingSpinner/LoadingSpinner'
 import { RepositoryTagsContentHeader } from '../RepositoryTagsContentHeader/RepositoryTagsContentHeader'
 import { TagsContent } from '../TagsContent/TagsContent'
@@ -49,23 +49,23 @@ export function RepositoryTagsContent({ repoMetadata }: Pick<GitInfoProps, 'repo
     showSuccessMessage: true
   })
   const { updateQueryParams } = useUpdateQueryParams()
-
   const pageBrowser = useQueryParams<PageBrowserProps>()
   const pageInit = pageBrowser.page ? parseInt(pageBrowser.page) : 1
   const [page, setPage] = usePageIndex(pageInit)
+
   const {
     data: branches,
     response,
     error,
     loading,
     refetch
-  } = useGet<RepoCommitTag[]>({
+  } = useGet<TypesCommitTag[]>({
     path: `/api/v1/repos/${repoMetadata.path}/+/tags`,
     queryParams: {
       limit: LIST_FETCHING_LIMIT,
       page,
       sort: 'date',
-      order: 'desc',
+      order: OrderSortDate.DESC,
       include_commit: true,
       query: searchTerm
     },

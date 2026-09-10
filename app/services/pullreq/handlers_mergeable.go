@@ -31,7 +31,6 @@ import (
 	"github.com/harness/gitness/types/enum"
 
 	"github.com/gotidy/ptr"
-	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -49,6 +48,7 @@ func (s *Service) mergeCheckOnCreated(ctx context.Context,
 		event.Payload.Number,
 		sha.Nil.String(),
 		event.Payload.SourceSHA,
+		event.Payload.PrincipalID,
 	)
 }
 
@@ -63,6 +63,22 @@ func (s *Service) mergeCheckOnBranchUpdate(ctx context.Context,
 		event.Payload.Number,
 		event.Payload.OldSHA,
 		event.Payload.NewSHA,
+		event.Payload.PrincipalID,
+	)
+}
+
+// mergeCheckOnTargetBranchChange handles pull request target branch changed events.
+func (s *Service) mergeCheckOnTargetBranchChange(
+	ctx context.Context,
+	event *events.Event[*pullreqevents.TargetBranchChangedPayload],
+) error {
+	return s.updateMergeData(
+		ctx,
+		event.Payload.TargetRepoID,
+		event.Payload.Number,
+		sha.None.String(),
+		event.Payload.SourceSHA,
+		event.Payload.PrincipalID,
 	)
 }
 
@@ -77,47 +93,8 @@ func (s *Service) mergeCheckOnReopen(ctx context.Context,
 		event.Payload.Number,
 		sha.None.String(),
 		event.Payload.SourceSHA,
+		event.Payload.PrincipalID,
 	)
-}
-
-// mergeCheckOnClosed deletes the merge ref.
-func (s *Service) mergeCheckOnClosed(ctx context.Context,
-	event *events.Event[*pullreqevents.ClosedPayload],
-) error {
-	return s.deleteMergeRef(ctx, event.Payload.SourceRepoID, event.Payload.Number)
-}
-
-// mergeCheckOnMerged deletes the merge ref.
-func (s *Service) mergeCheckOnMerged(ctx context.Context,
-	event *events.Event[*pullreqevents.MergedPayload],
-) error {
-	return s.deleteMergeRef(ctx, event.Payload.SourceRepoID, event.Payload.Number)
-}
-
-func (s *Service) deleteMergeRef(ctx context.Context, repoID int64, prNum int64) error {
-	repo, err := s.repoGitInfoCache.Get(ctx, repoID)
-	if err != nil {
-		return fmt.Errorf("failed to get repo with ID %d: %w", repoID, err)
-	}
-
-	writeParams, err := createSystemRPCWriteParams(ctx, s.urlProvider, repo.ID, repo.GitUID)
-	if err != nil {
-		return fmt.Errorf("failed to generate rpc write params: %w", err)
-	}
-
-	// TODO: This doesn't work for forked repos
-	err = s.git.UpdateRef(ctx, git.UpdateRefParams{
-		WriteParams: writeParams,
-		Name:        strconv.Itoa(int(prNum)),
-		Type:        gitenum.RefTypePullReqMerge,
-		NewValue:    sha.None, // when NewValue is empty will delete the ref.
-		OldValue:    sha.None, // we don't care about the old value
-	})
-	if err != nil {
-		return fmt.Errorf("failed to remove PR merge ref: %w", err)
-	}
-
-	return nil
 }
 
 //nolint:funlen // refactor if required.
@@ -127,6 +104,7 @@ func (s *Service) updateMergeData(
 	prNum int64,
 	oldSHA string,
 	newSHA string,
+	principalID int64,
 ) error {
 	pr, err := s.pullreqStore.FindByNumber(ctx, repoID, prNum)
 	if err != nil {
@@ -169,35 +147,37 @@ func (s *Service) updateMergeData(
 	}()
 
 	// load repository objects
-	targetRepo, err := s.repoGitInfoCache.Get(ctx, pr.TargetRepoID)
+	targetRepo, err := s.repoFinder.FindByID(ctx, pr.TargetRepoID)
 	if err != nil {
 		return err
 	}
 
-	sourceRepo := targetRepo
-	if pr.TargetRepoID != pr.SourceRepoID {
-		sourceRepo, err = s.repoGitInfoCache.Get(ctx, pr.SourceRepoID)
-		if err != nil {
-			return err
-		}
-	}
-
-	writeParams, err := createSystemRPCWriteParams(ctx, s.urlProvider, targetRepo.ID, targetRepo.GitUID)
+	writeParams, err := createRPCSystemReferencesWriteParams(ctx, s.urlProvider, targetRepo.ID, targetRepo.GitUID)
 	if err != nil {
 		return fmt.Errorf("failed to generate rpc write params: %w", err)
+	}
+
+	refName, err := git.GetRefPath(strconv.Itoa(int(pr.Number)), gitenum.RefTypePullReqMerge)
+	if err != nil {
+		return fmt.Errorf("failed to generate pull request merge ref name: %w", err)
+	}
+
+	refs := []git.RefUpdate{
+		{
+			Name: refName,
+			Old:  sha.SHA{}, // no matter what the value of the reference is
+			New:  sha.SHA{}, // update it to point to result of the merge
+		},
 	}
 
 	// call merge and store output in pr merge reference.
 	now := time.Now()
 	mergeOutput, err := s.git.Merge(ctx, &git.MergeParams{
-		WriteParams:     writeParams,
-		BaseBranch:      pr.TargetBranch,
-		HeadRepoUID:     sourceRepo.GitUID,
-		HeadBranch:      pr.SourceBranch,
-		RefType:         gitenum.RefTypePullReqMerge,
-		RefName:         strconv.Itoa(int(pr.Number)),
-		HeadExpectedSHA: sha.Must(newSHA),
-		Force:           true,
+		WriteParams: writeParams,
+		BaseBranch:  pr.TargetBranch,
+		HeadSHA:     sha.Must(newSHA),
+		Refs:        refs,
+		Force:       true,
 
 		// set committer date to ensure repeatability of merge commit across replicas
 		CommitterDate: &now,
@@ -211,30 +191,30 @@ func (s *Service) updateMergeData(
 	}
 
 	// Update DB in both cases (failure or success)
-	_, err = s.pullreqStore.UpdateOptLock(ctx, pr, func(pr *types.PullReq) error {
+	_, err = s.pullreqStore.UpdateMergeCheckMetadataOptLock(ctx, pr, func(pr *types.PullReq) error {
 		// to avoid racing conditions with merge
 		if pr.State != enum.PullReqStateOpen {
-			return errPRNotOpen
+			return ErrPullReqNotOpen
 		}
 
 		if pr.SourceSHA != newSHA {
 			return events.NewDiscardEventErrorf("PR SHA %s is newer than %s", pr.SourceSHA, newSHA)
 		}
 
-		if len(mergeOutput.ConflictFiles) > 0 {
-			pr.MergeCheckStatus = enum.MergeCheckStatusConflict
-			pr.MergeBaseSHA = mergeOutput.MergeBaseSHA.String()
-			pr.MergeTargetSHA = ptr.String(mergeOutput.BaseSHA.String())
+		pr.MergeBaseSHA = mergeOutput.MergeBaseSHA.String()
+		pr.MergeTargetSHA = ptr.String(mergeOutput.BaseSHA.String())
+		if mergeOutput.MergeSHA.IsEmpty() {
 			pr.MergeSHA = nil
-			pr.MergeConflicts = mergeOutput.ConflictFiles
 		} else {
-			pr.MergeCheckStatus = enum.MergeCheckStatusMergeable
-			pr.MergeBaseSHA = mergeOutput.MergeBaseSHA.String()
-			pr.MergeTargetSHA = ptr.String(mergeOutput.BaseSHA.String())
 			pr.MergeSHA = ptr.String(mergeOutput.MergeSHA.String())
-			pr.MergeConflicts = nil
 		}
-		pr.Stats.DiffStats = types.NewDiffStats(mergeOutput.CommitCount, mergeOutput.ChangedFileCount)
+		pr.UpdateMergeOutcome(enum.MergeMethodMerge, mergeOutput.ConflictFiles)
+		pr.Stats.DiffStats = types.NewDiffStats(
+			mergeOutput.CommitCount,
+			mergeOutput.ChangedFileCount,
+			mergeOutput.Additions,
+			mergeOutput.Deletions,
+		)
 
 		return nil
 	})
@@ -242,9 +222,16 @@ func (s *Service) updateMergeData(
 		return fmt.Errorf("failed to update PR merge ref in db with error: %w", err)
 	}
 
-	if err = s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-		log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
-	}
+	s.sseStreamer.Publish(ctx, targetRepo.ParentID, enum.SSETypePullReqUpdated, pr)
+
+	s.pullreqEvReporter.MergeCheckSucceeded(ctx, &pullreqevents.MergeCheckSucceededPayload{
+		Base: pullreqevents.Base{
+			PullReqID:    pr.ID,
+			SourceRepoID: pr.SourceRepoID,
+			TargetRepoID: pr.TargetRepoID,
+			PrincipalID:  principalID,
+			Number:       pr.Number,
+		}})
 
 	return nil
 }

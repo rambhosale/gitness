@@ -16,99 +16,207 @@ package controller
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/bootstrap"
 	"github.com/harness/gitness/app/githook"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/git/hook"
 	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
-// createRPCWriteParams creates base write parameters for git write operations.
-// TODO: this function should be in git package and should accept params as interface (contract)
-func createRPCWriteParams(
+// RuleViolationsFromError decodes the push-rule violations a githook attached to a
+// blocking error (see hook.RuleViolationsErrorDetailsKey), returning true only if any
+// were present.
+func RuleViolationsFromError(err error) ([]types.RuleViolations, bool) {
+	details := errors.Details(err)
+	if details == nil {
+		return nil, false
+	}
+
+	raw, ok := details[hook.RuleViolationsErrorDetailsKey].(json.RawMessage)
+	if !ok || len(raw) == 0 {
+		return nil, false
+	}
+
+	var violations []types.RuleViolations
+	if err := json.Unmarshal(raw, &violations); err != nil {
+		// The payload was marshaled by the githook from the same type, so a decode
+		// failure means the two ends drifted (a bug), not a user condition. Fail closed
+		// so the caller surfaces the original block error, but log it so the drift isn't
+		// silent.
+		log.Warn().Err(err).Msg("failed to decode rule violations from error details")
+		return nil, false
+	}
+
+	return violations, len(violations) > 0
+}
+
+// CreateRPCGitPushWriteParams creates base write parameters for git push operations from git clients.
+func CreateRPCGitPushWriteParams(
 	ctx context.Context,
 	urlProvider url.Provider,
 	session *auth.Session,
-	repo *types.Repository,
-	isInternal bool,
+	repo *types.RepositoryCore,
 ) (git.WriteParams, error) {
-	// generate envars (add everything githook CLI needs for execution)
-	envVars, err := githook.GenerateEnvironmentVariables(
-		ctx,
-		urlProvider.GetInternalAPIURL(),
-		repo.ID,
-		session.Principal.ID,
-		false,
-		isInternal,
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, false, enum.GitOpTypeGitPush,
 	)
-	if err != nil {
-		return git.WriteParams{}, fmt.Errorf("failed to generate git hook environment variables: %w", err)
-	}
+}
 
-	return git.WriteParams{
-		Actor: git.Identity{
+// CreateRPCAPIContentWriteParams creates base write parameters for API content operations:
+// commit API calls and apply comment suggestions.
+func CreateRPCAPIContentWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, false, enum.GitOpTypeAPIContent,
+	)
+}
+
+// CreateRPCAPIContentBypassRulesWriteParams creates base write parameters for API content
+// operations with rule bypass. Used for commit API calls with push rules bypass.
+func CreateRPCAPIContentBypassRulesWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, false, enum.GitOpTypeAPIContentBypassRules,
+	)
+}
+
+// CreateRPCAPIRefsWriteParams creates base write parameters for API reference operations:
+// branch/tag management and PR merge operations.
+func CreateRPCAPIRefsWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, false, enum.GitOpTypeAPIRefsOnly,
+	)
+}
+
+// CreateRPCSystemReferencesWriteParams creates base write parameters for write operations
+// on system references (e.g. pullreq references).
+func CreateRPCSystemReferencesWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	// System references are disabled from hooks
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, true, enum.GitOpTypeAPISystemRefs,
+	)
+}
+
+// CreateRPCAPILinkedSyncWriteParams creates base write parameters for linked repository
+// synchronization operations.
+func CreateRPCAPILinkedSyncWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, false, enum.GitOpTypeAPILinkedSync,
+	)
+}
+
+// CreateRPCSystemMergeQueueWriteParams creates base write parameters for write operations
+// on merge queue. Includes updates of PR target branches (always with FF merge),
+// updates pull request references.
+func CreateRPCSystemMergeQueueWriteParams(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+) (git.WriteParams, error) {
+	return createRPCWriteParamsWithOperationType(
+		ctx, urlProvider, session, repo, true, enum.GitOpTypeMergeQueue,
+	)
+}
+
+// createRPCWriteParamsWithOperationType creates base write parameters for git write operations.
+func createRPCWriteParamsWithOperationType(
+	ctx context.Context,
+	urlProvider url.Provider,
+	session *auth.Session,
+	repo *types.RepositoryCore,
+	disabled bool,
+	operationType enum.GitOpType,
+) (git.WriteParams, error) {
+	return githook.CreateWriteParamsForOperation(
+		ctx,
+		urlProvider.GetInternalAPIURL(ctx),
+		git.Identity{
 			Name:  session.Principal.DisplayName,
 			Email: session.Principal.Email,
 		},
-		RepoUID: repo.GitUID,
-		EnvVars: envVars,
+		repo.ID,
+		repo.GitUID,
+		session.Principal.ID,
+		disabled,
+		operationType,
+	)
+}
+
+func MapBranch(b git.Branch) (types.Branch, error) {
+	return types.Branch{
+		Name:   b.Name,
+		SHA:    b.SHA,
+		Commit: MapCommit(b.Commit),
 	}, nil
 }
 
-// CreateRPCExternalWriteParams creates base write parameters for git external write operations.
-// External write operations are direct git pushes.
-func CreateRPCExternalWriteParams(
-	ctx context.Context,
-	urlProvider url.Provider,
-	session *auth.Session,
-	repo *types.Repository,
-) (git.WriteParams, error) {
-	return createRPCWriteParams(ctx, urlProvider, session, repo, false)
-}
-
-// CreateRPCInternalWriteParams creates base write parameters for git internal write operations.
-// Internal write operations are git pushes that originate from the Gitness server.
-func CreateRPCInternalWriteParams(
-	ctx context.Context,
-	urlProvider url.Provider,
-	session *auth.Session,
-	repo *types.Repository,
-) (git.WriteParams, error) {
-	return createRPCWriteParams(ctx, urlProvider, session, repo, true)
-}
-
-func MapCommit(c *git.Commit) (*types.Commit, error) {
+func MapCommit(c *git.Commit) *types.Commit {
 	if c == nil {
-		return nil, fmt.Errorf("commit is nil")
-	}
-
-	author, err := MapSignature(&c.Author)
-	if err != nil {
-		return nil, fmt.Errorf("failed to map author: %w", err)
-	}
-
-	committer, err := MapSignature(&c.Committer)
-	if err != nil {
-		return nil, fmt.Errorf("failed to map committer: %w", err)
-	}
-
-	parentSHAs := make([]string, len(c.ParentSHAs))
-	for i, sha := range c.ParentSHAs {
-		parentSHAs[i] = sha.String()
+		return nil
 	}
 
 	return &types.Commit{
-			SHA:        c.SHA.String(),
-			ParentSHAs: parentSHAs,
-			Title:      c.Title,
-			Message:    c.Message,
-			Author:     *author,
-			Committer:  *committer,
-			Stats:      mapStats(c),
-		},
-		nil
+		SHA:        c.SHA,
+		TreeSHA:    c.TreeSHA,
+		ParentSHAs: c.ParentSHAs,
+		Title:      c.Title,
+		Message:    c.Message,
+		Author:     MapSignature(c.Author),
+		Committer:  MapSignature(c.Committer),
+		SignedData: (*types.SignedData)(c.SignedData),
+		Stats:      mapStats(c),
+	}
+}
+
+func MapCommitTag(t git.CommitTag) types.CommitTag {
+	var tagger *types.Signature
+	if t.Tagger != nil {
+		tagger = &types.Signature{}
+		*tagger = MapSignature(*t.Tagger)
+	}
+
+	return types.CommitTag{
+		Name:        t.Name,
+		SHA:         t.SHA,
+		IsAnnotated: t.IsAnnotated,
+		Title:       t.Title,
+		Message:     t.Message,
+		Tagger:      tagger,
+		SignedData:  (*types.SignedData)(t.SignedData),
+		Commit:      MapCommit(t.Commit),
+	}
 }
 
 func mapStats(c *git.Commit) *types.CommitStats {
@@ -164,16 +272,20 @@ func MapRenameDetails(c *git.RenameDetails) *types.RenameDetails {
 	}
 }
 
-func MapSignature(s *git.Signature) (*types.Signature, error) {
-	if s == nil {
-		return nil, fmt.Errorf("signature is nil")
+func MapSignature(s git.Signature) types.Signature {
+	return types.Signature{
+		Identity: types.Identity(s.Identity),
+		When:     s.When,
 	}
+}
 
-	return &types.Signature{
-		Identity: types.Identity{
-			Name:  s.Identity.Name,
-			Email: s.Identity.Email,
-		},
-		When: s.When,
-	}, nil
+func IdentityFromPrincipalInfo(p types.PrincipalInfo) *git.Identity {
+	return &git.Identity{
+		Name:  p.DisplayName,
+		Email: p.Email,
+	}
+}
+
+func SystemServicePrincipalInfo() *git.Identity {
+	return IdentityFromPrincipalInfo(*bootstrap.NewSystemServiceSession().Principal.ToPrincipalInfo())
 }

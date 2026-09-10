@@ -56,7 +56,12 @@ type PullReqActivity struct {
 
 	CodeComment *CodeCommentFields `json:"code_comment,omitempty"`
 
-	Mentions map[int64]*PrincipalInfo `json:"mentions,omitempty"` // used only in response
+	// used only in response
+	Mentions      map[int64]*PrincipalInfo `json:"mentions,omitempty"`
+	GroupMentions map[int64]*UserGroupInfo `json:"user_group_mentions,omitempty"`
+
+	// Reactions holds emoji reactions on this comment, hydrated from activity metadata.
+	Reactions []*PullReqCommentReaction `json:"reactions,omitempty"`
 }
 
 func (a *PullReqActivity) IsValidCodeComment() bool {

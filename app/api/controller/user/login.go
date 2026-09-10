@@ -16,13 +16,10 @@ package user
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"fmt"
-	"math/big"
-	"time"
 
 	"github.com/harness/gitness/app/api/usererror"
+	userevents "github.com/harness/gitness/app/events/user"
 	"github.com/harness/gitness/app/token"
 	"github.com/harness/gitness/store"
 	"github.com/harness/gitness/types"
@@ -36,9 +33,7 @@ type LoginInput struct {
 	Password        string `json:"password"`
 }
 
-/*
- * Login attempts to login as a specific user - returns the session token if successful.
- */
+// Login attempts to login as a specific user - returns the session token if successful.
 func (c *Controller) Login(
 	ctx context.Context,
 	in *LoginInput,
@@ -69,22 +64,16 @@ func (c *Controller) Login(
 		return nil, usererror.ErrNotFound
 	}
 
-	tokenIdentifier, err := generateSessionTokenIdentifier()
-	if err != nil {
-		return nil, err
-	}
+	tokenIdentifier := token.GenerateIdentifier("login")
+
 	token, jwtToken, err := token.CreateUserSession(ctx, c.tokenStore, user, tokenIdentifier)
 	if err != nil {
 		return nil, err
 	}
 
-	return &types.TokenResponse{Token: *token, AccessToken: jwtToken}, nil
-}
+	c.eventReporter.LoggedIn(ctx, &userevents.LoggedInPayload{
+		Base: userevents.Base{PrincipalID: user.ID},
+	})
 
-func generateSessionTokenIdentifier() (string, error) {
-	r, err := rand.Int(rand.Reader, big.NewInt(10000))
-	if err != nil {
-		return "", fmt.Errorf("failed to generate random number: %w", err)
-	}
-	return fmt.Sprintf("login-%d-%04d", time.Now().Unix(), r.Int64()), nil
+	return &types.TokenResponse{Token: *token, AccessToken: jwtToken}, nil
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/harness/gitness/app/api/controller/execution"
 	controllergithook "github.com/harness/gitness/app/api/controller/githook"
 	"github.com/harness/gitness/app/api/controller/gitspace"
+	"github.com/harness/gitness/app/api/controller/infraprovider"
 	"github.com/harness/gitness/app/api/controller/keywordsearch"
 	"github.com/harness/gitness/app/api/controller/logs"
 	"github.com/harness/gitness/app/api/controller/migrate"
@@ -41,6 +42,7 @@ import (
 	"github.com/harness/gitness/app/api/controller/trigger"
 	"github.com/harness/gitness/app/api/controller/upload"
 	"github.com/harness/gitness/app/api/controller/user"
+	"github.com/harness/gitness/app/api/controller/usergroup"
 	"github.com/harness/gitness/app/api/controller/webhook"
 	"github.com/harness/gitness/app/api/handler/account"
 	handlercheck "github.com/harness/gitness/app/api/handler/check"
@@ -48,8 +50,10 @@ import (
 	handlerexecution "github.com/harness/gitness/app/api/handler/execution"
 	handlergithook "github.com/harness/gitness/app/api/handler/githook"
 	handlergitspace "github.com/harness/gitness/app/api/handler/gitspace"
+	handlerinfraProvider "github.com/harness/gitness/app/api/handler/infraprovider"
 	handlerkeywordsearch "github.com/harness/gitness/app/api/handler/keywordsearch"
 	handlerlogs "github.com/harness/gitness/app/api/handler/logs"
+	handlermigrate "github.com/harness/gitness/app/api/handler/migrate"
 	handlerpipeline "github.com/harness/gitness/app/api/handler/pipeline"
 	handlerplugin "github.com/harness/gitness/app/api/handler/plugin"
 	handlerprincipal "github.com/harness/gitness/app/api/handler/principal"
@@ -65,6 +69,7 @@ import (
 	handlertrigger "github.com/harness/gitness/app/api/handler/trigger"
 	handlerupload "github.com/harness/gitness/app/api/handler/upload"
 	handleruser "github.com/harness/gitness/app/api/handler/user"
+	handlerUserGroup "github.com/harness/gitness/app/api/handler/usergroup"
 	"github.com/harness/gitness/app/api/handler/users"
 	handlerwebhook "github.com/harness/gitness/app/api/handler/webhook"
 	"github.com/harness/gitness/app/api/middleware/address"
@@ -76,26 +81,23 @@ import (
 	"github.com/harness/gitness/app/api/request"
 	"github.com/harness/gitness/app/auth/authn"
 	"github.com/harness/gitness/app/githook"
+	"github.com/harness/gitness/app/services/usage"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
-	"github.com/go-chi/chi"
-	"github.com/go-chi/chi/middleware"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/rs/zerolog/hlog"
 )
 
-// APIHandler is an abstraction of a http handler that handles API calls.
-type APIHandler interface {
-	http.Handler
-}
-
 var (
 	// terminatedPathPrefixesAPI is the list of prefixes that will require resolving terminated paths.
 	terminatedPathPrefixesAPI = []string{"/v1/spaces/", "/v1/repos/",
-		"/v1/secrets/", "/v1/connectors", "/v1/templates/step", "/v1/templates/stage", "/v1/gitspaces"}
+		"/v1/secrets/", "/v1/connectors", "/v1/templates/step", "/v1/templates/stage", "/v1/gitspaces", "/v1/infraproviders",
+		"/v1/migrate/repos", "/v1/pipelines"}
 )
 
 // NewAPIHandler returns a new APIHandler.
@@ -121,13 +123,16 @@ func NewAPIHandler(
 	saCtrl *serviceaccount.Controller,
 	userCtrl *user.Controller,
 	principalCtrl principal.Controller,
+	userGroupCtrl *usergroup.Controller,
 	checkCtrl *check.Controller,
 	sysCtrl *system.Controller,
 	uploadCtrl *upload.Controller,
 	searchCtrl *keywordsearch.Controller,
+	infraProviderCtrl *infraprovider.Controller,
 	migrateCtrl *migrate.Controller,
 	gitspaceCtrl *gitspace.Controller,
-) APIHandler {
+	usageSender usage.Sender,
+) http.Handler {
 	// Use go-chi router for inner routing.
 	r := chi.NewRouter()
 
@@ -136,7 +141,7 @@ func NewAPIHandler(
 	r.Use(middleware.Recoverer)
 
 	// configure logging middleware.
-	r.Use(hlog.URLHandler("http.url"))
+	r.Use(logging.URLHandler("http.url"))
 	r.Use(hlog.MethodHandler("http.method"))
 	r.Use(logging.HLogRequestIDHandler())
 	r.Use(logging.HLogAccessLogHandler())
@@ -145,16 +150,22 @@ func NewAPIHandler(
 	// configure cors middleware
 	r.Use(corsHandler(config))
 
-	// for now always attempt auth - enforced per operation.
-	r.Use(middlewareauthn.Attempt(authenticator))
-
 	r.Use(audit.Middleware())
 
 	r.Route("/v1", func(r chi.Router) {
-		setupRoutesV1(r, appCtx, config, repoCtrl, repoSettingsCtrl, executionCtrl, triggerCtrl, logCtrl, pipelineCtrl,
-			connectorCtrl, templateCtrl, pluginCtrl, secretCtrl, spaceCtrl, pullreqCtrl,
-			webhookCtrl, githookCtrl, git, saCtrl, userCtrl, principalCtrl, checkCtrl, sysCtrl, uploadCtrl,
-			searchCtrl, gitspaceCtrl, migrateCtrl)
+		// special methods that don't require authentication
+		setupAccountWithoutAuth(r, userCtrl, sysCtrl, config)
+		setupSystem(r, config, sysCtrl)
+		setupResources(r)
+
+		r.Group(func(r chi.Router) {
+			r.Use(middlewareauthn.Attempt(authenticator))
+
+			setupRoutesV1WithAuth(r, appCtx, config, repoCtrl, repoSettingsCtrl, executionCtrl, triggerCtrl, logCtrl,
+				pipelineCtrl, connectorCtrl, templateCtrl, pluginCtrl, secretCtrl, spaceCtrl, pullreqCtrl,
+				webhookCtrl, githookCtrl, git, saCtrl, userCtrl, principalCtrl, userGroupCtrl, checkCtrl, uploadCtrl,
+				searchCtrl, gitspaceCtrl, infraProviderCtrl, migrateCtrl, usageSender)
+		})
 	})
 
 	// wrap router in terminatedPath encoder.
@@ -175,7 +186,7 @@ func corsHandler(config *types.Config) func(http.Handler) http.Handler {
 }
 
 // nolint: revive // it's the app context, it shouldn't be the first argument
-func setupRoutesV1(r chi.Router,
+func setupRoutesV1WithAuth(r chi.Router,
 	appCtx context.Context,
 	config *types.Config,
 	repoCtrl *repo.Controller,
@@ -196,16 +207,20 @@ func setupRoutesV1(r chi.Router,
 	saCtrl *serviceaccount.Controller,
 	userCtrl *user.Controller,
 	principalCtrl principal.Controller,
+	userGroupCtrl *usergroup.Controller,
 	checkCtrl *check.Controller,
-	sysCtrl *system.Controller,
 	uploadCtrl *upload.Controller,
 	searchCtrl *keywordsearch.Controller,
 	gitspaceCtrl *gitspace.Controller,
+	infraProviderCtrl *infraprovider.Controller,
 	migrateCtrl *migrate.Controller,
+	usageSender usage.Sender,
 ) {
-	setupSpaces(r, appCtx, spaceCtrl)
+	setupAccountWithAuth(r, userCtrl, config)
+	setupSpaces(r, appCtx, infraProviderCtrl, spaceCtrl, repoSettingsCtrl, userGroupCtrl, webhookCtrl, checkCtrl,
+		searchCtrl)
 	setupRepos(r, repoCtrl, repoSettingsCtrl, pipelineCtrl, executionCtrl, triggerCtrl,
-		logCtrl, pullreqCtrl, webhookCtrl, checkCtrl, uploadCtrl)
+		logCtrl, pullreqCtrl, webhookCtrl, checkCtrl, uploadCtrl, searchCtrl, usageSender)
 	setupConnectors(r, connectorCtrl)
 	setupTemplates(r, templateCtrl)
 	setupSecrets(r, secretCtrl)
@@ -214,17 +229,24 @@ func setupRoutesV1(r chi.Router,
 	setupPrincipals(r, principalCtrl)
 	setupInternal(r, githookCtrl, git)
 	setupAdmin(r, userCtrl)
-	setupAccount(r, userCtrl, sysCtrl, config)
-	setupSystem(r, config, sysCtrl)
-	setupResources(r)
 	setupPlugins(r, pluginCtrl)
-	setupKeywordSearch(r, searchCtrl)
+	setupInfraProviders(r, infraProviderCtrl)
 	setupGitspaces(r, gitspaceCtrl)
 	setupMigrate(r, migrateCtrl)
 }
 
 // nolint: revive // it's the app context, it shouldn't be the first argument
-func setupSpaces(r chi.Router, appCtx context.Context, spaceCtrl *space.Controller) {
+func setupSpaces(
+	r chi.Router,
+	appCtx context.Context,
+	infraProviderCtrl *infraprovider.Controller,
+	spaceCtrl *space.Controller,
+	repoSettingsCtrl *reposettings.Controller,
+	userGroupCtrl *usergroup.Controller,
+	webhookCtrl *webhook.Controller,
+	checkCtrl *check.Controller,
+	searchCtrl *keywordsearch.Controller,
+) {
 	r.Route("/spaces", func(r chi.Router) {
 		// Create takes path and parentId via body, not uri
 		r.Post("/", handlerspace.HandleCreate(spaceCtrl))
@@ -243,15 +265,22 @@ func setupSpaces(r chi.Router, appCtx context.Context, spaceCtrl *space.Controll
 			r.Post("/import", handlerspace.HandleImportRepositories(spaceCtrl))
 			r.Post("/move", handlerspace.HandleMove(spaceCtrl))
 			r.Get("/spaces", handlerspace.HandleListSpaces(spaceCtrl))
+			r.Get("/pipelines", handlerspace.HandleListPipelines(spaceCtrl))
+			r.Get("/executions", handlerspace.HandleListExecutions(spaceCtrl))
 			r.Get("/repos", handlerspace.HandleListRepos(spaceCtrl))
+			r.Get("/code-search", handlerkeywordsearch.HandleSearchSpace(searchCtrl))
+			r.Get("/usergroups", handlerUserGroup.HandleList(userGroupCtrl))
 			r.Get("/service-accounts", handlerspace.HandleListServiceAccounts(spaceCtrl))
 			r.Get("/secrets", handlerspace.HandleListSecrets(spaceCtrl))
 			r.Get("/connectors", handlerspace.HandleListConnectors(spaceCtrl))
 			r.Get("/templates", handlerspace.HandleListTemplates(spaceCtrl))
 			r.Get("/gitspaces", handlerspace.HandleListGitspaces(spaceCtrl))
+			r.Get("/infraproviders", handlerspace.HandleListInfraProviderConfigs(infraProviderCtrl))
 			r.Post("/export", handlerspace.HandleExport(spaceCtrl))
 			r.Get("/export-progress", handlerspace.HandleExportProgress(spaceCtrl))
 			r.Post("/public-access", handlerspace.HandleUpdatePublicAccess(spaceCtrl))
+			r.Get("/pullreq", handlerspace.HandleListPullReqs(spaceCtrl))
+			r.Get("/pullreq/count", handlerspace.HandleCountPullReqs(spaceCtrl))
 
 			r.Route("/members", func(r chi.Router) {
 				r.Get("/", handlerspace.HandleMembershipList(spaceCtrl))
@@ -261,6 +290,92 @@ func setupSpaces(r chi.Router, appCtx context.Context, spaceCtrl *space.Controll
 					r.Patch("/", handlerspace.HandleMembershipUpdate(spaceCtrl))
 				})
 			})
+
+			SetupSpaceLabels(r, spaceCtrl)
+			SetupWebhookSpace(r, webhookCtrl)
+			SetupRulesSpace(r, spaceCtrl)
+			SetupAutolinkSpace(r, spaceCtrl)
+
+			r.Get("/checks/recent", handlercheck.HandleCheckListRecentSpace(checkCtrl))
+			r.Route("/usage", func(r chi.Router) {
+				r.Get("/metric", handlerspace.HandleUsageMetric(spaceCtrl))
+			})
+
+			r.Route("/settings", func(r chi.Router) {
+				r.Get("/general", handlerreposettings.HandleGeneralFindSpace(repoSettingsCtrl))
+				r.Patch("/general", handlerreposettings.HandleGeneralUpdateSpace(repoSettingsCtrl))
+			})
+		})
+	})
+}
+
+func SetupSpaceLabels(r chi.Router, spaceCtrl *space.Controller) {
+	r.Route("/labels", func(r chi.Router) {
+		r.Post("/", handlerspace.HandleDefineLabel(spaceCtrl))
+		r.Get("/", handlerspace.HandleListLabels(spaceCtrl))
+		r.Put("/", handlerspace.HandleSaveLabel(spaceCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelKey), func(r chi.Router) {
+			r.Get("/", handlerspace.HandleFindLabel(spaceCtrl))
+			r.Delete("/", handlerspace.HandleDeleteLabel(spaceCtrl))
+			r.Patch("/", handlerspace.HandleUpdateLabel(spaceCtrl))
+
+			r.Route("/values", func(r chi.Router) {
+				r.Post("/", handlerspace.HandleDefineLabelValue(spaceCtrl))
+				r.Get("/", handlerspace.HandleListLabelValues(spaceCtrl))
+				r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelValue), func(r chi.Router) {
+					r.Delete("/", handlerspace.HandleDeleteLabelValue(spaceCtrl))
+					r.Patch("/", handlerspace.HandleUpdateLabelValue(spaceCtrl))
+				})
+			})
+		})
+	})
+}
+
+func SetupWebhookSpace(r chi.Router, webhookCtrl *webhook.Controller) {
+	r.Route("/webhooks", func(r chi.Router) {
+		r.Post("/", handlerwebhook.HandleCreateSpace(webhookCtrl))
+		r.Get("/", handlerwebhook.HandleListSpace(webhookCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamWebhookIdentifier), func(r chi.Router) {
+			r.Get("/", handlerwebhook.HandleFindSpace(webhookCtrl))
+			r.Patch("/", handlerwebhook.HandleUpdateSpace(webhookCtrl))
+			r.Delete("/", handlerwebhook.HandleDeleteSpace(webhookCtrl))
+
+			r.Route("/executions", func(r chi.Router) {
+				r.Get("/", handlerwebhook.HandleListExecutionsSpace(webhookCtrl))
+
+				r.Route(fmt.Sprintf("/{%s}", request.PathParamWebhookExecutionID), func(r chi.Router) {
+					r.Get("/", handlerwebhook.HandleFindExecutionSpace(webhookCtrl))
+					r.Post("/retrigger", handlerwebhook.HandleRetriggerExecutionSpace(webhookCtrl))
+				})
+			})
+		})
+	})
+}
+
+func SetupRulesSpace(r chi.Router, spaceCtrl *space.Controller) {
+	r.Route("/rules", func(r chi.Router) {
+		r.Post("/", handlerspace.HandleRuleCreate(spaceCtrl))
+		r.Get("/", handlerspace.HandleRuleList(spaceCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamRuleIdentifier), func(r chi.Router) {
+			r.Patch("/", handlerspace.HandleRuleUpdate(spaceCtrl))
+			r.Delete("/", handlerspace.HandleRuleDelete(spaceCtrl))
+			r.Get("/", handlerspace.HandleRuleFind(spaceCtrl))
+		})
+	})
+}
+
+func SetupAutolinkSpace(r chi.Router, spaceCtrl *space.Controller) {
+	r.Route("/autolinks", func(r chi.Router) {
+		r.Get("/", handlerspace.HandleAutolinkList(spaceCtrl))
+		r.Post("/", handlerspace.HandleAutolinkCreate(spaceCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamAutolinkID), func(r chi.Router) {
+			r.Get("/", handlerspace.HandleAutolinkFind(spaceCtrl))
+			r.Patch("/", handlerspace.HandleAutolinkUpdate(spaceCtrl))
+			r.Delete("/", handlerspace.HandleAutolinkDelete(spaceCtrl))
 		})
 	})
 }
@@ -276,19 +391,28 @@ func setupRepos(r chi.Router,
 	webhookCtrl *webhook.Controller,
 	checkCtrl *check.Controller,
 	uploadCtrl *upload.Controller,
+	searchCtrl *keywordsearch.Controller,
+	usageSender usage.Sender,
 ) {
 	r.Route("/repos", func(r chi.Router) {
 		// Create takes path and parentId via body, not uri
 		r.Post("/", handlerrepo.HandleCreate(repoCtrl))
 		r.Post("/import", handlerrepo.HandleImport(repoCtrl))
+		r.Post("/link", handlerrepo.HandleLinkedCreate(repoCtrl))
 		r.Route(fmt.Sprintf("/{%s}", request.PathParamRepoRef), func(r chi.Router) {
 			// repo level operations
 			r.Get("/", handlerrepo.HandleFind(repoCtrl))
 			r.Patch("/", handlerrepo.HandleUpdate(repoCtrl))
 			r.Delete("/", handlerrepo.HandleSoftDelete(repoCtrl))
+
+			r.Get("/languages", handlerrepo.HandleGetLanguages(repoCtrl))
 			r.Post("/purge", handlerrepo.HandlePurge(repoCtrl))
 			r.Post("/restore", handlerrepo.HandleRestore(repoCtrl))
 			r.Post("/public-access", handlerrepo.HandleUpdatePublicAccess(repoCtrl))
+			r.Post("/fork", handlerrepo.HandleCreateFork(repoCtrl))
+			r.Post("/fork-sync", handlerrepo.HandleForkSync(repoCtrl))
+			r.Post("/linked/sync", handlerrepo.HandleLinkedSync(repoCtrl))
+			r.Post("/linked/register-webhook", handlerrepo.HandleLinkedRegisterWebhook(repoCtrl))
 
 			r.Route("/settings", func(r chi.Router) {
 				r.Get("/security", handlerreposettings.HandleSecurityFind(repoSettingsCtrl))
@@ -298,6 +422,8 @@ func setupRepos(r chi.Router,
 			})
 
 			r.Get("/summary", handlerrepo.HandleSummary(repoCtrl))
+			r.Get("/activities", handlerrepo.HandleListActivities(repoCtrl))
+			r.Get("/code-search", handlerkeywordsearch.HandleSearchRepo(searchCtrl))
 
 			r.Post("/move", handlerrepo.HandleMove(repoCtrl))
 			r.Get("/service-accounts", handlerrepo.HandleListServiceAccounts(repoCtrl))
@@ -321,7 +447,9 @@ func setupRepos(r chi.Router,
 			})
 
 			r.Route("/raw", func(r chi.Router) {
-				r.Get("/*", handlerrepo.HandleRaw(repoCtrl))
+				r.With(
+					usage.Middleware(usageSender),
+				).Get("/*", handlerrepo.HandleRaw(repoCtrl))
 			})
 
 			// commit operations
@@ -367,13 +495,24 @@ func setupRepos(r chi.Router,
 				r.Post("/*", handlerrepo.HandleMergeCheck(repoCtrl))
 			})
 
+			r.Route("/mergequeue", func(r chi.Router) {
+				r.Get("/*", handlerrepo.HandleMergeQueueListEntries(repoCtrl))
+				r.Delete("/*", handlerrepo.HandleMergeQueueClear(repoCtrl))
+			})
+
+			r.Post("/rebase", handlerrepo.HandleRebase(repoCtrl))
+			r.Post("/squash", handlerrepo.HandleSquash(repoCtrl))
+			r.Post("/merge-commit", handlerrepo.HandleMergeCommit(repoCtrl))
+
 			r.Get("/codeowners/validate", handlerrepo.HandleCodeOwnersValidate(repoCtrl))
 
-			r.Get(fmt.Sprintf("/archive/%s", request.PathParamArchiveGitRef), handlerrepo.HandleArchive(repoCtrl))
+			r.With(
+				usage.Middleware(usageSender),
+			).Get(fmt.Sprintf("/archive/%s", request.PathParamArchiveGitRef), handlerrepo.HandleArchive(repoCtrl))
 
 			SetupPullReq(r, pullreqCtrl)
 
-			SetupWebhook(r, webhookCtrl)
+			SetupWebhookRepo(r, webhookCtrl)
 
 			setupPipelines(r, repoCtrl, pipelineCtrl, executionCtrl, triggerCtrl, logCtrl)
 
@@ -381,7 +520,34 @@ func setupRepos(r chi.Router,
 
 			SetupUploads(r, uploadCtrl)
 
-			SetupRules(r, repoCtrl)
+			SetupRulesRepo(r, repoCtrl)
+
+			SetupRepoLabels(r, repoCtrl)
+
+			SetupAutolinkRepo(r, repoCtrl)
+		})
+	})
+}
+
+func SetupRepoLabels(r chi.Router, repoCtrl *repo.Controller) {
+	r.Route("/labels", func(r chi.Router) {
+		r.Post("/", handlerrepo.HandleDefineLabel(repoCtrl))
+		r.Get("/", handlerrepo.HandleListLabels(repoCtrl))
+		r.Put("/", handlerrepo.HandleSaveLabel(repoCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelKey), func(r chi.Router) {
+			r.Get("/", handlerrepo.HandleFindLabel(repoCtrl))
+			r.Delete("/", handlerrepo.HandleDeleteLabel(repoCtrl))
+			r.Patch("/", handlerrepo.HandleUpdateLabel(repoCtrl))
+
+			r.Route("/values", func(r chi.Router) {
+				r.Post("/", handlerrepo.HandleDefineLabelValue(repoCtrl))
+				r.Get("/", handlerrepo.HandleListLabelValues(repoCtrl))
+				r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelValue), func(r chi.Router) {
+					r.Delete("/", handlerrepo.HandleDeleteLabelValue(repoCtrl))
+					r.Patch("/", handlerrepo.HandleUpdateLabelValue(repoCtrl))
+				})
+			})
 		})
 	})
 }
@@ -426,6 +592,7 @@ func setupConnectors(
 			r.Get("/", handlerconnector.HandleFind(connectorCtrl))
 			r.Patch("/", handlerconnector.HandleUpdate(connectorCtrl))
 			r.Delete("/", handlerconnector.HandleDelete(connectorCtrl))
+			r.Post("/test", handlerconnector.HandleTest(connectorCtrl))
 		})
 	})
 }
@@ -524,6 +691,11 @@ func SetupPullReq(r chi.Router, pullreqCtrl *pullreq.Controller) {
 	r.Route("/pullreq", func(r chi.Router) {
 		r.Post("/", handlerpullreq.HandleCreate(pullreqCtrl))
 		r.Get("/", handlerpullreq.HandleList(pullreqCtrl))
+		r.Get(
+			fmt.Sprintf("/{%s}...{%s}", request.PathParamTargetBranch, request.PathParamSourceBranch),
+			handlerpullreq.HandleFindByBranches(pullreqCtrl),
+		)
+		r.Get("/candidates", handlerpullreq.HandlePRBranchCandidates(pullreqCtrl))
 
 		r.Route(fmt.Sprintf("/{%s}", request.PathParamPullReqNumber), func(r chi.Router) {
 			r.Get("/", handlerpullreq.HandleFind(pullreqCtrl))
@@ -537,6 +709,12 @@ func SetupPullReq(r chi.Router, pullreqCtrl *pullreq.Controller) {
 					r.Patch("/", handlerpullreq.HandleCommentUpdate(pullreqCtrl))
 					r.Delete("/", handlerpullreq.HandleCommentDelete(pullreqCtrl))
 					r.Put("/status", handlerpullreq.HandleCommentStatus(pullreqCtrl))
+					r.Route("/reactions", func(r chi.Router) {
+						r.Route(fmt.Sprintf("/{%s}", request.PathParamPullReqCommentReactionEmoji), func(r chi.Router) {
+							r.Post("/", handlerpullreq.HandleCommentReactionCreate(pullreqCtrl))
+							r.Delete("/", handlerpullreq.HandleCommentReactionDelete(pullreqCtrl))
+						})
+					})
 				})
 			})
 			r.Route("/reviewers", func(r chi.Router) {
@@ -545,43 +723,108 @@ func SetupPullReq(r chi.Router, pullreqCtrl *pullreq.Controller) {
 				r.Route(fmt.Sprintf("/{%s}", request.PathParamReviewerID), func(r chi.Router) {
 					r.Delete("/", handlerpullreq.HandleReviewerDelete(pullreqCtrl))
 				})
+				r.Route("/usergroups", func(r chi.Router) {
+					r.Put("/", handlerpullreq.HandleUserGroupReviewerAdd(pullreqCtrl))
+					r.Route(fmt.Sprintf("/{%s}", request.PathParamUserGroupID), func(r chi.Router) {
+						r.Delete("/", handlerpullreq.HandleUserGroupReviewerDelete(pullreqCtrl))
+					})
+				})
+				r.Route("/combined", func(r chi.Router) {
+					r.Get("/", handlerpullreq.HandleReviewerCombinedList(pullreqCtrl))
+				})
 			})
 			r.Route("/reviews", func(r chi.Router) {
 				r.Post("/", handlerpullreq.HandleReviewSubmit(pullreqCtrl))
 			})
 			r.Post("/merge", handlerpullreq.HandleMerge(pullreqCtrl))
+			r.Post("/revert", handlerpullreq.HandleRevert(pullreqCtrl))
 			r.Get("/commits", handlerpullreq.HandleCommits(pullreqCtrl))
 			r.Get("/metadata", handlerpullreq.HandleMetadata(pullreqCtrl))
+			r.Route("/branch", func(r chi.Router) {
+				r.Post("/", handlerpullreq.HandleRestoreBranch(pullreqCtrl))
+				r.Delete("/", handlerpullreq.HandleDeleteBranch(pullreqCtrl))
+			})
+
+			r.Put("/target-branch", handlerpullreq.HandleChangeTargetBranch(pullreqCtrl))
 
 			r.Route("/file-views", func(r chi.Router) {
 				r.Put("/", handlerpullreq.HandleFileViewAdd(pullreqCtrl))
 				r.Get("/", handlerpullreq.HandleFileViewList(pullreqCtrl))
 				r.Delete("/*", handlerpullreq.HandleFileViewDelete(pullreqCtrl))
 			})
+			r.Route("/view", func(r chi.Router) {
+				r.Get("/", handlerpullreq.HandlePullReqViewGet(pullreqCtrl))
+				r.Put("/", handlerpullreq.HandlePullReqViewCreate(pullreqCtrl))
+			})
 			r.Get("/codeowners", handlerpullreq.HandleCodeOwner(pullreqCtrl))
 			r.Get("/diff", handlerpullreq.HandleDiff(pullreqCtrl))
 			r.Post("/diff", handlerpullreq.HandleDiff(pullreqCtrl))
 			r.Get("/checks", handlerpullreq.HandleCheckList(pullreqCtrl))
+			r.Route("/automerge", func(r chi.Router) {
+				r.Put("/", handlerpullreq.HandleAutoMergeEnable(pullreqCtrl))
+				r.Delete("/", handlerpullreq.HandleAutoMergeDisable(pullreqCtrl))
+				r.Get("/", handlerpullreq.HandleAutoMergeGet(pullreqCtrl))
+			})
+			r.Route("/mergequeue", func(r chi.Router) {
+				r.Get("/", handlerpullreq.HandleMergeQueueGet(pullreqCtrl))
+				r.Put("/", handlerpullreq.HandleMergeQueueEnable(pullreqCtrl))
+				r.Delete("/", handlerpullreq.HandleMergeQueueRemove(pullreqCtrl))
+				r.Post("/prioritize", handlerpullreq.HandleMergeQueuePrioritize(pullreqCtrl))
+			})
+
+			setupPullReqLabels(r, pullreqCtrl)
+			SetupPullReqSuggestions(r, pullreqCtrl)
 		})
 	})
 }
 
-func SetupWebhook(r chi.Router, webhookCtrl *webhook.Controller) {
+func setupPullReqLabels(r chi.Router, pullreqCtrl *pullreq.Controller) {
+	r.Route("/labels", func(r chi.Router) {
+		r.Put("/", handlerpullreq.HandleAssignLabel(pullreqCtrl))
+		r.Get("/", handlerpullreq.HandleListLabels(pullreqCtrl))
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelID), func(r chi.Router) {
+			r.Delete("/", handlerpullreq.HandleUnassignLabel(pullreqCtrl))
+		})
+	})
+}
+
+func SetupPullReqSuggestions(r chi.Router, pullreqCtrl *pullreq.Controller) {
+	r.Route("/suggestions", func(r chi.Router) {
+		r.Route("/reviewers", func(r chi.Router) {
+			r.Get("/", handlerpullreq.HandleReviewerSuggestList(pullreqCtrl))
+			r.Post("/batch", handlerpullreq.HandleReviewerSuggestBatch(pullreqCtrl))
+			r.Route(fmt.Sprintf("/{%s}", request.PathParamPrincipalID), func(r chi.Router) {
+				r.Delete("/", handlerpullreq.HandleReviewerSuggestDelete(pullreqCtrl))
+				r.Post("/apply", handlerpullreq.HandleReviewerSuggestApply(pullreqCtrl))
+			})
+		})
+		r.Route("/labels", func(r chi.Router) {
+			r.Get("/", handlerpullreq.HandleListSuggestedLabels(pullreqCtrl))
+			r.Post("/batch", handlerpullreq.HandleSuggestLabels(pullreqCtrl))
+			r.Route(fmt.Sprintf("/{%s}", request.PathParamLabelID), func(r chi.Router) {
+				r.Delete("/", handlerpullreq.HandleRemoveSuggestedLabel(pullreqCtrl))
+				r.Post("/apply", handlerpullreq.HandleApplySuggestedLabel(pullreqCtrl))
+			})
+		})
+	})
+}
+
+func SetupWebhookRepo(r chi.Router, webhookCtrl *webhook.Controller) {
 	r.Route("/webhooks", func(r chi.Router) {
-		r.Post("/", handlerwebhook.HandleCreate(webhookCtrl))
-		r.Get("/", handlerwebhook.HandleList(webhookCtrl))
+		r.Post("/", handlerwebhook.HandleCreateRepo(webhookCtrl))
+		r.Get("/", handlerwebhook.HandleListRepo(webhookCtrl))
 
 		r.Route(fmt.Sprintf("/{%s}", request.PathParamWebhookIdentifier), func(r chi.Router) {
-			r.Get("/", handlerwebhook.HandleFind(webhookCtrl))
-			r.Patch("/", handlerwebhook.HandleUpdate(webhookCtrl))
-			r.Delete("/", handlerwebhook.HandleDelete(webhookCtrl))
+			r.Get("/", handlerwebhook.HandleFindRepo(webhookCtrl))
+			r.Patch("/", handlerwebhook.HandleUpdateRepo(webhookCtrl))
+			r.Delete("/", handlerwebhook.HandleDeleteRepo(webhookCtrl))
 
 			r.Route("/executions", func(r chi.Router) {
-				r.Get("/", handlerwebhook.HandleListExecutions(webhookCtrl))
+				r.Get("/", handlerwebhook.HandleListExecutionsRepo(webhookCtrl))
 
 				r.Route(fmt.Sprintf("/{%s}", request.PathParamWebhookExecutionID), func(r chi.Router) {
-					r.Get("/", handlerwebhook.HandleFindExecution(webhookCtrl))
-					r.Post("/retrigger", handlerwebhook.HandleRetriggerExecution(webhookCtrl))
+					r.Get("/", handlerwebhook.HandleFindExecutionRepo(webhookCtrl))
+					r.Post("/retrigger", handlerwebhook.HandleRetriggerExecutionRepo(webhookCtrl))
 				})
 			})
 		})
@@ -598,14 +841,28 @@ func SetupChecks(r chi.Router, checkCtrl *check.Controller) {
 	})
 }
 
-func SetupRules(r chi.Router, repoCtrl *repo.Controller) {
+func SetupRulesRepo(r chi.Router, repoCtrl *repo.Controller) {
 	r.Route("/rules", func(r chi.Router) {
 		r.Post("/", handlerrepo.HandleRuleCreate(repoCtrl))
 		r.Get("/", handlerrepo.HandleRuleList(repoCtrl))
+
 		r.Route(fmt.Sprintf("/{%s}", request.PathParamRuleIdentifier), func(r chi.Router) {
 			r.Patch("/", handlerrepo.HandleRuleUpdate(repoCtrl))
 			r.Delete("/", handlerrepo.HandleRuleDelete(repoCtrl))
 			r.Get("/", handlerrepo.HandleRuleFind(repoCtrl))
+		})
+	})
+}
+
+func SetupAutolinkRepo(r chi.Router, repoCtrl *repo.Controller) {
+	r.Route("/autolinks", func(r chi.Router) {
+		r.Get("/", handlerrepo.HandleAutolinkList(repoCtrl))
+		r.Post("/", handlerrepo.HandleAutolinkCreate(repoCtrl))
+
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamAutolinkID), func(r chi.Router) {
+			r.Get("/", handlerrepo.HandleAutolinkFind(repoCtrl))
+			r.Patch("/", handlerrepo.HandleAutolinkUpdate(repoCtrl))
+			r.Delete("/", handlerrepo.HandleAutolinkDelete(repoCtrl))
 		})
 	})
 }
@@ -645,6 +902,15 @@ func setupUser(r chi.Router, userCtrl *user.Controller) {
 			r.Post("/", handleruser.HandleCreatePublicKey(userCtrl))
 			r.Delete(fmt.Sprintf("/{%s}", request.PathParamPublicKeyIdentifier),
 				handleruser.HandleDeletePublicKey(userCtrl))
+			r.Patch(fmt.Sprintf("/{%s}", request.PathParamPublicKeyIdentifier),
+				handleruser.HandleUpdatePublicKey(userCtrl))
+		})
+
+		// Favorites
+		r.Route("/favorite", func(r chi.Router) {
+			r.Post("/", handleruser.HandleCreateFavorite(userCtrl))
+			r.Delete(fmt.Sprintf("/{%s}", request.PathParamResourceID),
+				handleruser.HandleDeleteFavorite(userCtrl))
 		})
 	})
 }
@@ -695,18 +961,28 @@ func setupPrincipals(r chi.Router, principalCtrl principal.Controller) {
 	})
 }
 
-func setupKeywordSearch(r chi.Router, searchCtrl *keywordsearch.Controller) {
-	r.Post("/search", handlerkeywordsearch.HandleSearch(searchCtrl))
-}
-
 func setupGitspaces(r chi.Router, gitspacesCtrl *gitspace.Controller) {
 	r.Route("/gitspaces", func(r chi.Router) {
+		r.Post("/lookup-repo", handlergitspace.HandleLookupRepo(gitspacesCtrl))
 		r.Post("/", handlergitspace.HandleCreateConfig(gitspacesCtrl))
+		r.Get("/", handlergitspace.HandleListAllGitspaces(gitspacesCtrl))
 		r.Route(fmt.Sprintf("/{%s}", request.PathParamGitspaceIdentifier), func(r chi.Router) {
 			r.Get("/", handlergitspace.HandleFind(gitspacesCtrl))
-			r.Post("/action", handlergitspace.HandleAction(gitspacesCtrl))
+			r.Post("/actions", handlergitspace.HandleAction(gitspacesCtrl))
 			r.Delete("/", handlergitspace.HandleDeleteConfig(gitspacesCtrl))
 			r.Patch("/", handlergitspace.HandleUpdateConfig(gitspacesCtrl))
+			r.Get("/events", handlergitspace.HandleEvents(gitspacesCtrl))
+			r.Get("/logs/stream", handlergitspace.HandleLogsStream(gitspacesCtrl))
+		})
+	})
+}
+
+func setupInfraProviders(r chi.Router, infraProviderCtrl *infraprovider.Controller) {
+	r.Route("/infraproviders", func(r chi.Router) {
+		r.Post("/", handlerinfraProvider.HandleCreateConfig(infraProviderCtrl))
+		r.Route(fmt.Sprintf("/{%s}", request.PathParamInfraProviderConfigIdentifier), func(r chi.Router) {
+			r.Get("/", handlerinfraProvider.HandleFind(infraProviderCtrl))
+			r.Delete("/", handlerinfraProvider.HandleDelete(infraProviderCtrl))
 		})
 	})
 }
@@ -728,19 +1004,38 @@ func setupAdmin(r chi.Router, userCtrl *user.Controller) {
 	})
 }
 
-func setupAccount(r chi.Router, userCtrl *user.Controller, sysCtrl *system.Controller, config *types.Config) {
+func setupAccountWithoutAuth(
+	r chi.Router,
+	userCtrl *user.Controller,
+	sysCtrl *system.Controller,
+	config *types.Config,
+) {
 	cookieName := config.Token.CookieName
 	r.Post("/login", account.HandleLogin(userCtrl, cookieName))
 	r.Post("/register", account.HandleRegister(userCtrl, sysCtrl, cookieName))
+}
+
+func setupAccountWithAuth(r chi.Router, userCtrl *user.Controller, config *types.Config) {
+	cookieName := config.Token.CookieName
 	r.Post("/logout", account.HandleLogout(userCtrl, cookieName))
 }
 
-func setupMigrate(r chi.Router, ctrl *migrate.Controller) {
+func setupMigrate(r chi.Router, migCtrl *migrate.Controller) {
 	r.Route("/migrate", func(r chi.Router) {
-		SetupMigrateRoutes(r, ctrl)
-	})
-}
+		r.Route("/spaces", func(r chi.Router) {
+			r.Route(fmt.Sprintf("/{%s}", request.PathParamSpaceRef), func(r chi.Router) {
+				r.Post("/labels", handlermigrate.HandleLabels(migCtrl))
+			})
+		})
 
-func SetupMigrateRoutes(_ chi.Router, _ *migrate.Controller) {
-	// add migrate routes with spaces
+		r.Route("/repos", func(r chi.Router) {
+			r.Post("/", handlermigrate.HandleCreateRepo(migCtrl))
+			r.Route(fmt.Sprintf("/{%s}", request.PathParamRepoRef), func(r chi.Router) {
+				r.Patch("/update-state", handlermigrate.HandleUpdateRepoState(migCtrl))
+				r.Post("/pullreqs", handlermigrate.HandlePullRequests(migCtrl))
+				r.Post("/webhooks", handlermigrate.HandleWebhooks(migCtrl))
+				r.Post("/rules", handlermigrate.HandleRules(migCtrl))
+			})
+		})
+	})
 }

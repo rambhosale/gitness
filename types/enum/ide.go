@@ -14,13 +14,76 @@
 
 package enum
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 type IDEType string
 
-func (IDEType) Enum() []interface{} { return toInterfaceSlice(ideTypes) }
+func (i IDEType) Enum() []any {
+	return toInterfaceSlice(ideTypes)
+}
 
-var ideTypes = []IDEType{IDETypeVSCode, IDETypeVSCodeWeb}
+func (i *IDEType) String() string {
+	if i == nil {
+		return ""
+	}
+	return string(*i)
+}
+
+var ideTypes = []IDEType{IDETypeVSCode, IDETypeVSCodeWeb, IDETypeCursor, IDETypeWindsurf,
+	IDETypeIntelliJ, IDETypePyCharm, IDETypeGoland, IDETypeWebStorm, IDETypeCLion, IDETypePHPStorm,
+	IDETypeRubyMine, IDETypeRider}
+
+var jetBrainsIDESet = map[IDEType]struct{}{
+	IDETypeIntelliJ: {},
+	IDETypePyCharm:  {},
+	IDETypeGoland:   {},
+	IDETypeWebStorm: {},
+	IDETypeCLion:    {},
+	IDETypePHPStorm: {},
+	IDETypeRubyMine: {},
+	IDETypeRider:    {},
+}
 
 const (
 	IDETypeVSCode    IDEType = "vs_code"
 	IDETypeVSCodeWeb IDEType = "vs_code_web"
+	// AI-based IDEs.
+	IDETypeCursor   IDEType = "cursor"
+	IDETypeWindsurf IDEType = "windsurf"
+	// all jetbrains IDEs.
+	IDETypeIntelliJ IDEType = "intellij"
+	IDETypePyCharm  IDEType = "pycharm"
+	IDETypeGoland   IDEType = "goland"
+	IDETypeWebStorm IDEType = "webstorm"
+	IDETypeCLion    IDEType = "clion"
+	IDETypePHPStorm IDEType = "phpstorm"
+	IDETypeRubyMine IDEType = "rubymine"
+	IDETypeRider    IDEType = "rider"
 )
+
+func IsJetBrainsIDE(t IDEType) bool {
+	_, exist := jetBrainsIDESet[t]
+	return exist
+}
+
+func (i *IDEType) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	// Accept empty IDE type without failing JSON decode
+	if s == "" {
+		*i = ""
+		return nil
+	}
+	for _, v := range ideTypes {
+		if IDEType(s) == v {
+			*i = v
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid IDEType: %s", s)
+}

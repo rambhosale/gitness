@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/types/enum"
 )
 
@@ -58,8 +59,22 @@ var allPullReqActivityPayloads = func(
 	func() PullReqActivityPayload { return &PullRequestActivityPayloadStateChange{} },
 	func() PullReqActivityPayload { return &PullRequestActivityPayloadTitleChange{} },
 	func() PullReqActivityPayload { return &PullRequestActivityPayloadReviewSubmit{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadReviewerAdd{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadUserGroupReviewerAdd{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadReviewerDelete{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadUserGroupReviewerDelete{} },
 	func() PullReqActivityPayload { return &PullRequestActivityPayloadBranchUpdate{} },
 	func() PullReqActivityPayload { return &PullRequestActivityPayloadBranchDelete{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadBranchRestore{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadBranchChangeTarget{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadTargetBranchDeleted{} },
+	func() PullReqActivityPayload { return &PullRequestActivityLabel{} },
+	func() PullReqActivityPayload { return &PullRequestActivityLabels{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadNonUniqueMergeBase{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadAutoMergeDisabled{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadAutoMergeDisabledBranchUpdate{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadMergeQueueAdd{} },
+	func() PullReqActivityPayload { return &PullRequestActivityPayloadMergeQueueRemove{} },
 })
 
 // newPayloadForActivity returns a new payload instance for the requested activity type.
@@ -95,6 +110,7 @@ type PullRequestActivityPayloadMerge struct {
 	TargetSHA     string           `json:"target_sha"`
 	SourceSHA     string           `json:"source_sha"`
 	RulesBypassed bool             `json:"rules_bypassed,omitempty"`
+	BypassMessage string           `json:"bypass_message,omitempty"`
 }
 
 func (a *PullRequestActivityPayloadMerge) ActivityType() enum.PullReqActivityType {
@@ -130,9 +146,49 @@ func (a *PullRequestActivityPayloadReviewSubmit) ActivityType() enum.PullReqActi
 	return enum.PullReqActivityTypeReviewSubmit
 }
 
+type PullRequestActivityPayloadReviewerAdd struct {
+	PrincipalID  int64                    `json:"principal_id,omitempty"`
+	PrincipalIDs []int64                  `json:"principal_ids,omitempty"`
+	ReviewerType enum.PullReqReviewerType `json:"reviewer_type"`
+}
+
+func (a *PullRequestActivityPayloadReviewerAdd) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeReviewerAdd
+}
+
+type PullRequestActivityPayloadUserGroupReviewerAdd struct {
+	UserGroupIDs []int64                  `json:"user_group_ids,omitempty"`
+	ReviewerType enum.PullReqReviewerType `json:"reviewer_type"`
+}
+
+func (a *PullRequestActivityPayloadUserGroupReviewerAdd) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeUserGroupReviewerAdd
+}
+
+type PullRequestActivityPayloadReviewerDelete struct {
+	CommitSHA   string                     `json:"commit_sha"`
+	Decision    enum.PullReqReviewDecision `json:"decision"`
+	PrincipalID int64                      `json:"principal_id"`
+}
+
+func (a *PullRequestActivityPayloadReviewerDelete) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeReviewerDelete
+}
+
+type PullRequestActivityPayloadUserGroupReviewerDelete struct {
+	UserGroupIDs []int64 `json:"user_group_ids"`
+}
+
+func (a *PullRequestActivityPayloadUserGroupReviewerDelete) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeUserGroupReviewerDelete
+}
+
 type PullRequestActivityPayloadBranchUpdate struct {
-	Old string `json:"old"`
-	New string `json:"new"`
+	Old    string `json:"old"`
+	New    string `json:"new"`
+	Forced bool   `json:"forced"`
+
+	CommitTitle string `json:"commit_title"`
 }
 
 func (a *PullRequestActivityPayloadBranchUpdate) ActivityType() enum.PullReqActivityType {
@@ -145,4 +201,106 @@ type PullRequestActivityPayloadBranchDelete struct {
 
 func (a *PullRequestActivityPayloadBranchDelete) ActivityType() enum.PullReqActivityType {
 	return enum.PullReqActivityTypeBranchDelete
+}
+
+type PullRequestActivityPayloadBranchRestore struct {
+	SHA string `json:"sha"`
+}
+
+func (a *PullRequestActivityPayloadBranchRestore) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeBranchRestore
+}
+
+type PullRequestActivityPayloadBranchChangeTarget struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+func (a *PullRequestActivityPayloadBranchChangeTarget) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeTargetBranchChange
+}
+
+type PullRequestActivityPayloadTargetBranchDeleted struct {
+	OldTargetBranch string `json:"old_target_branch"`
+	NewTargetBranch string `json:"new_target_branch"`
+	OldMergeBaseSHA string `json:"old_merge_base_sha"`
+	NewMergeBaseSHA string `json:"new_merge_base_sha"`
+}
+
+func (a *PullRequestActivityPayloadTargetBranchDeleted) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeTargetBranchDeleted
+}
+
+type PullRequestActivityLabelBase struct {
+	Label         string           `json:"label"`
+	LabelColor    enum.LabelColor  `json:"label_color"`
+	LabelScope    int64            `json:"label_scope"`
+	Value         *string          `json:"value,omitempty"`
+	ValueColor    *enum.LabelColor `json:"value_color,omitempty"`
+	OldValue      *string          `json:"old_value,omitempty"`
+	OldValueColor *enum.LabelColor `json:"old_value_color,omitempty"`
+}
+
+type PullRequestActivityLabel struct {
+	PullRequestActivityLabelBase
+	Type enum.PullReqLabelActivityType `json:"type"`
+}
+
+func (a *PullRequestActivityLabel) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeLabelModify
+}
+
+type PullRequestActivityLabels struct {
+	Type   enum.PullReqLabelActivityType   `json:"type"`
+	Labels []*PullRequestActivityLabelBase `json:"labels"`
+}
+
+func (a *PullRequestActivityLabels) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeLabelModify
+}
+
+type PullRequestActivityPayloadNonUniqueMergeBase struct {
+	TargetSHA sha.SHA `json:"target_sha"`
+	SourceSHA sha.SHA `json:"source_sha"`
+}
+
+func (a *PullRequestActivityPayloadNonUniqueMergeBase) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeNonUniqueMergeBase
+}
+
+type PullRequestActivityPayloadAutoMergeDisabled struct {
+	MergeMethod enum.MergeMethod `json:"merge_method"`
+}
+
+func (a *PullRequestActivityPayloadAutoMergeDisabled) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeAutoMergeUnsupportedMergeMethod
+}
+
+// PullRequestActivityPayloadAutoMergeDisabledBranchUpdate records the push that turned auto-merge off,
+// so the timeline can point at the exact revision change that invalidated the auto-merge intent.
+type PullRequestActivityPayloadAutoMergeDisabledBranchUpdate struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+func (a *PullRequestActivityPayloadAutoMergeDisabledBranchUpdate) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeAutoMergeDisabledBranchUpdate
+}
+
+type PullRequestActivityPayloadMergeQueueAdd struct {
+	MergeMethod enum.MergeMethod `json:"merge_method"`
+}
+
+func (a *PullRequestActivityPayloadMergeQueueAdd) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeMergeQueueAdd
+}
+
+type PullRequestActivityPayloadMergeQueueRemove struct {
+	Reason          enum.MergeQueueRemovalReason `json:"reason"`
+	MergeQueueCheck string                       `json:"merge_queue_check,omitempty"`
+	MergeCommitSHA  string                       `json:"merge_commit_sha,omitempty"`
+}
+
+func (a *PullRequestActivityPayloadMergeQueueRemove) ActivityType() enum.PullReqActivityType {
+	return enum.PullReqActivityTypeMergeQueueRemove
 }

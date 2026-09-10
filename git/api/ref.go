@@ -236,10 +236,13 @@ func (g *Git) GetRef(
 	)
 	output := &bytes.Buffer{}
 	err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(output))
-	if err != nil {
-		if command.AsError(err).IsExitCode(128) && strings.Contains(err.Error(), "not a valid ref") {
-			return sha.None, errors.NotFound("reference %q not found", ref)
+	if cErr := command.AsError(err); cErr != nil {
+		if cErr.IsExitCode(128) && cErr.IsInvalidRefErr() {
+			return sha.None, errors.NotFoundf("reference %q not found", ref)
 		}
+	}
+
+	if err != nil {
 		return sha.None, err
 	}
 
@@ -253,7 +256,7 @@ func GetReferenceFromBranchName(branchName string) string {
 	// remove spaces
 	branchName = strings.TrimSpace(branchName)
 	// remove `refs/heads/` prefix (shouldn't be there, but if it is remove it to try to avoid complications)
-	// NOTE: This is used to reduce missconfigurations via api
+	// NOTE: This is used to reduce misconfigurations via api
 	// TODO: block via CLI, too
 	branchName = strings.TrimPrefix(branchName, gitReferenceNamePrefixBranch)
 
@@ -265,7 +268,7 @@ func GetReferenceFromTagName(tagName string) string {
 	// remove spaces
 	tagName = strings.TrimSpace(tagName)
 	// remove `refs/heads/` prefix (shouldn't be there, but if it is remove it to try to avoid complications)
-	// NOTE: This is used to reduce missconfigurations via api
+	// NOTE: This is used to reduce misconfigurations via api
 	// TODO: block via CLI, too
 	tagName = strings.TrimPrefix(tagName, gitReferenceNamePrefixTag)
 

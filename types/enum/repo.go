@@ -18,10 +18,10 @@ import (
 	"strings"
 )
 
-// Defines repo attributes that can be used for sorting and filtering.
+// RepoAttr defines repo attributes that can be used for sorting and filtering.
 type RepoAttr int
 
-// Order enumeration.
+// RepoAttr enumeration.
 const (
 	RepoAttrNone RepoAttr = iota
 	// TODO [CODE-1363]: remove after identifier migration.
@@ -30,6 +30,7 @@ const (
 	RepoAttrCreated
 	RepoAttrUpdated
 	RepoAttrDeleted
+	RepoAttrLastGITPush
 )
 
 // ParseRepoAttr parses the repo attribute string
@@ -47,6 +48,8 @@ func ParseRepoAttr(s string) RepoAttr {
 		return RepoAttrUpdated
 	case deleted, deletedAt:
 		return RepoAttrDeleted
+	case lastGITPush:
+		return RepoAttrLastGITPush
 	default:
 		return RepoAttrNone
 	}
@@ -66,8 +69,64 @@ func (a RepoAttr) String() string {
 		return updated
 	case RepoAttrDeleted:
 		return deleted
+	case RepoAttrLastGITPush:
+		return lastGITPush
 	case RepoAttrNone:
 		return ""
+	default:
+		return undefined
+	}
+}
+
+// RepoState defines repo state.
+type RepoState int
+
+// RepoState enumeration.
+const (
+	RepoStateActive RepoState = iota
+	RepoStateGitImport
+	RepoStateMigrateGitPush
+	RepoStateMigrateDataImport
+	RepoStateArchived
+	RepoStateImportFailed
+)
+
+// String returns the string representation of the RepoState.
+func (state RepoState) String() string {
+	switch state {
+	case RepoStateActive:
+		return "active"
+	case RepoStateGitImport:
+		return "git-import"
+	case RepoStateMigrateGitPush:
+		return "migrate-git-push"
+	case RepoStateMigrateDataImport:
+		return "migrate-data-import"
+	case RepoStateArchived:
+		return "archived"
+	case RepoStateImportFailed:
+		return "import-failed"
+	default:
+		return undefined
+	}
+}
+
+// RepoType defines repo type.
+type RepoType string
+
+// RepoType enumeration.
+const (
+	RepoTypeNormal RepoType = ""
+	RepoTypeLinked RepoType = "linked"
+)
+
+// String returns the string representation of the RepoType.
+func (t RepoType) String() string {
+	switch t {
+	case RepoTypeNormal:
+		return ""
+	case RepoTypeLinked:
+		return "linked"
 	default:
 		return undefined
 	}

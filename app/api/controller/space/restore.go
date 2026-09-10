@@ -56,7 +56,7 @@ func (c *Controller) Restore(
 	}
 
 	// check view permission on the original ref.
-	err = apiauth.CheckSpace(ctx, c.authorizer, session, space, enum.PermissionSpaceView)
+	err = apiauth.CheckSpace(ctx, c.authorizer, session, space.Core(), enum.PermissionSpaceView)
 	if err != nil {
 		return nil, fmt.Errorf("failed to authorize on space restore: %w", err)
 	}
@@ -71,7 +71,7 @@ func (c *Controller) Restore(
 		ctx,
 		c.authorizer,
 		session,
-		parentSpace,
+		parentSpace.Core(),
 		enum.ResourceTypeSpace,
 		enum.PermissionSpaceEdit,
 	); err != nil {
@@ -133,6 +133,12 @@ func (c *Controller) restoreSpaceInnerInTx(
 
 	if err := c.resourceLimiter.RepoCount(ctx, space.ID, int(repoCount)); err != nil {
 		return nil, fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
+	}
+
+	// A restore brings the repositories' storage back, so a space that is over an
+	// enforced storage limit takes no restore either.
+	if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, space.ID); err != nil {
+		return nil, err
 	}
 
 	filter := &types.SpaceFilter{

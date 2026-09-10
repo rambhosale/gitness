@@ -34,6 +34,7 @@ func (c *Controller) CodeOwners(
 	if err != nil {
 		return types.CodeOwnerEvaluation{}, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
+
 	pr, err := c.pullreqStore.FindByNumber(ctx, repo.ID, pullreqNum)
 	if err != nil {
 		return types.CodeOwnerEvaluation{}, fmt.Errorf("failed to get pull request by number: %w", err)
@@ -59,12 +60,12 @@ func (c *Controller) CodeOwners(
 func mapCodeOwnerEvaluation(ownerEvaluation *codeowners.Evaluation) []types.CodeOwnerEvaluationEntry {
 	codeOwnerEvaluationEntries := make([]types.CodeOwnerEvaluationEntry, len(ownerEvaluation.EvaluationEntries))
 	for i, entry := range ownerEvaluation.EvaluationEntries {
-		ownerEvaluations := make([]types.OwnerEvaluation, len(entry.OwnerEvaluations))
-		userGroupOwnerEvaluations := make([]types.UserGroupOwnerEvaluation, len(entry.UserGroupOwnerEvaluations))
-		for j, owner := range entry.OwnerEvaluations {
+		ownerEvaluations := make([]types.OwnerEvaluation, len(entry.UserEvaluations))
+		userGroupOwnerEvaluations := make([]types.UserGroupOwnerEvaluation, len(entry.UserGroupEvaluations))
+		for j, owner := range entry.UserEvaluations {
 			ownerEvaluations[j] = mapOwner(owner)
 		}
-		for j, userGroupOwnerEvaluation := range entry.UserGroupOwnerEvaluations {
+		for j, userGroupOwnerEvaluation := range entry.UserGroupEvaluations {
 			userGroupEvaluations := make([]types.OwnerEvaluation, len(userGroupOwnerEvaluation.Evaluations))
 			for k, userGroupOwner := range userGroupOwnerEvaluation.Evaluations {
 				userGroupEvaluations[k] = mapOwner(userGroupOwner)
@@ -85,7 +86,7 @@ func mapCodeOwnerEvaluation(ownerEvaluation *codeowners.Evaluation) []types.Code
 	return codeOwnerEvaluationEntries
 }
 
-func mapOwner(owner codeowners.OwnerEvaluation) types.OwnerEvaluation {
+func mapOwner(owner codeowners.UserEvaluation) types.OwnerEvaluation {
 	return types.OwnerEvaluation{
 		Owner:          owner.Owner,
 		ReviewDecision: owner.ReviewDecision,

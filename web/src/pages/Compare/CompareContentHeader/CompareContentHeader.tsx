@@ -19,10 +19,10 @@ import { useMutate } from 'restful-react'
 import { Container, Layout, FlexExpander, ButtonVariation, Text, SplitButton } from '@harnessio/uicore'
 import { Icon } from '@harnessio/icons'
 import { Color } from '@harnessio/design-system'
-import { Menu, PopoverPosition, Icon as BIcon } from '@blueprintjs/core'
+import { Menu, PopoverPosition } from '@blueprintjs/core'
 import type { RepoMergeCheck } from 'services/code'
 import { useStrings } from 'framework/strings'
-import { normalizeGitRef, type GitInfoProps } from 'utils/GitUtils'
+import { CodeIcon, normalizeGitRef, type GitInfoProps } from 'utils/GitUtils'
 import { BranchTagSelect } from 'components/BranchTagSelect/BranchTagSelect'
 import { getErrorMessage, permissionProps } from 'utils/Utils'
 import { UserPreference, useUserPreference } from 'hooks/useUserPreference'
@@ -83,6 +83,7 @@ export function CompareContentHeader({
           labelPrefix={getString('prefixBase')}
           placeHolder={getString('selectBranchPlaceHolder')}
           className={css.branchTagDropdown}
+          popoverClassname={css.popoverClassname}
         />
         <Icon name="arrow-left" size={14} />
         <BranchTagSelect
@@ -94,6 +95,7 @@ export function CompareContentHeader({
           labelPrefix={getString('prefixCompare')}
           placeHolder={getString('selectBranchPlaceHolder')}
           className={css.branchTagDropdown}
+          popoverClassname={css.popoverClassname}
         />
         {!!targetGitRef && !!sourceGitRef && (
           <MergeableLabel repoMetadata={repoMetadata} targetGitRef={targetGitRef} sourceGitRef={sourceGitRef} />
@@ -101,6 +103,7 @@ export function CompareContentHeader({
         <FlexExpander />
         <SplitButton
           loading={loading}
+          disabled={loading}
           text={createOption.title}
           variation={ButtonVariation.PRIMARY}
           popoverProps={{
@@ -121,7 +124,7 @@ export function CompareContentHeader({
                 className={css.menuItem}
                 text={
                   <>
-                    <BIcon icon={createOption.type === option.type ? 'tick' : 'blank'} />
+                    <Icon name={createOption.type === option.type ? CodeIcon.Tick : CodeIcon.Blank} />
                     <strong>{option.title}</strong>
                     <p>{option.desc}</p>
                   </>

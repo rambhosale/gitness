@@ -16,8 +16,31 @@
 package types
 
 type UserGroup struct {
+	ID          int64    `json:"id"`
+	Identifier  string   `json:"identifier"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	SpaceID     int64    `json:"-"`
+	Created     int64    `json:"created"`
+	Updated     int64    `json:"updated"`
+	Users       []string // Users are used by the code owners code
+	Scope       int64    `json:"scope"`
+}
+
+type UserGroupInfo struct {
+	ID          int64  `json:"id"`
 	Identifier  string `json:"identifier"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Users       []string
+	Scope       int64  `json:"scope"`
+}
+
+func (u *UserGroup) ToUserGroupInfo() *UserGroupInfo {
+	return &UserGroupInfo{
+		ID:          u.ID,
+		Identifier:  u.Identifier,
+		Name:        u.Name,
+		Description: u.Description,
+		Scope:       u.Scope,
+	}
 }

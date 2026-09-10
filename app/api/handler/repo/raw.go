@@ -15,12 +15,16 @@
 package repo
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
 
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
+	"github.com/harness/gitness/types"
 
 	"github.com/rs/zerolog/log"
 )
@@ -41,26 +45,68 @@ func HandleRaw(repoCtrl *repo.Controller) http.HandlerFunc {
 		gitRef := request.GetGitRefFromQueryOrDefault(r, "")
 		path := request.GetOptionalRemainderFromPath(r)
 
-		dataReader, dataLength, sha, err := repoCtrl.Raw(ctx, session, repoRef, gitRef, path)
+		resp, err := repoCtrl.Raw(ctx, session, repoRef, gitRef, path)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
 
 		defer func() {
-			if err := dataReader.Close(); err != nil {
+			if err := resp.Data.Close(); err != nil {
 				log.Ctx(ctx).Warn().Err(err).Msgf("failed to close blob content reader.")
 			}
 		}()
 
 		ifNoneMatch, ok := request.GetIfNoneMatchFromHeader(r)
-		if ok && ifNoneMatch == sha.String() {
+		if ok && ifNoneMatch == resp.SHA.String() {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 
-		w.Header().Add("Content-Length", fmt.Sprint(dataLength))
-		w.Header().Add(request.HeaderETag, sha.String())
-		render.Reader(ctx, w, http.StatusOK, dataReader)
+		render.UserContentSecurityHeaders(w)
+
+		w.Header().Add("Content-Length", fmt.Sprint(resp.Size))
+		w.Header().Add(request.HeaderETag, resp.SHA.String())
+
+		// http package hasnt implemented svg mime type detection
+		// https://github.com/golang/go/blob/master/src/net/http/sniff.go#L66
+		if resp.Size > 0 {
+			buf := make([]byte, 512) // 512 bytes is standard for MIME detection
+			n, err := io.ReadFull(resp.Data, buf)
+			if err == nil || err == io.EOF || err == io.ErrUnexpectedEOF {
+				contentType := detectContentType(buf[:n])
+				w.Header().Set("Content-Type", contentType)
+
+				resp.Data = &types.MultiReadCloser{
+					Reader:    io.MultiReader(bytes.NewReader(buf[:n]), resp.Data),
+					CloseFunc: resp.Data.Close,
+				}
+			}
+		}
+
+		render.Reader(ctx, w, http.StatusOK, resp.Data)
 	}
+}
+
+// xmlPrefixRegex is used to detect XML declarations in a case-insensitive way.
+var xmlPrefixRegex = regexp.MustCompile(`(?i)^<\?xml`)
+
+// svgPrefixRegex is used to detect SVG tag openers in a case-insensitive way.
+var svgPrefixRegex = regexp.MustCompile(`(?i)^<svg`)
+
+// svgTagRegex is used to detect SVG tags anywhere in the content.
+var svgTagRegex = regexp.MustCompile(`(?i)<svg`)
+
+// detectContentType enhances Go's standard http.DetectContentType with SVG support
+// following the WHATWG MIME Sniffing Standard https://mimesniff.spec.whatwg.org/
+func detectContentType(data []byte) string {
+	if len(data) > 5 {
+		if xmlPrefixRegex.Match(data) || svgPrefixRegex.Match(data) {
+			if svgTagRegex.Match(data) {
+				return "image/svg+xml"
+			}
+		}
+	}
+
+	return http.DetectContentType(data)
 }

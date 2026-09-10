@@ -15,7 +15,6 @@
 package gitspace
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/harness/gitness/app/api/controller/gitspace"
@@ -30,24 +29,24 @@ func HandleAction(gitspaceCtrl *gitspace.Controller) http.HandlerFunc {
 		session, _ := request.AuthSessionFrom(ctx)
 
 		in := new(gitspace.ActionInput)
-		err := json.NewDecoder(r.Body).Decode(in)
+		err := request.DecodeBody(r, in)
 		if err != nil {
 			render.BadRequestf(ctx, w, "Invalid Request Body: %s.", err)
 			return
 		}
-
 		gitspaceConfigRef, err := request.GetGitspaceRefFromPath(r)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
 		spaceRef, gitspaceConfigIdentifier, err := paths.DisectLeaf(gitspaceConfigRef)
+		in.SpaceRef = spaceRef
+		in.Identifier = gitspaceConfigIdentifier
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return
 		}
-
-		gitspaceConfig, err := gitspaceCtrl.Action(ctx, session, spaceRef, gitspaceConfigIdentifier, in)
+		gitspaceConfig, err := gitspaceCtrl.Action(ctx, session, in)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return

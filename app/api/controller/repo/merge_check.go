@@ -20,7 +20,9 @@ import (
 
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/services/dotrange"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/git/api"
 	"github.com/harness/gitness/types/enum"
 )
 
@@ -40,23 +42,54 @@ func (c *Controller) MergeCheck(
 		return MergeCheck{}, err
 	}
 
-	info, err := parseDiffPath(diffPath)
+	dotRange, err := dotrange.ParsePath(diffPath)
 	if err != nil {
 		return MergeCheck{}, err
 	}
 
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	err = c.dotRangeService.FetchDotRangeObjectsFromUpstream(ctx, session, repo, &dotRange)
+	if err != nil {
+		return MergeCheck{}, fmt.Errorf("failed to fetch diff upstream ref: %w", err)
+	}
+
+	readParams := git.CreateReadParams(repo)
+
+	baseResult, err := c.git.ResolveRevision(ctx, git.ResolveRevisionParams{
+		ReadParams: readParams,
+		Revision:   dotRange.BaseRef,
+	})
+	if err != nil {
+		return MergeCheck{}, fmt.Errorf("failed to resolve base revision %s: %w", dotRange.BaseRef, err)
+	}
+
+	headResult, err := c.git.ResolveRevision(ctx, git.ResolveRevisionParams{
+		ReadParams: readParams,
+		Revision:   dotRange.HeadRef,
+	})
+	if err != nil {
+		return MergeCheck{}, fmt.Errorf("failed to resolve head revision %s: %w", dotRange.HeadRef, err)
+	}
+
+	// Use APIRefsOnly for merge check.
+	writeParams, err := controller.CreateRPCAPIRefsWriteParams(ctx, c.urlProvider, session, repo)
 	if err != nil {
 		return MergeCheck{}, fmt.Errorf("failed to create rpc write params: %w", err)
 	}
 
 	mergeOutput, err := c.git.Merge(ctx, &git.MergeParams{
 		WriteParams: writeParams,
-		BaseBranch:  info.BaseRef,
-		HeadRepoUID: writeParams.RepoUID, // forks are not supported for now
-		HeadBranch:  info.HeadRef,
+		BaseSHA:     baseResult.SHA,
+		HeadSHA:     headResult.SHA,
 	})
 	if err != nil {
+		// git.Merge works with commits and error is not user-friendly
+		// and here we are modify base-ref and head-ref with user input
+		// values.
+		if uErr := api.AsUnrelatedHistoriesError(err); uErr != nil {
+			uErr.BaseRef = dotRange.BaseRef
+			uErr.HeadRef = dotRange.HeadRef
+			return MergeCheck{}, uErr
+		}
 		return MergeCheck{}, fmt.Errorf("merge check execution failed: %w", err)
 	}
 	if len(mergeOutput.ConflictFiles) > 0 {
@@ -65,6 +98,8 @@ func (c *Controller) MergeCheck(
 			ConflictFiles: mergeOutput.ConflictFiles,
 		}, nil
 	}
+
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypeBranchMergableUpdated, mergeOutput)
 
 	return MergeCheck{
 		Mergeable: true,

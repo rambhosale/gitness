@@ -16,16 +16,23 @@ package gitspace
 
 import (
 	"context"
+	"fmt"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/types/enum"
 )
 
-// TODO Stubbed Impl
 func (c *Controller) Delete(
-	_ context.Context,
-	_ *auth.Session,
-	_ string,
-	_ string,
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	identifier string,
 ) error {
-	return nil
+	err := apiauth.CheckGitspace(ctx, c.authorizer, session, spaceRef, identifier, enum.PermissionGitspaceDelete)
+	if err != nil {
+		return fmt.Errorf("failed to authorize: %w", err)
+	}
+
+	return c.gitspaceSvc.DeleteGitspaceByIdentifier(ctx, spaceRef, identifier)
 }

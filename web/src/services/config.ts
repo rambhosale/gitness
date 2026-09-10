@@ -45,7 +45,6 @@ export interface GetUsingFetchProps<
   queryParamStringifyOptions?: IStringifyOptions
   pathParams?: TPathParams
   requestOptions?: RequestInit
-  bearerToken?: string
   mock?: _TData
 }
 
@@ -61,7 +60,6 @@ export const getUsingFetch = <
 >(
   base: string,
   path: string,
-  bearerToken: string,
   props: GetUsingFetchProps<TData, _TError, TQueryParams, TPathParams>,
   signal?: RequestInit['signal']
 ): Promise<TData> => {
@@ -70,11 +68,12 @@ export const getUsingFetch = <
   if (props.queryParams && Object.keys(props.queryParams).length) {
     url += `?${qs.stringify(props.queryParams, props.queryParamStringifyOptions)}`
   }
-  const headers = getHeaders(props.requestOptions?.headers, bearerToken)
+  const headers = getHeaders(props.requestOptions?.headers)
   return fetch(url, {
     signal,
+    credentials: 'same-origin',
     ...(props.requestOptions || {}),
-    headers // Include generated headers in the request
+    headers
   }).then(res => {
     const responseEvent = new CustomEvent('PROMISE_API_RESPONSE', { detail: { response: res } })
     window.dispatchEvent(responseEvent)
@@ -82,13 +81,13 @@ export const getUsingFetch = <
     const contentType = res.headers.get('content-type') || ''
 
     if (contentType.toLowerCase().indexOf('application/json') > -1) {
-      if (res.status === 401) {
+      if (res.status >= 400) {
         return res.json().then(json => Promise.reject(json))
       }
       return res.json()
     }
 
-    if (res.status === 401) {
+    if (res.status >= 400) {
       return res.text().then(text => Promise.reject(text))
     }
 
@@ -96,14 +95,9 @@ export const getUsingFetch = <
   })
 }
 
-const getHeaders = (headers: RequestInit['headers'] = {}, bearerToken?: string): RequestInit['headers'] => {
+const getHeaders = (headers: RequestInit['headers'] = {}): RequestInit['headers'] => {
   const retHeaders: RequestInit['headers'] = {
     'content-type': 'application/json'
-  }
-
-  const token = bearerToken
-  if (token && token.length > 0) {
-    retHeaders.Authorization = `Bearer ${token}`
   }
 
   // add/overwrite passed headers

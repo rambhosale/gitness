@@ -31,6 +31,9 @@ const (
 	QueryParamOrder     = "order"
 	QueryParamQuery     = "query"
 	QueryParamRecursive = "recursive"
+	QueryParamLabelID   = "label_id"
+	QueryParamValueID   = "value_id"
+	QueryParamRegex     = "regex"
 
 	QueryParamState = "state"
 	QueryParamKind  = "kind"
@@ -44,11 +47,20 @@ const (
 
 	QueryParamCreatedLt = "created_lt"
 	QueryParamCreatedGt = "created_gt"
+	QueryParamUpdatedLt = "updated_lt"
+	QueryParamUpdatedGt = "updated_gt"
+	QueryParamEditedLt  = "edited_lt"
+	QueryParamEditedGt  = "edited_gt"
 
 	QueryParamPage  = "page"
 	QueryParamLimit = "limit"
 	PerPageDefault  = 30
 	PerPageMax      = 100
+
+	QueryParamInherited           = "inherited"
+	QueryParamAssignable          = "assignable"
+	QueryParamIncludePullreqCount = "include_pullreq_count"
+	QueryParamIncludeValues       = "include_values"
 
 	// TODO: have shared constants across all services?
 	HeaderRequestID       = "X-Request-Id"
@@ -58,6 +70,8 @@ const (
 
 	HeaderIfNoneMatch = "If-None-Match"
 	HeaderETag        = "ETag"
+
+	HeaderSignature = "Signature"
 )
 
 // GetOptionalRemainderFromPath returns the remainder ("*") from the path or an empty string if it doesn't exist.
@@ -86,13 +100,21 @@ func ParsePage(r *http.Request) int {
 }
 
 // ParseLimit extracts the limit parameter from the url.
+//
+//nolint:gosec
 func ParseLimit(r *http.Request) int {
+	return int(ParseLimitOrDefaultWithMax(r, PerPageDefault, PerPageMax))
+}
+
+// ParseLimitOrDefaultWithMax extracts the limit parameter from the url and defaults to deflt if not found.
+func ParseLimitOrDefaultWithMax(r *http.Request, deflt uint64, mx uint64) uint64 {
 	s := r.URL.Query().Get(QueryParamLimit)
-	i, _ := strconv.Atoi(s)
+	i, _ := strconv.ParseUint(s, 10, 64)
 	if i <= 0 {
-		i = PerPageDefault
-	} else if i > PerPageMax {
-		i = PerPageMax
+		i = deflt
+	}
+	if i > mx {
+		i = mx
 	}
 	return i
 }
@@ -127,22 +149,56 @@ func ParseListQueryFilterFromRequest(r *http.Request) types.ListQueryFilter {
 
 // ParseCreated extracts the created filter from the url query param.
 func ParseCreated(r *http.Request) (types.CreatedFilter, error) {
-	filter := types.CreatedFilter{}
-
 	createdLt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamCreatedLt, 0)
 	if err != nil {
-		return filter, fmt.Errorf("encountered error parsing created lt: %w", err)
+		return types.CreatedFilter{}, fmt.Errorf("encountered error parsing created lt: %w", err)
 	}
 
 	createdGt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamCreatedGt, 0)
 	if err != nil {
-		return filter, fmt.Errorf("encountered error parsing created gt: %w", err)
+		return types.CreatedFilter{}, fmt.Errorf("encountered error parsing created gt: %w", err)
 	}
 
-	filter.CreatedGt = createdGt
-	filter.CreatedLt = createdLt
+	return types.CreatedFilter{
+		CreatedGt: createdGt,
+		CreatedLt: createdLt,
+	}, nil
+}
 
-	return filter, nil
+// ParseUpdated extracts the updated filter from the url query param.
+func ParseUpdated(r *http.Request) (types.UpdatedFilter, error) {
+	updatedLt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamUpdatedLt, 0)
+	if err != nil {
+		return types.UpdatedFilter{}, fmt.Errorf("encountered error parsing updated lt: %w", err)
+	}
+
+	updatedGt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamUpdatedGt, 0)
+	if err != nil {
+		return types.UpdatedFilter{}, fmt.Errorf("encountered error parsing updated gt: %w", err)
+	}
+
+	return types.UpdatedFilter{
+		UpdatedGt: updatedGt,
+		UpdatedLt: updatedLt,
+	}, nil
+}
+
+// ParseEdited extracts the edited filter from the url query param.
+func ParseEdited(r *http.Request) (types.EditedFilter, error) {
+	editedLt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamEditedLt, 0)
+	if err != nil {
+		return types.EditedFilter{}, fmt.Errorf("encountered error parsing edited lt: %w", err)
+	}
+
+	editedGt, err := QueryParamAsPositiveInt64OrDefault(r, QueryParamEditedGt, 0)
+	if err != nil {
+		return types.EditedFilter{}, fmt.Errorf("encountered error parsing edited gt: %w", err)
+	}
+
+	return types.EditedFilter{
+		EditedGt: editedGt,
+		EditedLt: editedLt,
+	}, nil
 }
 
 // GetContentEncodingFromHeadersOrDefault returns the content encoding from the request headers.
@@ -153,6 +209,31 @@ func GetContentEncodingFromHeadersOrDefault(r *http.Request, dflt string) string
 // ParseRecursiveFromQuery extracts the recursive option from the URL query.
 func ParseRecursiveFromQuery(r *http.Request) (bool, error) {
 	return QueryParamAsBoolOrDefault(r, QueryParamRecursive, false)
+}
+
+// ParseRegexFromQuery extracts the regex option from the URL query.
+func ParseRegexFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamRegex, false)
+}
+
+// ParseInheritedFromQuery extracts the inherited option from the URL query.
+func ParseInheritedFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamInherited, false)
+}
+
+// ParseIncludePullreqCountFromQuery extracts the pullreq assignment count option from the URL query.
+func ParseIncludePullreqCountFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludePullreqCount, false)
+}
+
+// ParseIncludeValuesFromQuery extracts the inclue values option from the URL query.
+func ParseIncludeValuesFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamIncludeValues, false)
+}
+
+// ParseAssignableFromQuery extracts the assignable option from the URL query.
+func ParseAssignableFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamAssignable, false)
 }
 
 // GetDeletedAtFromQueryOrError gets the exact resource deletion timestamp from the query.
@@ -172,4 +253,8 @@ func GetDeletedAtFromQuery(r *http.Request) (int64, bool, error) {
 
 func GetIfNoneMatchFromHeader(r *http.Request) (string, bool) {
 	return GetHeader(r, HeaderIfNoneMatch)
+}
+
+func GetSignatureFromHeaderOrDefault(r *http.Request, dflt string) string {
+	return GetHeaderOrDefault(r, HeaderSignature, dflt)
 }

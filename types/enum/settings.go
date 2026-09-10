@@ -17,7 +17,7 @@ package enum
 // SettingsScope defines the different scopes of a setting.
 type SettingsScope string
 
-func (SettingsScope) Enum() []interface{} {
+func (SettingsScope) Enum() []any {
 	return toInterfaceSlice(GetAllSettingsScopes())
 }
 
@@ -27,11 +27,15 @@ var (
 
 	// SettingsScopeRepo defines settings stored on a repo level.
 	SettingsScopeRepo SettingsScope = "repo"
+
+	// SettingsScopeSystem defines settings stored on a system.
+	SettingsScopeSystem SettingsScope = "system"
 )
 
 func GetAllSettingsScopes() []SettingsScope {
 	return []SettingsScope{
 		SettingsScopeSpace,
 		SettingsScopeRepo,
+		SettingsScopeSystem,
 	}
 }

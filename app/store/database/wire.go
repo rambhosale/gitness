@@ -21,6 +21,7 @@ import (
 	"github.com/harness/gitness/app/store/database/migrate"
 	"github.com/harness/gitness/job"
 	"github.com/harness/gitness/store/database"
+	"github.com/harness/gitness/store/database/pool"
 
 	"github.com/google/wire"
 	"github.com/jmoiron/sqlx"
@@ -30,10 +31,18 @@ import (
 var WireSet = wire.NewSet(
 	ProvideDatabase,
 	ProvidePrincipalStore,
+	ProvideUserGroupStore,
+	ProvideUserGroupReviewerStore,
 	ProvidePrincipalInfoView,
+	ProvideInfraProviderResourceView,
 	ProvideSpacePathStore,
 	ProvideSpaceStore,
 	ProvideRepoStore,
+	ProvideRepoLangStore,
+	ProvideLinkRepoStore,
+	ProvideLinkedPullReqStore,
+	ProvideBranchStore,
+	ProvideRepoActivityStore,
 	ProvideRuleStore,
 	ProvideJobStore,
 	ProvideExecutionStore,
@@ -41,7 +50,6 @@ var WireSet = wire.NewSet(
 	ProvideStageStore,
 	ProvideStepStore,
 	ProvideSecretStore,
-	ProvideRepoGitInfoView,
 	ProvideMembershipStore,
 	ProvideTokenStore,
 	ProvidePullReqStore,
@@ -49,7 +57,12 @@ var WireSet = wire.NewSet(
 	ProvideCodeCommentView,
 	ProvidePullReqReviewStore,
 	ProvidePullReqReviewerStore,
+	ProvidePullReqReviewerSuggestionStore,
 	ProvidePullReqFileViewStore,
+	ProvidePullReqFileGroupStore,
+	ProvideAutoMergeStore,
+	ProvideMergeQueueStore,
+	ProvideMergeQueueEntryStore,
 	ProvideWebhookStore,
 	ProvideWebhookExecutionStore,
 	ProvideSettingsStore,
@@ -60,10 +73,26 @@ var WireSet = wire.NewSet(
 	ProvideTriggerStore,
 	ProvidePluginStore,
 	ProvidePublicKeyStore,
+	ProvidePublicKeySubKeyStore,
+	ProvideGitSignatureResultStore,
 	ProvideInfraProviderConfigStore,
 	ProvideInfraProviderResourceStore,
 	ProvideGitspaceConfigStore,
 	ProvideGitspaceInstanceStore,
+	ProvideGitspaceEventStore,
+	ProvideLabelStore,
+	ProvideLabelValueStore,
+	ProvidePullReqLabelStore,
+	ProvidePullReqLabelSuggestionStore,
+	ProvideLFSObjectStore,
+	ProvideInfraProviderTemplateStore,
+	ProvideInfraProvisionedStore,
+	ProvideUsageMetricStore,
+	ProvideCDEGatewayStore,
+	ProvideFavoriteStore,
+	ProvideAutolinkStore,
+	ProvideGitspaceSettingsStore,
+	ProvideAITaskStore,
 )
 
 // migrator is helper function to set up the database by performing automated
@@ -74,12 +103,23 @@ func migrator(ctx context.Context, db *sqlx.DB) error {
 
 // ProvideDatabase provides a database connection.
 func ProvideDatabase(ctx context.Context, config database.Config) (*sqlx.DB, error) {
-	return database.ConnectAndMigrate(
+	dbx, err := database.ConnectAndMigrate(
 		ctx,
 		config.Driver,
 		config.Datasource,
 		migrator,
 	)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Apply(dbx.DB, pool.Config{
+		MaxOpenConns:    config.MaxOpenConns,
+		MaxIdleConns:    config.MaxIdleConns,
+		ConnMaxLifetime: config.ConnMaxLifetime,
+	}); err != nil {
+		return nil, err
+	}
+	return dbx, nil
 }
 
 // ProvidePrincipalStore provides a principal store.
@@ -87,9 +127,30 @@ func ProvidePrincipalStore(db *sqlx.DB, uidTransformation store.PrincipalUIDTran
 	return NewPrincipalStore(db, uidTransformation)
 }
 
+// ProvideUserGroupStore provides a principal store.
+func ProvideUserGroupStore(db *sqlx.DB) store.UserGroupStore {
+	return NewUserGroupStore(db)
+}
+
+// ProvideUserGroupReviewerStore provides a usergroup reviewer store.
+func ProvideUserGroupReviewerStore(
+	db *sqlx.DB,
+	pInfoCache store.PrincipalInfoCache,
+	userGroupStore store.UserGroupStore,
+) store.UserGroupReviewerStore {
+	return NewUsergroupReviewerStore(db, pInfoCache, userGroupStore)
+}
+
 // ProvidePrincipalInfoView provides a principal info store.
 func ProvidePrincipalInfoView(db *sqlx.DB) store.PrincipalInfoView {
 	return NewPrincipalInfoView(db)
+}
+
+// ProvideInfraProviderResourceView provides a principal info store.
+func ProvideInfraProviderResourceView(
+	db *sqlx.DB, spaceStore store.SpaceStore,
+) store.InfraProviderResourceView {
+	return NewInfraProviderResourceView(db, spaceStore)
 }
 
 // ProvideSpacePathStore provides a space path store.
@@ -119,6 +180,24 @@ func ProvideRepoStore(
 	return NewRepoStore(db, spacePathCache, spacePathStore, spaceStore)
 }
 
+func ProvideRepoLangStore(
+	db *sqlx.DB,
+) store.RepoLangStore {
+	return NewRepoLangStore(db)
+}
+
+func ProvideLinkRepoStore(
+	db *sqlx.DB,
+) store.LinkedRepoStore {
+	return NewLinkedRepoStore(db)
+}
+
+func ProvideLinkedPullReqStore(
+	db *sqlx.DB,
+) store.LinkedPullReqStore {
+	return NewLinkedPullReqStore(db)
+}
+
 // ProvideRuleStore provides a rule store.
 func ProvideRuleStore(
 	db *sqlx.DB,
@@ -138,23 +217,42 @@ func ProvidePipelineStore(db *sqlx.DB) store.PipelineStore {
 }
 
 // ProvideInfraProviderConfigStore provides a infraprovider config store.
-func ProvideInfraProviderConfigStore(db *sqlx.DB) store.InfraProviderConfigStore {
-	return NewInfraProviderConfigStore(db)
+func ProvideInfraProviderConfigStore(
+	db *sqlx.DB,
+	spaceIDCache store.SpaceIDCache,
+) store.InfraProviderConfigStore {
+	return NewInfraProviderConfigStore(db, spaceIDCache)
 }
 
-// ProvideGitspaceInstanceStore provides a infraprovider resource store.
-func ProvideInfraProviderResourceStore(db *sqlx.DB) store.InfraProviderResourceStore {
-	return NewInfraProviderResourceStore(db)
+// ProvideInfraProviderResourceStore provides a infraprovider resource store.
+func ProvideInfraProviderResourceStore(
+	db *sqlx.DB,
+	spaceIDCache store.SpaceIDCache,
+) store.InfraProviderResourceStore {
+	return NewInfraProviderResourceStore(db, spaceIDCache)
 }
 
 // ProvideGitspaceConfigStore provides a gitspace config store.
-func ProvideGitspaceConfigStore(db *sqlx.DB) store.GitspaceConfigStore {
-	return NewGitspaceConfigStore(db)
+func ProvideGitspaceConfigStore(
+	db *sqlx.DB,
+	pCache store.PrincipalInfoCache,
+	rCache store.InfraProviderResourceCache,
+	spaceIDCache store.SpaceIDCache,
+) store.GitspaceConfigStore {
+	return NewGitspaceConfigStore(db, pCache, rCache, spaceIDCache)
+}
+
+// ProvideGitspaceSettingsStore provides a gitspace settings store.
+func ProvideGitspaceSettingsStore(db *sqlx.DB) store.GitspaceSettingsStore {
+	return NewGitspaceSettingsStore(db)
 }
 
 // ProvideGitspaceInstanceStore provides a gitspace instance store.
-func ProvideGitspaceInstanceStore(db *sqlx.DB) store.GitspaceInstanceStore {
-	return NewGitspaceInstanceStore(db)
+func ProvideGitspaceInstanceStore(
+	db *sqlx.DB,
+	spaceIDCache store.SpaceIDCache,
+) store.GitspaceInstanceStore {
+	return NewGitspaceInstanceStore(db, spaceIDCache)
 }
 
 // ProvideStageStore provides a stage store.
@@ -173,8 +271,8 @@ func ProvideSecretStore(db *sqlx.DB) store.SecretStore {
 }
 
 // ProvideConnectorStore provides a connector store.
-func ProvideConnectorStore(db *sqlx.DB) store.ConnectorStore {
-	return NewConnectorStore(db)
+func ProvideConnectorStore(db *sqlx.DB, secretStore store.SecretStore) store.ConnectorStore {
+	return NewConnectorStore(db, secretStore)
 }
 
 // ProvideTemplateStore provides a template store.
@@ -197,11 +295,6 @@ func ProvidePluginStore(db *sqlx.DB) store.PluginStore {
 	return NewPluginStore(db)
 }
 
-// ProvideRepoGitInfoView provides a repo git UID view.
-func ProvideRepoGitInfoView(db *sqlx.DB) store.RepoGitInfoView {
-	return NewRepoGitInfoView(db)
-}
-
 func ProvideMembershipStore(
 	db *sqlx.DB,
 	principalInfoCache store.PrincipalInfoCache,
@@ -217,14 +310,16 @@ func ProvideTokenStore(db *sqlx.DB) store.TokenStore {
 }
 
 // ProvidePullReqStore provides a pull request store.
-func ProvidePullReqStore(db *sqlx.DB,
+func ProvidePullReqStore(
+	db *sqlx.DB,
 	principalInfoCache store.PrincipalInfoCache,
 ) store.PullReqStore {
 	return NewPullReqStore(db, principalInfoCache)
 }
 
 // ProvidePullReqActivityStore provides a pull request activity store.
-func ProvidePullReqActivityStore(db *sqlx.DB,
+func ProvidePullReqActivityStore(
+	db *sqlx.DB,
 	principalInfoCache store.PrincipalInfoCache,
 ) store.PullReqActivityStore {
 	return NewPullReqActivityStore(db, principalInfoCache)
@@ -241,15 +336,38 @@ func ProvidePullReqReviewStore(db *sqlx.DB) store.PullReqReviewStore {
 }
 
 // ProvidePullReqReviewerStore provides a pull request reviewer store.
-func ProvidePullReqReviewerStore(db *sqlx.DB,
+func ProvidePullReqReviewerStore(
+	db *sqlx.DB,
 	principalInfoCache store.PrincipalInfoCache,
 ) store.PullReqReviewerStore {
 	return NewPullReqReviewerStore(db, principalInfoCache)
 }
 
+// ProvidePullReqReviewerSuggestionStore provides a pull request reviewer suggestion store.
+func ProvidePullReqReviewerSuggestionStore(db *sqlx.DB) store.PullReqReviewerSuggestionStore {
+	return NewPullReqReviewerSuggestionStore(db)
+}
+
 // ProvidePullReqFileViewStore provides a pull request file view store.
 func ProvidePullReqFileViewStore(db *sqlx.DB) store.PullReqFileViewStore {
 	return NewPullReqFileViewStore(db)
+}
+
+// ProvidePullReqFileGroupStore provides a pull request file group store.
+func ProvidePullReqFileGroupStore(db *sqlx.DB) store.PullReqFileGroupStore {
+	return NewPullReqFileGroupStore(db)
+}
+
+func ProvideAutoMergeStore(db *sqlx.DB) store.AutoMergeStore {
+	return NewAutoMergeStore(db)
+}
+
+func ProvideMergeQueueStore(db *sqlx.DB) store.MergeQueueStore {
+	return NewMergeQueueStore(db)
+}
+
+func ProvideMergeQueueEntryStore(db *sqlx.DB) store.MergeQueueEntryStore {
+	return NewMergeQueueEntryStore(db)
 }
 
 // ProvideWebhookStore provides a webhook store.
@@ -263,7 +381,8 @@ func ProvideWebhookExecutionStore(db *sqlx.DB) store.WebhookExecutionStore {
 }
 
 // ProvideCheckStore provides a status check result store.
-func ProvideCheckStore(db *sqlx.DB,
+func ProvideCheckStore(
+	db *sqlx.DB,
 	principalInfoCache store.PrincipalInfoCache,
 ) store.CheckStore {
 	return NewCheckStore(db, principalInfoCache)
@@ -282,4 +401,83 @@ func ProvidePublicAccessStore(db *sqlx.DB) store.PublicAccessStore {
 // ProvidePublicKeyStore provides a public key store.
 func ProvidePublicKeyStore(db *sqlx.DB) store.PublicKeyStore {
 	return NewPublicKeyStore(db)
+}
+
+// ProvidePublicKeySubKeyStore provides a public key sub key store.
+func ProvidePublicKeySubKeyStore(db *sqlx.DB) store.PublicKeySubKeyStore {
+	return NewPublicKeySubKeyStore(db)
+}
+
+func ProvideGitSignatureResultStore(db *sqlx.DB) store.GitSignatureResultStore {
+	return NewGitSignatureResultStore(db)
+}
+
+// ProvideBranchStore provides a branch store.
+func ProvideBranchStore(db *sqlx.DB) store.BranchStore {
+	return NewBranchStore(db)
+}
+
+// ProvideRepoActivityStore provides a repository activity store.
+func ProvideRepoActivityStore(db *sqlx.DB) store.RepoActivityStore {
+	return NewRepoActivityStore(db)
+}
+
+// ProvideGitspaceEventStore provides a gitspace event store.
+func ProvideGitspaceEventStore(db *sqlx.DB) store.GitspaceEventStore {
+	return NewGitspaceEventStore(db)
+}
+
+// ProvideLabelStore provides a label store.
+func ProvideLabelStore(db *sqlx.DB) store.LabelStore {
+	return NewLabelStore(db)
+}
+
+// ProvideLabelValueStore provides a label value store.
+func ProvideLabelValueStore(db *sqlx.DB) store.LabelValueStore {
+	return NewLabelValueStore(db)
+}
+
+// ProvideLabelValueStore provides a label value store.
+func ProvidePullReqLabelStore(db *sqlx.DB) store.PullReqLabelAssignmentStore {
+	return NewPullReqLabelStore(db)
+}
+
+// ProvideLFSObjectStore provides an lfs object store.
+func ProvideLFSObjectStore(db *sqlx.DB) store.LFSObjectStore {
+	return NewLFSObjectStore(db)
+}
+
+// ProvideInfraProviderTemplateStore provides a infraprovider template store.
+func ProvideInfraProviderTemplateStore(db *sqlx.DB) store.InfraProviderTemplateStore {
+	return NewInfraProviderTemplateStore(db)
+}
+
+// ProvideInfraProvisionedStore provides a provisioned infra store.
+func ProvideInfraProvisionedStore(db *sqlx.DB) store.InfraProvisionedStore {
+	return NewInfraProvisionedStore(db)
+}
+
+func ProvideUsageMetricStore(db *sqlx.DB) store.UsageMetricStore {
+	return NewUsageMetricsStore(db)
+}
+
+func ProvideCDEGatewayStore(db *sqlx.DB) store.CDEGatewayStore {
+	return NewCDEGatewayStore(db)
+}
+
+func ProvideFavoriteStore(db *sqlx.DB) store.FavoriteStore {
+	return NewFavoriteStore(db)
+}
+
+func ProvideAutolinkStore(db *sqlx.DB) store.AutoLinkStore {
+	return NewAutoLinkStore(db)
+}
+
+func ProvideAITaskStore(db *sqlx.DB) store.AITaskStore {
+	return NewAITaskStore(db)
+}
+
+// ProvidePullReqLabelSuggestionStore provides a pull request label suggestion store.
+func ProvidePullReqLabelSuggestionStore(db *sqlx.DB) store.PullReqLabelSuggestionStore {
+	return NewPullReqLabelSuggestionStore(db)
 }

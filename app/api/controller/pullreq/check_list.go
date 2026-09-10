@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/services/protection"
 	"github.com/harness/gitness/types"
@@ -44,24 +43,27 @@ func (c *Controller) ListChecks(
 		return types.PullReqChecks{}, fmt.Errorf("failed to find pull request by number: %w", err)
 	}
 
-	isRepoOwner, err := apiauth.IsRepoOwner(ctx, c.authorizer, session, repo)
+	protectionRules, isRepoOwner, err := c.fetchRules(ctx, session, repo)
 	if err != nil {
-		return types.PullReqChecks{}, fmt.Errorf("failed to determine if user is repo owner: %w", err)
-	}
-
-	protectionRules, err := c.protectionManager.ForRepository(ctx, repo.ID)
-	if err != nil {
-		return types.PullReqChecks{}, fmt.Errorf("failed to fetch protection rules for the repository: %w", err)
+		return types.PullReqChecks{}, fmt.Errorf("failed to fetch rules: %w", err)
 	}
 
 	reqChecks, err := protectionRules.RequiredChecks(ctx, protection.RequiredChecksInput{
-		Actor:       &session.Principal,
-		IsRepoOwner: isRepoOwner,
-		Repo:        repo,
-		PullReq:     pr,
+		ResolveUserGroupID: c.userGroupService.ListUserIDsByGroupIDs,
+		Actor:              &session.Principal,
+		IsRepoOwner:        isRepoOwner,
+		Repo:               repo,
+		PullReq:            pr,
 	})
 	if err != nil {
 		return types.PullReqChecks{}, fmt.Errorf("failed to get identifiers of required checks: %w", err)
+	}
+
+	// Checks required outside of the protection rules - the requirement lives with
+	// the owner of the check, not with a repository rule.
+	extReqChecks, err := c.mergeService.RequiredChecks(ctx, repo, pr)
+	if err != nil {
+		return types.PullReqChecks{}, fmt.Errorf("failed to get externally required checks: %w", err)
 	}
 
 	commitSHA := pr.SourceSHA
@@ -76,6 +78,11 @@ func (c *Controller) ListChecks(
 		Checks:    nil,
 	}
 
+	reported := make(map[string]bool, len(checks))
+	for _, check := range checks {
+		reported[check.Identifier] = true
+	}
+
 	for _, check := range checks {
 		_, required := reqChecks.RequiredIdentifiers[check.Identifier]
 		if required {
@@ -87,10 +94,48 @@ func (c *Controller) ListChecks(
 			delete(reqChecks.BypassableIdentifiers, check.Identifier)
 		}
 
+		extRequired, extBypassable := extReqChecks.Requirement(check.Identifier)
+
+		// A non-bypassable requirement wins over a bypassable one, no matter
+		// which side declared it: `required` is the rule-side non-bypassable set,
+		// and `extRequired && !extBypassable` is its external counterpart.
+		isBypassable := bypassable || extBypassable
+		if required || (extRequired && !extBypassable) {
+			isBypassable = false
+		}
+
 		result.Checks = append(result.Checks, types.PullReqCheck{
-			Required:   required || bypassable,
-			Bypassable: bypassable,
+			Required:   required || bypassable || extRequired,
+			Bypassable: isBypassable,
 			Check:      check,
+		})
+	}
+
+	// Requirements whose check has not been reported yet are surfaced as pending,
+	// the same way rule-required identifiers are below.
+	for _, identifier := range extReqChecks.Identifiers() {
+		if reported[identifier] {
+			continue
+		}
+		if _, ok := reqChecks.RequiredIdentifiers[identifier]; ok {
+			continue
+		}
+		if _, ok := reqChecks.BypassableIdentifiers[identifier]; ok {
+			continue
+		}
+
+		_, extBypassable := extReqChecks.Requirement(identifier)
+		result.Checks = append(result.Checks, types.PullReqCheck{
+			Required:   true,
+			Bypassable: extBypassable,
+			Check: types.Check{
+				RepoID:     repo.ID,
+				CommitSHA:  commitSHA,
+				Identifier: identifier,
+				Status:     enum.CheckStatusPending,
+				Metadata:   json.RawMessage("{}"),
+				Payload:    extReqChecks.Payload(identifier),
+			},
 		})
 	}
 
@@ -109,9 +154,13 @@ func (c *Controller) ListChecks(
 	}
 
 	for bypassableID := range reqChecks.BypassableIdentifiers {
+		// Same invariant as above: an external non-bypassable requirement on a
+		// rule-bypassable identifier makes it non-bypassable.
+		extRequired, extBypassable := extReqChecks.Requirement(bypassableID)
+		extNonBypassable := extRequired && !extBypassable
 		result.Checks = append(result.Checks, types.PullReqCheck{
 			Required:   true,
-			Bypassable: true,
+			Bypassable: !extNonBypassable,
 			Check: types.Check{
 				RepoID:     repo.ID,
 				CommitSHA:  commitSHA,

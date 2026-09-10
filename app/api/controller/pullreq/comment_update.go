@@ -17,21 +17,26 @@ package pullreq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/harness/gitness/app/auth"
+	events "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
-
-	"github.com/rs/zerolog/log"
 )
 
 type CommentUpdateInput struct {
 	Text string `json:"text"`
 }
 
-func (in *CommentUpdateInput) Validate() error {
-	// TODO: Check Text length
+func (in *CommentUpdateInput) Sanitize() error {
+	in.Text = strings.TrimSpace(in.Text)
+
+	if err := validateComment(in.Text); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -48,7 +53,11 @@ func (c *Controller) CommentUpdate(
 	commentID int64,
 	in *CommentUpdateInput,
 ) (*types.PullReqActivity, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	if err := in.Sanitize(); err != nil {
+		return nil, err
+	}
+
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
@@ -56,10 +65,6 @@ func (c *Controller) CommentUpdate(
 	pr, err := c.pullreqStore.FindByNumber(ctx, repo.ID, prNum)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find pull request by number: %w", err)
-	}
-
-	if errValidate := in.Validate(); errValidate != nil {
-		return nil, errValidate
 	}
 
 	act, err := c.getCommentCheckEditAccess(ctx, session, pr, commentID)
@@ -109,9 +114,29 @@ func (c *Controller) CommentUpdate(
 	// Populate activity mentions (used only for response purposes).
 	act.Mentions = principalInfos
 
-	if err = c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-		log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
-	}
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullReqUpdated, pr)
+
+	c.reportCommentUpdated(ctx, pr, session.Principal.ID, act.ID, act.IsReply())
 
 	return act, nil
+}
+
+func (c *Controller) reportCommentUpdated(
+	ctx context.Context,
+	pr *types.PullReq,
+	principalID int64,
+	actID int64,
+	isReply bool,
+) {
+	c.eventReporter.CommentUpdated(ctx, &events.CommentUpdatedPayload{
+		Base: events.Base{
+			PullReqID:    pr.ID,
+			SourceRepoID: pr.SourceRepoID,
+			TargetRepoID: pr.TargetRepoID,
+			PrincipalID:  principalID,
+			Number:       pr.Number,
+		},
+		ActivityID: actID,
+		IsReply:    isReply,
+	})
 }

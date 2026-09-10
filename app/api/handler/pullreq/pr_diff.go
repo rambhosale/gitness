@@ -15,7 +15,6 @@
 package pullreq
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -53,7 +52,7 @@ func HandleDiff(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodPost:
-			if err = json.NewDecoder(r.Body).Decode(&files); err != nil && !errors.Is(err, io.EOF) {
+			if err = request.DecodeBody(r, &files); err != nil && !errors.Is(err, io.EOF) {
 				render.TranslatedUserError(ctx, w, err)
 				return
 			}
@@ -63,6 +62,9 @@ func HandleDiff(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
 		}
 
 		if strings.HasPrefix(r.Header.Get("Accept"), "text/plain") {
+			render.UserContentSecurityHeaders(w)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
 			err := pullreqCtrl.RawDiff(ctx, w, session, repoRef, pullreqNumber, setSHAs, files...)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusOK)
@@ -70,8 +72,26 @@ func HandleDiff(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
 			return
 		}
 
-		_, includePatch := request.QueryParam(r, "include_patch")
-		stream, err := pullreqCtrl.Diff(ctx, session, repoRef, pullreqNumber, setSHAs, includePatch, files...)
+		includePatch, err := request.QueryParamAsBoolOrDefault(r, "include_patch", false)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+		ignoreWhitespace, err := request.QueryParamAsBoolOrDefault(r, request.QueryParamIgnoreWhitespace, false)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+		stream, err := pullreqCtrl.Diff(
+			ctx,
+			session,
+			repoRef,
+			pullreqNumber,
+			setSHAs,
+			includePatch,
+			ignoreWhitespace,
+			files...,
+		)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return

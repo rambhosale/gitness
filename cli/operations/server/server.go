@@ -111,6 +111,10 @@ func (c *command) run(*kingpin.ParseContext) error {
 	// start server
 	gHTTP, shutdownHTTP := system.server.ListenAndServe()
 	g.Go(gHTTP.Wait)
+
+	gMetric, shutdownMetricServerFn := system.metricServer.ListenAndServe()
+	g.Go(gMetric.Wait)
+
 	if c.enableCI {
 		// start populating plugins
 		g.Go(func() error {
@@ -138,7 +142,8 @@ func (c *command) run(*kingpin.ParseContext) error {
 	}
 
 	log.Info().
-		Int("port", config.Server.HTTP.Port).
+		Str("host", config.HTTP.Host).
+		Int("port", config.HTTP.Port).
 		Str("revision", version.GitCommit).
 		Str("repository", version.GitRepository).
 		Stringer("version", version.Version).
@@ -165,6 +170,16 @@ func (c *command) run(*kingpin.ParseContext) error {
 		}
 	}
 
+	if sErr := shutdownMetricServerFn(shutdownCtx); sErr != nil {
+		log.Err(sErr).Msg("failed to shutdown metric server gracefully")
+	}
+
+	// shutdown instrumentation
+	err = system.services.Instrumentation.Close(shutdownCtx)
+	if err != nil {
+		log.Err(err).Msg("failed to close instrumentation gracefully")
+	}
+	// shutdown job scheduler
 	system.services.JobScheduler.WaitJobsDone(shutdownCtx)
 
 	log.Info().Msg("wait for subroutines to complete")

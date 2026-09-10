@@ -28,6 +28,7 @@ import (
 )
 
 const namespaceRepo = "repo"
+const namespaceRegistry = "registry"
 
 type Locker struct {
 	mtxManager lock.MutexManager
@@ -49,7 +50,7 @@ func (l Locker) lock(
 	ctx = logging.NewContext(ctx, func(zc zerolog.Context) zerolog.Context {
 		return zc.
 			Str("key", key).
-			Str("namespace", namespaceRepo).
+			Str("namespace", namespace).
 			Str("expiry", expiry.String())
 	})
 
@@ -74,10 +75,7 @@ func (l Locker) lock(
 
 	unlockFn := func() {
 		// always unlock independent of whether source context got canceled or not
-		ctx, cancel := context.WithTimeout(
-			contextutil.WithNewValues(context.Background(), ctx),
-			30*time.Second,
-		)
+		ctx, cancel := contextutil.WithNewTimeout(ctx, 30*time.Second)
 		defer cancel()
 
 		err := mutext.Unlock(ctx)

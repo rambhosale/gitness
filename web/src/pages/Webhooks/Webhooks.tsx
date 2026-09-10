@@ -40,7 +40,14 @@ import { useAppContext } from 'AppContext'
 import { useGetRepositoryMetadata } from 'hooks/useGetRepositoryMetadata'
 import { useStrings } from 'framework/strings'
 import { RepositoryPageHeader } from 'components/RepositoryPageHeader/RepositoryPageHeader'
-import { voidFn, getErrorMessage, LIST_FETCHING_LIMIT, PageBrowserProps, permissionProps } from 'utils/Utils'
+import {
+  voidFn,
+  getErrorMessage,
+  LIST_FETCHING_LIMIT,
+  PageBrowserProps,
+  permissionProps,
+  OrderSortDate
+} from 'utils/Utils'
 import { OptionsMenuButton } from 'components/OptionsMenuButton/OptionsMenuButton'
 import { useConfirmAct } from 'hooks/useConfirmAction'
 import { usePageIndex } from 'hooks/usePageIndex'
@@ -50,7 +57,7 @@ import { ResourceListingPagination } from 'components/ResourceListingPagination/
 import { LoadingSpinner } from 'components/LoadingSpinner/LoadingSpinner'
 import { NoResultCard } from 'components/NoResultCard/NoResultCard'
 import type { OpenapiWebhookType } from 'services/code'
-import { formatTriggers } from 'utils/GitUtils'
+import { WebhookTabs, formatTriggers } from 'utils/GitUtils'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import { WebhooksHeader } from './WebhooksHeader/WebhooksHeader'
 import css from './Webhooks.module.scss'
@@ -79,7 +86,7 @@ export default function Webhooks() {
       limit: LIST_FETCHING_LIMIT,
       page,
       sort: 'date',
-      order: 'desc',
+      order: OrderSortDate.DESC,
       query: searchTerm
     },
     debounce: 500,
@@ -255,6 +262,20 @@ export default function Webhooks() {
                             })
                         }
                       })
+                    }
+                  },
+                  {
+                    hasIcon: true,
+                    iconName: 'execution',
+                    iconSize: 16,
+                    text: getString('executionHistory'),
+                    onClick: () => {
+                      history.push(
+                        `${routes.toCODEWebhookDetails({
+                          repoPath: repoMetadata?.path as string,
+                          webhookId: String(row.original?.identifier)
+                        })}?tab=${WebhookTabs.EXECUTIONS}`
+                      )
                     }
                   }
                 ]}

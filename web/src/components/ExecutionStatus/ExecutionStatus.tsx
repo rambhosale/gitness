@@ -28,7 +28,9 @@ export enum ExecutionState {
   FAILURE = 'failure',
   ERROR = 'error',
   SKIPPED = 'skipped',
-  KILLED = 'killed'
+  KILLED = 'killed',
+  FAILURE_IGNORED = 'failure_ignored',
+  IGNORE_FAILED = 'ignorefailed'
 }
 
 interface ExecutionStatusProps {
@@ -68,7 +70,7 @@ export const ExecutionStatus: React.FC<ExecutionStatusProps> = ({
       },
       [ExecutionState.RUNNING]: {
         icon: 'running-filled',
-        css: isCi ? css.runningBlue : css.running,
+        css: css.runningBlue,
         title: getString('running').toLocaleUpperCase()
       },
       [ExecutionState.SUCCESS]: {
@@ -101,6 +103,16 @@ export const ExecutionStatus: React.FC<ExecutionStatusProps> = ({
         css: null,
         title: getString('killed').toLocaleUpperCase()
       },
+      [ExecutionState.FAILURE_IGNORED]: {
+        icon: 'ignoreFailed',
+        css: null,
+        title: getString('failureIgnored').toLocaleUpperCase()
+      },
+      [ExecutionState.IGNORE_FAILED]: {
+        icon: 'ignoreFailed',
+        css: css.ignoreFailed,
+        title: getString('failureIgnored').toLocaleUpperCase()
+      },
       [ExecutionStateExtended.ABORTED]: {
         icon: 'execution-stopped',
         css: null,
@@ -108,7 +120,7 @@ export const ExecutionStatus: React.FC<ExecutionStatusProps> = ({
       },
       [ExecutionStateExtended.ASYNCWAITING]: {
         icon: 'running-filled',
-        css: css.running,
+        css: css.runningBlue,
         title: getString('running').toLocaleUpperCase()
       }
     }),

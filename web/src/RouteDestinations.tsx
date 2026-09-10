@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import React from 'react'
+import React, { lazy, Suspense } from 'react'
 import { Route, Switch, BrowserRouter } from 'react-router-dom'
+import { Spinner } from '@blueprintjs/core'
 import { SignIn } from 'pages/SignIn/SignIn'
 import { SignUp } from 'pages/SignUp/SignUp'
 import Repository from 'pages/Repository/Repository'
@@ -51,9 +52,12 @@ import CodeSearchPage from 'pages/Search/CodeSearchPage'
 import AddUpdatePipeline from 'pages/AddUpdatePipeline/AddUpdatePipeline'
 import { useAppContext } from 'AppContext'
 import PipelineSettings from 'components/PipelineSettings/PipelineSettings'
-import GitspaceDetail from 'cde/pages/GitspaceDetail/GitspaceDetail'
-import { GitspaceListing } from 'cde-gitness/pages/GitspaceListing/GitspaceListing'
-import { GitspaceCreate } from 'cde-gitness/pages/GitspaceCreate/GitspaceCreate'
+import GitspaceDetails from 'cde-gitness/pages/GitspaceDetails/GitspaceDetails'
+import GitspaceListing from 'cde-gitness/pages/GitspaceListing/GitspaceListing'
+import GitspaceCreate from 'cde-gitness/pages/GitspaceCreate/GitspaceCreate'
+import ManageRepositories from 'pages/ManageSpace/ManageRepositories/ManageRepositories'
+
+const ArApp = lazy(() => import('@ar/gitness/ArApp'))
 
 export const RouteDestinations: React.FC = React.memo(function RouteDestinations() {
   const { getString } = useStrings()
@@ -81,11 +85,37 @@ export const RouteDestinations: React.FC = React.memo(function RouteDestinations
           </LayoutWithSideNav>
         </Route>
 
-        <Route path={routes.toCODESpaceSettings({ space: pathProps.space })} exact>
+        <Route
+          path={[
+            routes.toCODESpaceSettings({
+              space: pathProps.space,
+              settingSection: pathProps.settingSection,
+              settingSectionMode: pathProps.settingSectionMode,
+              ruleId: pathProps.ruleId
+            }),
+            routes.toCODESpaceSettings({
+              space: pathProps.space,
+              settingSection: pathProps.settingSection,
+              settingSectionMode: pathProps.settingSectionMode
+            }),
+            routes.toCODESpaceSettings({ space: pathProps.space, settingSection: pathProps.settingSection }),
+            routes.toCODESpaceSettings({ space: pathProps.space })
+          ]}
+          exact>
           <LayoutWithSideNav title={getString('pageTitle.spaceSettings')}>
             <SpaceSettings />
           </LayoutWithSideNav>
         </Route>
+
+        {standalone && (
+          <Route path={routes.toAR({ space: pathProps.space })}>
+            <LayoutWithSideNav title={getString('pageTitle.artifactRegistries')}>
+              <Suspense fallback={<Spinner />}>
+                <ArApp />
+              </Suspense>
+            </LayoutWithSideNav>
+          </Route>
+        )}
 
         <Route
           path={routes.toCODECompare({
@@ -283,7 +313,7 @@ export const RouteDestinations: React.FC = React.memo(function RouteDestinations
         {standalone && (
           <Route path={routes.toCDEGitspaceDetail({ space: pathProps.space, gitspaceId: pathProps.gitspaceId })}>
             <LayoutWithSideNav title={getString('cde.gitspaces')}>
-              <GitspaceDetail />
+              <GitspaceDetails />
             </LayoutWithSideNav>
           </Route>
         )}
@@ -372,6 +402,29 @@ export const RouteDestinations: React.FC = React.memo(function RouteDestinations
           ]}>
           <LayoutWithSideNav title={getString('pageTitle.repository')}>
             <Repository />
+          </LayoutWithSideNav>
+        </Route>
+
+        <Route
+          path={[
+            routes.toCODEManageRepositories({
+              space: pathProps.space,
+              settingSection: pathProps.settingSection,
+              settingSectionMode: pathProps.settingSectionMode,
+              ruleId: pathProps.ruleId
+            }),
+            routes.toCODEManageRepositories({
+              space: pathProps.space,
+              settingSection: pathProps.settingSection,
+              settingSectionMode: pathProps.settingSectionMode
+            }),
+
+            routes.toCODEManageRepositories({ space: pathProps.space, settingSection: pathProps.settingSection }),
+            routes.toCODEManageRepositories({ space: pathProps.space })
+          ]}
+          exact>
+          <LayoutWithSideNav title={getString('pageTitle.repositorySettings')}>
+            <ManageRepositories />
           </LayoutWithSideNav>
         </Route>
 

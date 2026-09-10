@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/harness/gitness/stream"
+
 	"github.com/rs/zerolog/log"
 )
 
@@ -35,6 +37,7 @@ type ReaderFactory[R Reader] struct {
 	category                string
 	streamConsumerFactoryFn StreamConsumerFactoryFunc
 	readerFactoryFn         ReaderFactoryFunc[R]
+	collector               Collector
 }
 
 // Launch launches a new reader for the provided group and client name.
@@ -84,9 +87,16 @@ func (f *ReaderFactory[R]) Launch(ctx context.Context,
 	}
 
 	// hook into all available logs
+	collector := f.collector
 	go func(errorCh <-chan error) {
 		for err := range errorCh {
 			log.Err(err).Msg("received an error from stream consumer")
+			var de *stream.DiscardedMessageError
+			if errors.As(err, &de) {
+				collector.RecordDiscard(f.category, groupName)
+			} else {
+				collector.RecordError(f.category, groupName)
+			}
 		}
 	}(streamConsumer.Errors())
 
@@ -143,7 +153,7 @@ type Reader interface {
 	Configure(opts ...ReaderOption)
 }
 
-type HandlerFunc[T interface{}] func(context.Context, *Event[T]) error
+type HandlerFunc[T any] func(context.Context, *Event[T]) error
 
 // GenericReader represents an event reader that supports registering type safe handlers
 // for an arbitrary set of custom events within a given event category using the ReaderRegisterEvent method.
@@ -157,13 +167,13 @@ type GenericReader struct {
 // ReaderRegisterEvent registers a type safe handler function on the reader for a specific event.
 // This method allows to register type safe handlers without the need of handling the raw stream payload.
 // NOTE: Generic arguments are not allowed for struct methods, hence pass the reader as input parameter.
-func ReaderRegisterEvent[T interface{}](reader *GenericReader,
+func ReaderRegisterEvent[T any](reader *GenericReader,
 	eventType EventType, fn HandlerFunc[T], opts ...HandlerOption) error {
 	streamID := getStreamID(reader.category, eventType)
 
 	// register handler for event specific stream.
 	return reader.streamConsumer.Register(streamID,
-		func(ctx context.Context, messageID string, streamPayload map[string]interface{}) error {
+		func(ctx context.Context, messageID string, streamPayload map[string]any) error {
 			if streamPayload == nil {
 				return fmt.Errorf("stream payload is nil for message '%s'", messageID)
 			}
@@ -195,9 +205,6 @@ func ReaderRegisterEvent[T interface{}](reader *GenericReader,
 				//nolint:gocritic // only way to achieve this AFAIK - lint proposal is not building
 				return fmt.Errorf("stream payload can't be decoded into type %T (message '%s')", *new(T), messageID)
 			}
-
-			// populate event ID using the message ID (has to be populated here, producer doesn't know the message ID yet)
-			event.ID = messageID
 
 			// update ctx with event type for proper logging
 			log := log.Ctx(ctx).With().

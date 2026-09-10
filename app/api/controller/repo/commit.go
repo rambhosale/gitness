@@ -15,20 +15,29 @@
 package repo
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/harness/gitness/app/api/controller"
+	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/bootstrap"
+	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/git/api"
+	"github.com/harness/gitness/git/check"
 	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CommitFileAction holds file operation data.
@@ -52,9 +61,49 @@ type CommitFilesOptions struct {
 	Branch    string             `json:"branch"`
 	NewBranch string             `json:"new_branch"`
 	Actions   []CommitFileAction `json:"actions"`
+	Author    *git.Identity      `json:"author"`
 
 	DryRunRules bool `json:"dry_run_rules"`
 	BypassRules bool `json:"bypass_rules"`
+}
+
+func (in *CommitFilesOptions) Sanitize() error {
+	in.Title = strings.TrimSpace(in.Title)
+	in.Message = strings.TrimSpace(in.Message)
+	in.Branch = strings.TrimPrefix(strings.TrimSpace(in.Branch), api.BranchPrefix)
+	in.NewBranch = strings.TrimPrefix(strings.TrimSpace(in.NewBranch), api.BranchPrefix)
+
+	if in.Author != nil {
+		in.Author.Name = strings.TrimSpace(in.Author.Name)
+		in.Author.Email = strings.TrimSpace(in.Author.Email)
+	}
+
+	if len(in.Title) > 1024 { // TODO: Check if the title length limit is acceptable.
+		return usererror.BadRequest("Commit title is too long.")
+	}
+
+	if len(in.Message) > 65536 { // TODO: Check if the message length limit is acceptable.
+		return usererror.BadRequest("Commit message is too long.")
+	}
+
+	if in.NewBranch != "" {
+		if err := check.BranchName(in.NewBranch); err != nil {
+			return usererror.BadRequestf("Invalid branch name: %s", err.Error())
+		}
+	}
+
+	return nil
+}
+
+func mapChangedFiles(files []git.FileReference) []types.FileReference {
+	changedFiles := make([]types.FileReference, len(files))
+	for i, file := range files {
+		changedFiles[i] = types.FileReference{
+			Path: file.Path,
+			SHA:  file.SHA,
+		}
+	}
+	return changedFiles
 }
 
 func (c *Controller) CommitFiles(ctx context.Context,
@@ -67,8 +116,7 @@ func (c *Controller) CommitFiles(ctx context.Context,
 		return types.CommitFilesResponse{}, nil, err
 	}
 
-	rules, isRepoOwner, err := c.fetchRules(ctx, session, repo)
-	if err != nil {
+	if err := in.Sanitize(); err != nil {
 		return types.CommitFilesResponse{}, nil, err
 	}
 
@@ -82,23 +130,39 @@ func (c *Controller) CommitFiles(ctx context.Context,
 		branchName = in.Branch
 	}
 
+	rules, isRepoOwner, err := c.fetchBranchRules(ctx, session, repo)
+	if err != nil {
+		return types.CommitFilesResponse{}, nil, err
+	}
+
 	violations, err := rules.RefChangeVerify(ctx, protection.RefChangeVerifyInput{
-		Actor:       &session.Principal,
-		AllowBypass: in.BypassRules,
-		IsRepoOwner: isRepoOwner,
-		Repo:        repo,
-		RefAction:   refAction,
-		RefType:     protection.RefTypeBranch,
-		RefNames:    []string{branchName},
+		ResolveUserGroupID: c.userGroupService.ListUserIDsByGroupIDs,
+		Actor:              &session.Principal,
+		AllowBypass:        in.BypassRules,
+		IsRepoOwner:        isRepoOwner,
+		Repo:               repo,
+		RefAction:          refAction,
+		RefType:            protection.RefTypeBranch,
+		RefNames:           []string{branchName},
 	})
 	if err != nil {
 		return types.CommitFilesResponse{}, nil, fmt.Errorf("failed to verify protection rules: %w", err)
 	}
 
+	mqViolations, err := c.mergeQueueService.BranchInQueueViolations(ctx, repo.ID, branchName)
+	if err != nil {
+		return types.CommitFilesResponse{}, nil,
+			fmt.Errorf("failed to check for merge queue existence: %w", err)
+	}
+
+	violations = append(violations, mqViolations...)
+
 	if in.DryRunRules {
 		return types.CommitFilesResponse{
-			DryRunRules:    true,
-			RuleViolations: violations,
+			DryRunRulesOutput: types.DryRunRulesOutput{
+				DryRunRules:    true,
+				RuleViolations: violations,
+			},
 		}, nil, nil
 	}
 
@@ -130,8 +194,18 @@ func (c *Controller) CommitFiles(ctx context.Context,
 		}
 	}
 
-	// Create internal write params. Note: This will skip the pre-commit protection rules check.
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	// Create API write params based on bypass_rules.
+	// If bypass_rules is true, use APIContentBypassRules operation type.
+	var writeParams git.WriteParams
+	if in.BypassRules {
+		writeParams, err = controller.CreateRPCAPIContentBypassRulesWriteParams(
+			ctx, c.urlProvider, session, repo,
+		)
+	} else {
+		writeParams, err = controller.CreateRPCAPIContentWriteParams(
+			ctx, c.urlProvider, session, repo,
+		)
+	}
 	if err != nil {
 		return types.CommitFilesResponse{}, nil, fmt.Errorf("failed to create RPC write params: %w", err)
 	}
@@ -139,22 +213,63 @@ func (c *Controller) CommitFiles(ctx context.Context,
 	now := time.Now()
 	commit, err := c.git.CommitFiles(ctx, &git.CommitFilesParams{
 		WriteParams:   writeParams,
-		Title:         in.Title,
-		Message:       in.Message,
+		Message:       git.CommitMessage(in.Title, in.Message),
 		Branch:        in.Branch,
 		NewBranch:     in.NewBranch,
 		Actions:       actions,
 		Committer:     identityFromPrincipal(bootstrap.NewSystemServiceSession().Principal),
 		CommitterDate: &now,
-		Author:        identityFromPrincipal(session.Principal),
+		Author:        cmp.Or(in.Author, identityFromPrincipal(session.Principal)),
 		AuthorDate:    &now,
 	})
 	if err != nil {
+		// Push rules run in the pre-receive hook (they need the pushed objects); surface
+		// their violations to the API/UI instead of an opaque error.
+		if pushViolations, ok := controller.RuleViolationsFromError(err); ok {
+			return types.CommitFilesResponse{}, append(violations, pushViolations...), nil
+		}
 		return types.CommitFilesResponse{}, nil, err
 	}
 
+	if protection.IsBypassed(violations) {
+		err = c.auditService.Log(ctx,
+			session.Principal,
+			audit.NewResource(
+				audit.ResourceTypeRepository,
+				repo.Identifier,
+				audit.RepoPath,
+				repo.Path,
+				audit.BypassAction,
+				audit.BypassActionCommitted,
+				audit.BypassedResourceType,
+				audit.BypassedResourceTypeCommit,
+				audit.BypassedResourceName,
+				commit.CommitID.String(),
+				audit.ResourceName,
+				fmt.Sprintf(
+					audit.BypassSHALabelFormat,
+					repo.Identifier,
+					commit.CommitID.String()[0:6],
+				),
+			),
+			audit.ActionBypassed,
+			paths.Parent(repo.Path),
+			audit.WithNewObject(audit.CommitObject{
+				CommitSHA:      commit.CommitID.String(),
+				RepoPath:       repo.Path,
+				RuleViolations: violations,
+			}),
+		)
+	}
+	if err != nil {
+		log.Ctx(ctx).Warn().Msgf("failed to insert audit log for commit operation: %s", err)
+	}
+
 	return types.CommitFilesResponse{
-		CommitID:       commit.CommitID.String(),
-		RuleViolations: violations,
+		CommitID: commit.CommitID,
+		DryRunRulesOutput: types.DryRunRulesOutput{
+			RuleViolations: violations,
+		},
+		ChangedFiles: mapChangedFiles(commit.ChangedFiles),
 	}, nil, nil
 }

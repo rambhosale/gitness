@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/pipeline/triggerer"
 	"github.com/harness/gitness/types"
@@ -34,14 +33,9 @@ func (c *Controller) Create(
 	pipelineIdentifier string,
 	branch string,
 ) (*types.Execution, error) {
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.getRepoCheckPipelineAccess(ctx, session, repoRef, pipelineIdentifier, enum.PermissionPipelineExecute)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find repo by ref: %w", err)
-	}
-	err = apiauth.CheckPipeline(ctx, c.authorizer, session, repo.Path,
-		pipelineIdentifier, enum.PermissionPipelineExecute)
-	if err != nil {
-		return nil, fmt.Errorf("failed to authorize: %w", err)
+		return nil, err
 	}
 
 	pipeline, err := c.pipelineStore.FindByIdentifier(ctx, repo.ID, pipelineIdentifier)
@@ -76,8 +70,8 @@ func (c *Controller) Create(
 		Ref:         ref,
 		Message:     commit.Message,
 		Title:       commit.Title,
-		Before:      commit.SHA,
-		After:       commit.SHA,
+		Before:      commit.SHA.String(),
+		After:       commit.SHA.String(),
 		Sender:      session.Principal.UID,
 		Source:      branch,
 		Target:      branch,

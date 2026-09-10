@@ -30,41 +30,76 @@ import (
 )
 
 var (
-	ErrNotAuthorized             = errors.New("not authorized")
+	ErrUnauthorized              = errors.New("unauthorized")
+	ErrForbidden                 = errors.New("forbidden")
 	ErrParentResourceTypeUnknown = errors.New("Unknown parent resource type")
 	ErrPrincipalTypeUnknown      = errors.New("Unknown principal type")
 )
 
 // Check checks if a resource specific permission is granted for the current auth session in the scope.
 // Returns nil if the permission is granted, otherwise returns an error.
-// NotAuthenticated, NotAuthorized, or any underlying error.
-func Check(ctx context.Context, authorizer authz.Authorizer, session *auth.Session,
+func Check(
+	ctx context.Context, authorizer authz.Authorizer, session *auth.Session,
 	scope *types.Scope, resource *types.Resource, permission enum.Permission,
 ) error {
-	authorized, err := authorizer.Check(
+	authenticated, err := authorizer.Check(
 		ctx,
 		session,
 		scope,
 		resource,
-		permission)
+		permission,
+	)
 	if err != nil {
 		return err
 	}
 
-	if !authorized {
-		return ErrNotAuthorized
+	return CheckSessionAuth(session, authenticated)
+}
+
+// CheckAll checks if multiple resources specific permission is granted for the current auth session in the scope.
+// Returns nil if the permission is granted, otherwise returns an error.
+func CheckAll(
+	ctx context.Context, authorizer authz.Authorizer, session *auth.Session,
+	permissionChecks ...types.PermissionCheck,
+) error {
+	hasPermission, err := authorizer.CheckAll(
+		ctx,
+		session,
+		permissionChecks...,
+	)
+	if err != nil {
+		return err
+	}
+	return CheckSessionAuth(session, hasPermission)
+}
+
+// CheckSessionAuth returns nil if the user is authenticated.
+// Otherwise, ir returns err unauthorized on anonymous or err forbidden on non anonymous session.
+func CheckSessionAuth(session *auth.Session, authenticated bool) error {
+	if !authenticated {
+		if auth.IsAnonymousSession(session) {
+			return ErrUnauthorized
+		}
+		return ErrForbidden
 	}
 
 	return nil
+}
+
+// IsNoAccess returns true if the error is ErrUnauthorized or ErrForbidden.
+func IsNoAccess(err error) bool {
+	return errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthorized)
 }
 
 // CheckChild checks if a resource specific permission is granted for the current auth session
 // in the scope of a parent.
 // Returns nil if the permission is granted, otherwise returns an error.
 // NotAuthenticated, NotAuthorized, or any underlying error.
-func CheckChild(ctx context.Context, authorizer authz.Authorizer, session *auth.Session,
+func CheckChild(
+	ctx context.Context, authorizer authz.Authorizer, session *auth.Session,
 	spaceStore store.SpaceStore, repoStore store.RepoStore, parentType enum.ParentResourceType, parentID int64,
-	resourceType enum.ResourceType, resourceName string, permission enum.Permission) error {
+	resourceType enum.ResourceType, resourceName string, permission enum.Permission,
+) error {
 	scope, err := getScopeForParent(ctx, spaceStore, repoStore, parentType, parentID)
 	if err != nil {
 		return err
@@ -79,8 +114,10 @@ func CheckChild(ctx context.Context, authorizer authz.Authorizer, session *auth.
 }
 
 // getScopeForParent Returns the scope for a given resource parent (space or repo).
-func getScopeForParent(ctx context.Context, spaceStore store.SpaceStore, repoStore store.RepoStore,
-	parentType enum.ParentResourceType, parentID int64) (*types.Scope, error) {
+func getScopeForParent(
+	ctx context.Context, spaceStore store.SpaceStore, repoStore store.RepoStore,
+	parentType enum.ParentResourceType, parentID int64,
+) (*types.Scope, error) {
 	// TODO: Can this be done cleaner?
 	switch parentType {
 	case enum.ParentResourceTypeSpace:

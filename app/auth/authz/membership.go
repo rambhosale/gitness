@@ -21,29 +21,30 @@ import (
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/app/services/publicaccess"
-	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/exp/slices"
 )
 
 var _ Authorizer = (*MembershipAuthorizer)(nil)
 
 type MembershipAuthorizer struct {
 	permissionCache PermissionCache
-	spaceStore      store.SpaceStore
+	spaceFinder     refcache.SpaceFinder
 	publicAccess    publicaccess.Service
 }
 
 func NewMembershipAuthorizer(
 	permissionCache PermissionCache,
-	spaceStore store.SpaceStore,
+	spaceFinder refcache.SpaceFinder,
 	publicAccess publicaccess.Service,
 ) *MembershipAuthorizer {
 	return &MembershipAuthorizer{
 		permissionCache: permissionCache,
-		spaceStore:      spaceStore,
+		spaceFinder:     spaceFinder,
 		publicAccess:    publicAccess,
 	}
 }
@@ -107,6 +108,12 @@ func (a *MembershipAuthorizer) Check(
 	case enum.ResourceTypeGitspace:
 		spacePath = scope.SpacePath
 
+	case enum.ResourceTypeInfraProvider:
+		spacePath = scope.SpacePath
+
+	case enum.ResourceTypeRegistry:
+		spacePath = scope.SpacePath
+
 	case enum.ResourceTypeUser:
 		// a user is allowed to edit themselves
 		if resource.Identifier == session.Principal.UID &&
@@ -135,28 +142,59 @@ func (a *MembershipAuthorizer) Check(
 		return a.checkWithMembershipMetadata(ctx, membershipMetadata, spacePath, permission)
 	}
 
+	// accessPermissionMetadata contains the access permissions of per space
+	if accessPermissionMetadata, ok := session.Metadata.(*auth.AccessPermissionMetadata); ok {
+		return a.checkWithAccessPermissionMetadata(ctx, accessPermissionMetadata, spacePath, permission)
+	}
+
 	// ensure we aren't bypassing unknown metadata with impact on authorization
 	if session.Metadata != nil && session.Metadata.ImpactsAuthorization() {
 		return false, fmt.Errorf("session contains unknown metadata that impacts authorization: %T", session.Metadata)
 	}
 
-	return a.permissionCache.Get(ctx, PermissionCacheKey{
-		PrincipalID: session.Principal.ID,
-		SpaceRef:    spacePath,
-		Permission:  permission,
-	})
+	return a.permissionCache.Get(
+		ctx, PermissionCacheKey{
+			PrincipalID: session.Principal.ID,
+			SpaceRef:    spacePath,
+			Permission:  permission,
+		},
+	)
 }
 
-func (a *MembershipAuthorizer) CheckAll(ctx context.Context, session *auth.Session,
-	permissionChecks ...types.PermissionCheck) (bool, error) {
+func (a *MembershipAuthorizer) CheckAll(
+	ctx context.Context,
+	session *auth.Session,
+	permissionChecks ...types.PermissionCheck,
+) (bool, error) {
 	for i := range permissionChecks {
 		p := permissionChecks[i]
-		if _, err := a.Check(ctx, session, &p.Scope, &p.Resource, p.Permission); err != nil {
+		check, err := a.Check(ctx, session, &p.Scope, &p.Resource, p.Permission)
+		if err != nil || !check {
 			return false, err
 		}
 	}
 
 	return true, nil
+}
+
+func (a *MembershipAuthorizer) CheckMany(
+	ctx context.Context,
+	session *auth.Session,
+	permissionChecks ...types.PermissionCheck,
+) ([]bool, error) {
+	result := make([]bool, len(permissionChecks))
+
+	for i := range permissionChecks {
+		p := permissionChecks[i]
+		check, err := a.Check(ctx, session, &p.Scope, &p.Resource, p.Permission)
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = check
+	}
+
+	return result, nil
 }
 
 // checkWithMembershipMetadata checks access using the ephemeral membership provided in the metadata.
@@ -166,7 +204,7 @@ func (a *MembershipAuthorizer) checkWithMembershipMetadata(
 	requestedSpacePath string,
 	requestedPermission enum.Permission,
 ) (bool, error) {
-	space, err := a.spaceStore.Find(ctx, membershipMetadata.SpaceID)
+	space, err := a.spaceFinder.FindByID(ctx, membershipMetadata.SpaceID)
 	if err != nil {
 		return false, fmt.Errorf("failed to find space: %w", err)
 	}
@@ -189,4 +227,29 @@ func (a *MembershipAuthorizer) checkWithMembershipMetadata(
 
 	// access is granted by ephemeral membership
 	return true, nil
+}
+
+// checkWithAccessPermissionMetadata checks access using the ephemeral membership provided in the metadata.
+func (a *MembershipAuthorizer) checkWithAccessPermissionMetadata(
+	ctx context.Context,
+	accessPermissionMetadata *auth.AccessPermissionMetadata,
+	requestedSpacePath string,
+	requestedPermission enum.Permission,
+) (bool, error) {
+	space, err := a.spaceFinder.FindByRef(ctx, requestedSpacePath)
+	if err != nil {
+		return false, fmt.Errorf("failed to find space by ref: %w", err)
+	}
+
+	if accessPermissionMetadata.AccessPermissions.Permissions == nil {
+		return false, fmt.Errorf("no %s permission provided", requestedPermission)
+	}
+
+	for _, accessPermission := range accessPermissionMetadata.AccessPermissions.Permissions {
+		if space.ID == accessPermission.SpaceID && slices.Contains(accessPermission.Permissions, requestedPermission) {
+			return true, nil
+		}
+	}
+
+	return false, fmt.Errorf("no %s permission provided", requestedPermission)
 }

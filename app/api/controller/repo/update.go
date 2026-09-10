@@ -16,10 +16,14 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	apiauth "github.com/harness/gitness/app/api/auth"
+	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/types"
@@ -27,15 +31,21 @@ import (
 	"github.com/harness/gitness/types/enum"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/exp/slices"
 )
 
 // UpdateInput is used for updating a repo.
 type UpdateInput struct {
-	Description *string `json:"description"`
+	Description *string         `json:"description"`
+	State       *enum.RepoState `json:"state"`
+	Tags        *types.RepoTags `json:"tags"`
 }
 
-func (in *UpdateInput) hasChanges(repo *types.Repository) bool {
-	return in.Description != nil && *in.Description != repo.Description
+var allowedRepoStateTransitions = map[enum.RepoState][]enum.RepoState{
+	enum.RepoStateActive:            {enum.RepoStateArchived, enum.RepoStateMigrateDataImport},
+	enum.RepoStateArchived:          {enum.RepoStateActive},
+	enum.RepoStateMigrateDataImport: {enum.RepoStateActive},
+	enum.RepoStateMigrateGitPush:    {enum.RepoStateActive, enum.RepoStateMigrateDataImport},
 }
 
 // Update updates a repository.
@@ -44,36 +54,85 @@ func (c *Controller) Update(ctx context.Context,
 	repoRef string,
 	in *UpdateInput,
 ) (*RepositoryOutput, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoEdit)
+	repoCore, err := GetRepo(ctx, c.repoFinder, repoRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find repo: %w", err)
+	}
+
+	var additionalAllowedRepoStates []enum.RepoState
+
+	if in.State != nil {
+		additionalAllowedRepoStates = []enum.RepoState{
+			enum.RepoStateArchived, enum.RepoStateMigrateDataImport, enum.RepoStateMigrateGitPush}
+	}
+
+	err = apiauth.CheckRepoState(ctx, session, repoCore, enum.PermissionRepoEdit, additionalAllowedRepoStates...)
 	if err != nil {
 		return nil, err
 	}
 
-	repoClone := repo.Clone()
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repoCore, enum.PermissionRepoEdit); err != nil {
+		return nil, fmt.Errorf("access check failed: %w", err)
+	}
 
-	if !in.hasChanges(repo) {
-		return GetRepoOutput(ctx, c.publicAccess, repo)
+	repo, err := c.repoStore.Find(ctx, repoCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find repository by ID: %w", err)
 	}
 
 	if err = c.sanitizeUpdateInput(in); err != nil {
 		return nil, fmt.Errorf("failed to sanitize input: %w", err)
 	}
 
+	// A linked repository mirrors its provider-side source: the description belongs to the
+	// source repository, so it can never be edited here - regardless of the caller's access.
+	if repoCore.Type == enum.RepoTypeLinked && in.Description != nil && *in.Description != repo.Description {
+		return nil, usererror.Forbidden(
+			"The description of a linked repository cannot be edited, it mirrors its source repository.")
+	}
+
+	if !in.hasChanges(repo) {
+		return GetRepoOutput(ctx, c.publicAccess, c.repoFinder, repo)
+	}
+
+	if err = c.repoCheck.LifecycleRestriction(ctx, session, repoCore); err != nil {
+		return nil, err
+	}
+
+	if in.State != nil &&
+		!slices.Contains(allowedRepoStateTransitions[repo.State], *in.State) {
+		return nil, usererror.BadRequestf("Changing the state of a repository from %s to %s is not allowed.",
+			repo.State, *in.State)
+	}
+
+	var repoClone types.Repository
+
 	repo, err = c.repoStore.UpdateOptLock(ctx, repo, func(repo *types.Repository) error {
+		repoClone = *repo
+
 		// update values only if provided
 		if in.Description != nil {
 			repo.Description = *in.Description
+		}
+		if in.State != nil {
+			repo.State = *in.State
+		}
+		if in.Tags != nil {
+			tags, _ := json.Marshal(in.Tags)
+			repo.Tags = tags
 		}
 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to update the repo: %w", err)
 	}
+
+	c.repoFinder.MarkChanged(ctx, repo.Core())
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
-		audit.NewResource(audit.ResourceTypeRepository, repo.Identifier),
+		audit.NewResource(audit.ResourceTypeRepositorySettings, repo.Identifier),
 		audit.ActionUpdated,
 		paths.Parent(repo.Path),
 		audit.WithOldObject(repoClone),
@@ -84,10 +143,53 @@ func (c *Controller) Update(ctx context.Context,
 	}
 
 	// backfill repo url
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
-	return GetRepoOutput(ctx, c.publicAccess, repo)
+	if repo.State != repoClone.State {
+		c.eventReporter.StateChanged(ctx, &repoevents.StateChangedPayload{
+			Base:     eventBase(repo.Core(), &session.Principal),
+			OldState: repoClone.State,
+			NewState: repo.State,
+		})
+	}
+
+	return GetRepoOutput(ctx, c.publicAccess, c.repoFinder, repo)
+}
+
+func (in *UpdateInput) hasChanges(repo *types.Repository) bool {
+	if in.Description != nil && *in.Description != repo.Description {
+		return true
+	}
+	if in.State != nil && *in.State != repo.State {
+		return true
+	}
+	if hasTagChanges(in, repo) {
+		return true
+	}
+
+	return false
+}
+
+func hasTagChanges(in *UpdateInput, repo *types.Repository) bool {
+	if in.Tags == nil {
+		return false
+	}
+
+	var repoTags map[string]string
+	_ = json.Unmarshal(repo.Tags, &repoTags)
+
+	if len(*in.Tags) != len(repoTags) {
+		return true
+	}
+
+	for key, value := range *in.Tags {
+		if repoValue, exists := repoTags[key]; !exists || repoValue != value {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *Controller) sanitizeUpdateInput(in *UpdateInput) error {
@@ -96,6 +198,15 @@ func (c *Controller) sanitizeUpdateInput(in *UpdateInput) error {
 		if err := check.Description(*in.Description); err != nil {
 			return err
 		}
+	}
+
+	if in.Tags == nil {
+		return nil
+	}
+
+	err := in.Tags.Sanitize()
+	if err != nil {
+		return fmt.Errorf("failed to sanitize tags: %w", err)
 	}
 
 	return nil

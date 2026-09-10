@@ -19,7 +19,6 @@ import (
 	"strings"
 
 	"github.com/harness/gitness/errors"
-	"github.com/harness/gitness/git/enum"
 
 	"github.com/rs/zerolog/log"
 )
@@ -80,10 +79,7 @@ func (err *PushRejectedError) GenerateMessage() {
 		err.Message = ""
 		return
 	}
-	for {
-		if len(err.StdErr) <= i+8 {
-			break
-		}
+	for len(err.StdErr) > i+8 {
 		if err.StdErr[i:i+8] != "remote: " {
 			break
 		}
@@ -121,45 +117,85 @@ func (err *MoreThanOneError) Error() string {
 // Logs the error and message, returns either the provided message or a git equivalent if possible.
 // Always logs the full message with error as warning.
 // Note: git errors should be processed in command package, this will probably be removed in the future.
-func processGitErrorf(err error, format string, args ...interface{}) error {
+func processGitErrorf(err error, format string, args ...any) error {
 	// create fallback error returned if we can't map it
-	fallbackErr := errors.Internal(err, format, args...)
+	fallbackErr := errors.Internalf(err, format, args...)
 
 	// always log internal error together with message.
 	log.Warn().Msgf("%v: [GIT] %v", fallbackErr, err)
 
 	switch {
-	case err.Error() == "no such file or directory":
+	case strings.Contains(err.Error(), "no such file or directory"):
 		return errors.NotFound("repository not found")
 	case strings.Contains(err.Error(), "reference already exists"):
 		return errors.Conflict("reference already exists")
+	case strings.Contains(err.Error(), "no merge base"):
+		if len(args) >= 2 {
+			return &UnrelatedHistoriesError{
+				BaseRef: strings.TrimSpace(args[0].(string)), //nolint:errcheck
+				HeadRef: strings.TrimSpace(args[1].(string)), //nolint:errcheck
+			}
+		}
+		return &UnrelatedHistoriesError{}
 	default:
 		return fallbackErr
 	}
 }
 
-// MergeUnrelatedHistoriesError represents an error if merging fails due to unrelated histories.
-type MergeUnrelatedHistoriesError struct {
-	Method enum.MergeMethod
-	StdOut string
-	StdErr string
-	Err    error
+type UnrelatedHistoriesError struct {
+	BaseRef string
+	HeadRef string
 }
 
-func IsMergeUnrelatedHistoriesError(err error) bool {
-	return errors.Is(err, &MergeUnrelatedHistoriesError{})
+func (e *UnrelatedHistoriesError) Map() map[string]any {
+	return map[string]any{
+		"base_ref": e.BaseRef,
+		"head_ref": e.HeadRef,
+	}
 }
 
-func (e *MergeUnrelatedHistoriesError) Error() string {
-	return fmt.Sprintf("Merge UnrelatedHistories Error: %v: %s\n%s", e.Err, e.StdErr, e.StdOut)
+func (e *UnrelatedHistoriesError) Is(err error) bool {
+	var target *UnrelatedHistoriesError
+	ok := errors.As(err, &target)
+	if !ok {
+		return false
+	}
+
+	return target.BaseRef == e.BaseRef && target.HeadRef == e.HeadRef
 }
 
-func (e *MergeUnrelatedHistoriesError) Unwrap() error {
-	return e.Err
+func (e *UnrelatedHistoriesError) Error() string {
+	if e.BaseRef == "" || e.HeadRef == "" {
+		return "unrelated commit histories error"
+	}
+	// remove branch and tag prefixes, original remains in struct fields
+	// we just need to remove first occurrence.
+	baseRef := strings.TrimPrefix(e.BaseRef, BranchPrefix)
+	baseRef = strings.TrimPrefix(baseRef, TagPrefix)
+	headRef := strings.TrimPrefix(e.HeadRef, BranchPrefix)
+	headRef = strings.TrimPrefix(headRef, TagPrefix)
+	return fmt.Sprintf("%s and %s have entirely different commit histories.", baseRef, headRef)
 }
 
-//nolint:errorlint // the purpose of this method is to check whether the target itself if of this type.
-func (e *MergeUnrelatedHistoriesError) Is(target error) bool {
-	_, ok := target.(*MergeUnrelatedHistoriesError)
-	return ok
+// ErrMergeBaseNonUnique indicates that two commits have more than one merge base.
+var ErrMergeBaseNonUnique = errors.New("the commits have more than one merge base")
+
+// IsMergeBaseNonUniqueError checks if an error was caused by two commits having
+// more than one merge base.
+func IsMergeBaseNonUniqueError(err error) bool {
+	return errors.Is(err, ErrMergeBaseNonUnique)
+}
+
+// IsUnrelatedHistoriesError checks if an error is a UnrelatedHistoriesError.
+func IsUnrelatedHistoriesError(err error) bool {
+	return AsUnrelatedHistoriesError(err) != nil
+}
+
+func AsUnrelatedHistoriesError(err error) *UnrelatedHistoriesError {
+	var target *UnrelatedHistoriesError
+	ok := errors.As(err, &target)
+	if !ok {
+		return nil
+	}
+	return target
 }

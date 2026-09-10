@@ -17,18 +17,20 @@ package enum
 // PublicResourceType defines the type of the public resource.
 type PublicResourceType string
 
-func (PublicResourceType) Enum() []interface{} {
+func (PublicResourceType) Enum() []any {
 	return toInterfaceSlice(GetAllPublicResourceTypes())
 }
 
 const (
-	PublicResourceTypeRepo  PublicResourceType = "repository"
-	PublicResourceTypeSpace PublicResourceType = "space"
+	PublicResourceTypeRepo     PublicResourceType = "repository"
+	PublicResourceTypeSpace    PublicResourceType = "space"
+	PublicResourceTypeRegistry PublicResourceType = "registry"
 )
 
 func GetAllPublicResourceTypes() []PublicResourceType {
 	return []PublicResourceType{
 		PublicResourceTypeRepo,
 		PublicResourceTypeSpace,
+		PublicResourceTypeRegistry,
 	}
 }

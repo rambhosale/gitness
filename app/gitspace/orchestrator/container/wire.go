@@ -15,6 +15,9 @@
 package container
 
 import (
+	events "github.com/harness/gitness/app/events/gitspaceoperations"
+	"github.com/harness/gitness/app/gitspace/logutil"
+	"github.com/harness/gitness/app/gitspace/orchestrator/runarg"
 	"github.com/harness/gitness/infraprovider"
 
 	"github.com/google/wire"
@@ -22,28 +25,25 @@ import (
 
 var WireSet = wire.NewSet(
 	ProvideEmbeddedDockerOrchestrator,
-	ProvideVSCodeWebService,
-	ProvideVSCodeService,
+	ProvideContainerOrchestratorFactory,
 )
 
 func ProvideEmbeddedDockerOrchestrator(
 	dockerClientFactory *infraprovider.DockerClientFactory,
-	vsCodeService *VSCode,
-	vsCodeWebService *VSCodeWeb,
-	config *Config,
-) Orchestrator {
+	statefulLogger *logutil.StatefulLogger,
+	runArgProvider runarg.Provider,
+	eventReporter *events.Reporter,
+) EmbeddedDockerOrchestrator {
 	return NewEmbeddedDockerOrchestrator(
 		dockerClientFactory,
-		vsCodeService,
-		vsCodeWebService,
-		config,
+		statefulLogger,
+		runArgProvider,
+		eventReporter,
 	)
 }
 
-func ProvideVSCodeWebService(config *VSCodeWebConfig) *VSCodeWeb {
-	return NewVsCodeWebService(config)
-}
-
-func ProvideVSCodeService() *VSCode {
-	return NewVsCodeService()
+func ProvideContainerOrchestratorFactory(
+	embeddedDockerOrchestrator EmbeddedDockerOrchestrator,
+) Factory {
+	return NewFactory(embeddedDockerOrchestrator)
 }

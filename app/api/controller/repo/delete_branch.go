@@ -21,10 +21,14 @@ import (
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
 // DeleteBranch deletes a repo branch.
@@ -32,45 +36,63 @@ func (c *Controller) DeleteBranch(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	branchName string,
-	bypassRules bool,
-) ([]types.RuleViolations, error) {
+	bypassRules,
+	dryRunRules bool,
+) (types.DeleteBranchOutput, []types.RuleViolations, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoPush)
 	if err != nil {
-		return nil, err
+		return types.DeleteBranchOutput{}, nil, err
 	}
 
 	// make sure user isn't deleting the default branch
-	// ASSUMPTION: lower layer calls explicit branch api
-	// and 'refs/heads/branch1' would fail if 'branch1' exists.
-	// TODO: Add functional test to ensure the scenario is covered!
 	if branchName == repo.DefaultBranch {
-		return nil, usererror.ErrDefaultBranchCantBeDeleted
+		return types.DeleteBranchOutput{}, nil, usererror.ErrDefaultBranchCantBeDeleted
 	}
 
-	rules, isRepoOwner, err := c.fetchRules(ctx, session, repo)
+	rules, isRepoOwner, err := c.fetchBranchRules(ctx, session, repo)
 	if err != nil {
-		return nil, err
+		return types.DeleteBranchOutput{}, nil, err
 	}
 
 	violations, err := rules.RefChangeVerify(ctx, protection.RefChangeVerifyInput{
-		Actor:       &session.Principal,
-		AllowBypass: bypassRules,
-		IsRepoOwner: isRepoOwner,
-		Repo:        repo,
-		RefAction:   protection.RefActionDelete,
-		RefType:     protection.RefTypeBranch,
-		RefNames:    []string{branchName},
+		ResolveUserGroupID: c.userGroupService.ListUserIDsByGroupIDs,
+		Actor:              &session.Principal,
+		AllowBypass:        bypassRules,
+		IsRepoOwner:        isRepoOwner,
+		Repo:               repo,
+		RefAction:          protection.RefActionDelete,
+		RefType:            protection.RefTypeBranch,
+		RefNames:           []string{branchName},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify protection rules: %w", err)
-	}
-	if protection.IsCritical(violations) {
-		return violations, nil
+		return types.DeleteBranchOutput{}, nil, fmt.Errorf("failed to verify protection rules: %w", err)
 	}
 
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	mqViolations, err := c.mergeQueueService.BranchInQueueViolations(ctx, repo.ID, branchName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create RPC write params: %w", err)
+		return types.DeleteBranchOutput{}, nil,
+			fmt.Errorf("failed to check for merge queue existence: %w", err)
+	}
+
+	violations = append(violations, mqViolations...)
+
+	if dryRunRules {
+		return types.DeleteBranchOutput{
+			DryRunRulesOutput: types.DryRunRulesOutput{
+				DryRunRules:    true,
+				RuleViolations: violations,
+			},
+		}, nil, nil
+	}
+
+	if protection.IsCritical(violations) {
+		return types.DeleteBranchOutput{}, violations, nil
+	}
+
+	// Use APIRefsOnly for branch deletion - branch rules are verified at the controller layer.
+	writeParams, err := controller.CreateRPCAPIRefsWriteParams(ctx, c.urlProvider, session, repo)
+	if err != nil {
+		return types.DeleteBranchOutput{}, nil, fmt.Errorf("failed to create RPC write params: %w", err)
 	}
 
 	err = c.git.DeleteBranch(ctx, &git.DeleteBranchParams{
@@ -78,8 +100,45 @@ func (c *Controller) DeleteBranch(ctx context.Context,
 		BranchName:  branchName,
 	})
 	if err != nil {
-		return nil, err
+		return types.DeleteBranchOutput{}, nil, err
 	}
 
-	return nil, nil
+	if protection.IsBypassed(violations) {
+		err = c.auditService.Log(ctx,
+			session.Principal,
+			audit.NewResource(
+				audit.ResourceTypeRepository,
+				repo.Identifier,
+				audit.RepoPath,
+				repo.Path,
+				audit.BypassedResourceType,
+				audit.BypassedResourceTypeBranch,
+				audit.BypassedResourceName,
+				branchName,
+				audit.BypassAction,
+				audit.BypassActionDeleted,
+				audit.ResourceName,
+				fmt.Sprintf(
+					audit.BypassSHALabelFormat,
+					repo.Identifier,
+					branchName,
+				),
+			),
+			audit.ActionBypassed,
+			paths.Parent(repo.Path),
+			audit.WithNewObject(audit.BranchObject{
+				BranchName:     branchName,
+				RepoPath:       repo.Path,
+				RuleViolations: violations,
+			}),
+		)
+		if err != nil {
+			log.Ctx(ctx).Warn().Msgf("failed to insert audit log for delete branch operation: %s", err)
+		}
+	}
+
+	return types.DeleteBranchOutput{
+		DryRunRulesOutput: types.DryRunRulesOutput{
+			RuleViolations: violations,
+		}}, nil, nil
 }

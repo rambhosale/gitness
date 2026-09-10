@@ -38,10 +38,10 @@
 }
 
 .customIcon {
-  padding-top: 2px;
+  margin-top: var(--spacing-xsmall);
   color: var(--grey-800);
   svg {
-    height: 20px !important;
-    width: 20px !important;
+    height: 24px !important;
+    width: 24px !important;
   }
 }

@@ -32,8 +32,10 @@ type RestrictedGIT interface {
 	GetBranch(ctx context.Context, params *git.GetBranchParams) (*git.GetBranchOutput, error)
 	Diff(ctx context.Context, in *git.DiffParams, files ...api.FileDiffRequest) (<-chan *git.FileDiff, <-chan error)
 	GetBlob(ctx context.Context, params *git.GetBlobParams) (*git.GetBlobOutput, error)
-	FindOversizeFiles(
+	GetTreeNode(ctx context.Context, params *git.GetTreeNodeParams) (*git.GetTreeNodeOutput, error)
+	ProcessPreReceiveObjects(
 		ctx context.Context,
-		params *git.FindOversizeFilesParams,
-	) (*git.FindOversizeFilesOutput, error)
+		params git.ProcessPreReceiveObjectsParams,
+	) (git.ProcessPreReceiveObjectsOutput, error)
+	MergeBase(ctx context.Context, params git.MergeBaseParams) (git.MergeBaseOutput, error)
 }

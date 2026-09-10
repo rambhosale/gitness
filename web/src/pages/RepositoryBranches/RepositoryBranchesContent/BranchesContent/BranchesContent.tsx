@@ -27,7 +27,7 @@ import {
   useIsMounted
 } from '@harnessio/uicore'
 import { Icon } from '@harnessio/icons'
-import { noop } from 'lodash-es'
+import { isEmpty, noop } from 'lodash-es'
 import { Color, Intent, FontVariation } from '@harnessio/design-system'
 import { Render } from 'react-jsx-match'
 import type { CellProps, Column } from 'react-table'
@@ -39,8 +39,8 @@ import { String, useStrings } from 'framework/strings'
 import { useAppContext } from 'AppContext'
 import type {
   OpenapiCalculateCommitDivergenceRequest,
-  RepoBranch,
-  RepoCommitDivergence,
+  TypesBranchExtended,
+  TypesCommitDivergence,
   RepoRepositoryOutput
 } from 'services/code'
 import { CommitActions } from 'components/CommitActions/CommitActions'
@@ -49,13 +49,13 @@ import { useConfirmAction } from 'hooks/useConfirmAction'
 import { useRuleViolationCheck } from 'hooks/useRuleViolationCheck'
 import { OptionsMenuButton } from 'components/OptionsMenuButton/OptionsMenuButton'
 import { CommitDivergence } from 'components/CommitDivergence/CommitDivergence'
-import { makeDiffRefs } from 'utils/GitUtils'
+import { GitRefType, makeDiffRefs, normalizeGitRef } from 'utils/GitUtils'
 import css from './BranchesContent.module.scss'
 
 interface BranchesContentProps {
   searchTerm?: string
   repoMetadata: RepoRepositoryOutput
-  branches: RepoBranch[]
+  branches: TypesBranchExtended[]
   onDeleteSuccess: () => void
 }
 
@@ -67,11 +67,14 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
     verb: 'POST',
     path: `/api/v1/repos/${repoMetadata.path}/+/commits/calculate-divergence`
   })
-  const [divergence, setDivergence] = useState<RepoCommitDivergence[]>([])
+  const [divergence, setDivergence] = useState<TypesCommitDivergence[]>([])
   const branchDivergenceRequestBody: OpenapiCalculateCommitDivergenceRequest = useMemo(() => {
     return {
       maxCount: 0,
-      requests: branches?.map(branch => ({ from: branch.name, to: repoMetadata.default_branch }))
+      requests: branches?.map(branch => ({
+        from: normalizeGitRef(branch.name),
+        to: normalizeGitRef(repoMetadata.default_branch)
+      }))
     }
   }, [repoMetadata, branches])
   const isMounted = useIsMounted()
@@ -80,7 +83,7 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
     if (isMounted.current && branchDivergenceRequestBody.requests?.length) {
       setDivergence([])
       getBranchDivergence(branchDivergenceRequestBody)
-        .then((response: RepoCommitDivergence[]) => {
+        .then((response: TypesCommitDivergence[]) => {
           if (isMounted.current) {
             setDivergence(response)
           }
@@ -89,12 +92,12 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
     }
   }, [getBranchDivergence, branchDivergenceRequestBody, isMounted])
 
-  const columns: Column<RepoBranch>[] = useMemo(
+  const columns: Column<TypesBranchExtended>[] = useMemo(
     () => [
       {
         Header: getString('branch'),
         width: '30%',
-        Cell: ({ row }: CellProps<RepoBranch>) => {
+        Cell: ({ row }: CellProps<TypesBranchExtended>) => {
           return (
             <Text
               lineClamp={1}
@@ -119,7 +122,7 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
         Header: getString('status'),
         Id: 'status',
         width: 'calc(70% - 230px)',
-        Cell: ({ row }: CellProps<RepoBranch>) => {
+        Cell: ({ row }: CellProps<TypesBranchExtended>) => {
           if (row.original?.name === repoMetadata.default_branch) {
             return (
               <Container flex={{ align: 'center-center' }} width={150}>
@@ -141,7 +144,7 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
         Header: getString('commit'),
         Id: 'commit',
         width: '15%',
-        Cell: ({ row }: CellProps<RepoBranch>) => {
+        Cell: ({ row }: CellProps<TypesBranchExtended>) => {
           return (
             <CommitActions
               sha={row.original.commit?.sha as string}
@@ -157,7 +160,7 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
       {
         Header: getString('updated'),
         width: '200px',
-        Cell: ({ row }: CellProps<RepoBranch>) => {
+        Cell: ({ row }: CellProps<TypesBranchExtended>) => {
           return (
             <Text lineClamp={1} className={css.rowText} color={Color.BLACK} tag="div">
               <Avatar hoverCard={false} size="small" name={row.original.commit?.author?.identity?.name || ''} />
@@ -170,25 +173,46 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
       {
         id: 'action',
         width: '30px',
-        Cell: ({ row }: CellProps<RepoBranch>) => {
+        Cell: ({ row }: CellProps<TypesBranchExtended>) => {
           const { violation, bypassable, bypassed, setAllStates } = useRuleViolationCheck()
-          const [persistModal, setPersistModal] = useState(true)
+          const [persistDialog, setPersistDialog] = useState(true)
+          const [dryRun, setDryRun] = useState(true)
           const { mutate: deleteBranch } = useMutate({
             verb: 'DELETE',
             path: `/api/v1/repos/${repoMetadata.path}/+/branches/${row.original.name}`,
-            queryParams: { bypass_rules: bypassed }
+            queryParams: { dry_run_rules: dryRun, bypass_rules: bypassed }
           })
           const { showSuccess, showError } = useToaster()
           const confirmDeleteBranch = useConfirmAction({
             title: getString('deleteBranch'),
-            confirmText: !bypassable ? getString('delete') : getString('branchProtection.deleteBranchAlertBtn'),
+            confirmText:
+              !dryRun && (!violation || !bypassable)
+                ? getString('delete')
+                : getString('protectionRules.deleteRefAlertBtn', { ref: GitRefType.BRANCH }),
+            buttonDisabled: !dryRun && !bypassable,
             intent: Intent.DANGER,
             message: <String useRichText stringID="deleteBranchConfirm" vars={{ name: row.original.name }} />,
-            persistDialog: persistModal,
+            persistDialog,
+            onOpen: () => {
+              deleteBranch({})
+                .then(res => {
+                  if (!isEmpty(res?.rule_violations)) {
+                    setAllStates({
+                      violation: true,
+                      bypassed: true,
+                      bypassable: res?.rule_violations[0]?.bypassable
+                    })
+                  } else setAllStates({ bypassable: true })
+                })
+                .catch(error => {
+                  setPersistDialog(false)
+                  showError(getErrorMessage(error), 0, 'deleteBranchDryRunFailed')
+                })
+                .finally(() => setDryRun(false))
+            },
             action: async () => {
               deleteBranch({})
                 .then(() => {
-                  setPersistModal(false)
                   showSuccess(
                     <StringSubstitute
                       str={getString('branchDeleted')}
@@ -201,14 +225,9 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
                   onDeleteSuccess()
                 })
                 .catch(error => {
-                  if (error.status === 422) {
-                    setAllStates({
-                      violation: true,
-                      bypassed: true,
-                      bypassable: error?.data?.violations[0]?.bypassable
-                    })
-                  } else showError(getErrorMessage(error), 0, 'failedToDeleteBranch')
+                  showError(getErrorMessage(error), 0, 'failedToDeleteBranch')
                 })
+                .finally(() => setDryRun(false))
             },
             childtag: (
               <Render when={violation}>
@@ -216,8 +235,8 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
                   <Icon intent={Intent.WARNING} name="danger-icon" size={16} />
                   <Text font={{ variation: FontVariation.BODY2 }} color={Color.RED_800}>
                     {bypassable
-                      ? getString('branchProtection.deleteBranchAlertText')
-                      : getString('branchProtection.deleteBranchBlockText')}
+                      ? getString('protectionRules.deleteRefAlertText', { ref: GitRefType.BRANCH })
+                      : getString('protectionRules.deleteRefBlockText', { ref: GitRefType.BRANCH })}
                   </Text>
                 </Layout.Horizontal>
               </Render>
@@ -277,7 +296,7 @@ export function BranchesContent({ repoMetadata, searchTerm = '', branches, onDel
 
   return (
     <Container className={css.container}>
-      <Table<RepoBranch>
+      <Table<TypesBranchExtended>
         className={css.table}
         columns={columns}
         data={branches || []}

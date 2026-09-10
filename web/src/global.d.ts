@@ -16,6 +16,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const __DEV__: boolean
+declare const FF_LIST: Record<string, boolean>
 
 declare module '*.png' {
   const value: string
@@ -70,6 +71,7 @@ declare interface Window {
   STRIP_CDE_PREFIX?: boolean
   STRIP_CODE_PREFIX?: boolean
   Sanitizer: any
+  publicAccessOnGitness: boolean
 }
 
 declare const __ENABLE_CDN__: boolean

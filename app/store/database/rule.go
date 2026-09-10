@@ -31,6 +31,7 @@ import (
 	"github.com/Masterminds/squirrel"
 	"github.com/guregu/null"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 )
 
@@ -67,11 +68,14 @@ type rule struct {
 	Identifier  string `db:"rule_uid"`
 	Description string `db:"rule_description"`
 
-	Type  types.RuleType `db:"rule_type"`
+	Type  enum.RuleType  `db:"rule_type"`
 	State enum.RuleState `db:"rule_state"`
 
 	Pattern    string `db:"rule_pattern"`
+	RepoTarget string `db:"rule_repo_target"`
 	Definition string `db:"rule_definition"`
+
+	Scope int64 `db:"rule_scope"`
 }
 
 const (
@@ -88,7 +92,9 @@ const (
 		,rule_type
 		,rule_state
 		,rule_pattern
-		,rule_definition`
+		,rule_repo_target
+		,rule_definition
+		,rule_scope`
 
 	ruleSelectBase = `
 		SELECT` + ruleColumns + `
@@ -114,15 +120,23 @@ func (s *RuleStore) Find(ctx context.Context, id int64) (*types.Rule, error) {
 
 func (s *RuleStore) FindByIdentifier(
 	ctx context.Context,
-	spaceID *int64,
-	repoID *int64,
+	parentType enum.RuleParent,
+	parentID int64,
 	identifier string,
 ) (*types.Rule, error) {
 	stmt := database.Builder.
 		Select(ruleColumns).
 		From("rules").
 		Where("LOWER(rule_uid) = ?", strings.ToLower(identifier))
-	stmt = s.applyParentID(stmt, spaceID, repoID)
+
+	switch parentType {
+	case enum.RuleParentRepo:
+		stmt = stmt.Where("rule_repo_id = ?", parentID)
+	case enum.RuleParentSpace:
+		stmt = stmt.Where("rule_space_id = ?", parentID)
+	default:
+		return nil, fmt.Errorf("rule parent type '%s' is not supported", parentType)
+	}
 
 	sql, args, err := stmt.ToSql()
 	if err != nil {
@@ -156,7 +170,9 @@ func (s *RuleStore) Create(ctx context.Context, rule *types.Rule) error {
 			,rule_type
 			,rule_state
 			,rule_pattern
+			,rule_repo_target
 			,rule_definition
+			,rule_scope
 		) values (
 			 :rule_version
 			,:rule_created_by
@@ -169,7 +185,9 @@ func (s *RuleStore) Create(ctx context.Context, rule *types.Rule) error {
 			,:rule_type
 			,:rule_state
 			,:rule_pattern
+			,:rule_repo_target
 			,:rule_definition
+			,:rule_scope
 		) RETURNING rule_id`
 
 	db := dbtx.GetAccessor(ctx, s.db)
@@ -203,6 +221,7 @@ func (s *RuleStore) Update(ctx context.Context, rule *types.Rule) error {
 			,rule_description = :rule_description
 			,rule_state = :rule_state
 			,rule_pattern = :rule_pattern
+			,rule_repo_target = :rule_repo_target
 			,rule_definition = :rule_definition
 		WHERE rule_id = :rule_id AND rule_version = :rule_version - 1`
 
@@ -252,40 +271,21 @@ func (s *RuleStore) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *RuleStore) DeleteByIdentifier(ctx context.Context, spaceID, repoID *int64, identifier string) error {
-	stmt := database.Builder.
-		Delete("rules").
-		Where("LOWER(rule_uid) = ?", strings.ToLower(identifier))
-
-	if spaceID != nil {
-		stmt = stmt.Where("rule_space_id = ?", *spaceID)
-	}
-
-	if repoID != nil {
-		stmt = stmt.Where("rule_repo_id = ?", *repoID)
-	}
-
-	sql, args, err := stmt.ToSql()
-	if err != nil {
-		return fmt.Errorf("failed to convert delete rule by identifier to sql: %w", err)
-	}
-
-	db := dbtx.GetAccessor(ctx, s.db)
-
-	if _, err = db.ExecContext(ctx, sql, args...); err != nil {
-		return database.ProcessSQLErrorf(ctx, err, "Failed executing delete rule by identifier query")
-	}
-
-	return nil
-}
-
 // Count returns count of protection rules matching the provided criteria.
-func (s *RuleStore) Count(ctx context.Context, spaceID, repoID *int64, filter *types.RuleFilter) (int64, error) {
+func (s *RuleStore) Count(
+	ctx context.Context,
+	parents []types.RuleParentInfo,
+	filter *types.RuleFilter,
+) (int64, error) {
 	stmt := database.Builder.
 		Select("count(*)").
 		From("rules")
 
-	stmt = s.applyParentID(stmt, spaceID, repoID)
+	err := selectRuleParents(parents, &stmt)
+	if err != nil {
+		return 0, fmt.Errorf("failed to select rule parents: %w", err)
+	}
+
 	stmt = s.applyFilter(stmt, filter)
 
 	sql, args, err := stmt.ToSql()
@@ -306,12 +306,20 @@ func (s *RuleStore) Count(ctx context.Context, spaceID, repoID *int64, filter *t
 }
 
 // List returns a list of protection rules of a repository or a space.
-func (s *RuleStore) List(ctx context.Context, spaceID, repoID *int64, filter *types.RuleFilter) ([]types.Rule, error) {
+func (s *RuleStore) List(
+	ctx context.Context,
+	parents []types.RuleParentInfo,
+	filter *types.RuleFilter,
+) ([]types.Rule, error) {
 	stmt := database.Builder.
 		Select(ruleColumns).
 		From("rules")
 
-	stmt = s.applyParentID(stmt, spaceID, repoID)
+	err := selectRuleParents(parents, &stmt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select rule parents: %w", err)
+	}
+
 	stmt = s.applyFilter(stmt, filter)
 
 	stmt = stmt.Limit(database.Limit(filter.Size))
@@ -352,94 +360,202 @@ type ruleInfo struct {
 	RepoPath   string         `db:"repo_path"`
 	ID         int64          `db:"rule_id"`
 	Identifier string         `db:"rule_uid"`
-	Type       types.RuleType `db:"rule_type"`
+	Type       enum.RuleType  `db:"rule_type"`
 	State      enum.RuleState `db:"rule_state"`
 	Pattern    string         `db:"rule_pattern"`
+	RepoTarget string         `db:"rule_repo_target"`
 	Definition string         `db:"rule_definition"`
 }
 
-// ListAllRepoRules returns a list of all protection rules that can be applied on a repository.
-// This includes the rules defined directly on the repository and all those defined on the parent spaces.
-func (s *RuleStore) ListAllRepoRules(ctx context.Context, repoID int64) ([]types.RuleInfoInternal, error) {
-	const query = `
-		WITH RECURSIVE
-			repo_info(repo_id, repo_uid, repo_space_id) AS (
-				SELECT repo_id, repo_uid, repo_parent_id
-				FROM repositories
-				WHERE repo_id = $1
-			),
-			space_parents(space_id, space_uid, space_parent_id) AS (
-				SELECT space_id, space_uid, space_parent_id
-				FROM spaces
-				INNER JOIN repo_info ON repo_info.repo_space_id = spaces.space_id
-				UNION ALL
-				SELECT spaces.space_id, spaces.space_uid, spaces.space_parent_id
-				FROM spaces
-				INNER JOIN space_parents ON space_parents.space_parent_id = spaces.space_id
-			),
-			spaces_with_path(space_id, space_parent_id, space_uid, space_full_path) AS (
-				SELECT space_id, space_parent_id, space_uid, space_uid
-				FROM space_parents
-				WHERE space_parent_id IS NULL
-				UNION ALL
-				SELECT
-					space_parents.space_id,
-					space_parents.space_parent_id,
-					space_parents.space_uid,
-					spaces_with_path.space_full_path || '/' || space_parents.space_uid
-				FROM space_parents
-				INNER JOIN spaces_with_path ON spaces_with_path.space_id = space_parents.space_parent_id
-			)
-		SELECT
-			 space_full_path AS "space_path"
-			,'' as "repo_path"
-			,rule_id
-			,rule_uid
-			,rule_type
-			,rule_state
-			,rule_pattern
-			,rule_definition
-		FROM spaces_with_path
-		INNER JOIN rules ON rules.rule_space_id = spaces_with_path.space_id
-		WHERE rule_state IN ('active', 'monitor')
+const listRepoRulesQuery = `
+WITH RECURSIVE
+	repo_info(repo_id, repo_uid, repo_space_id) AS (
+		SELECT repo_id, repo_uid, repo_parent_id
+		FROM repositories
+		WHERE repo_id = $1
+	),
+	space_parents(space_id, space_uid, space_parent_id) AS (
+		SELECT space_id, space_uid, space_parent_id
+		FROM spaces
+		INNER JOIN repo_info ON repo_info.repo_space_id = spaces.space_id
+		UNION ALL
+		SELECT spaces.space_id, spaces.space_uid, spaces.space_parent_id
+		FROM spaces
+		INNER JOIN space_parents ON space_parents.space_parent_id = spaces.space_id
+	),
+	spaces_with_path(space_id, space_parent_id, space_uid, space_full_path) AS (
+		SELECT space_id, space_parent_id, space_uid, space_uid
+		FROM space_parents
+		WHERE space_parent_id IS NULL
 		UNION ALL
 		SELECT
-			 '' as "space_path"
-			,space_full_path || '/' || repo_info.repo_uid AS "repo_path"
-			,rule_id
-			,rule_uid
-			,rule_type
-			,rule_state
-			,rule_pattern
-			,rule_definition
-		FROM rules
-		INNER JOIN repo_info ON repo_info.repo_id = rules.rule_repo_id
-		INNER JOIN spaces_with_path ON spaces_with_path.space_id = repo_info.repo_space_id
-		WHERE rule_state IN ('active', 'monitor')`
+			space_parents.space_id,
+			space_parents.space_parent_id,
+			space_parents.space_uid,
+			spaces_with_path.space_full_path || '/' || space_parents.space_uid
+		FROM space_parents
+		INNER JOIN spaces_with_path ON spaces_with_path.space_id = space_parents.space_parent_id
+	)
+SELECT
+	 space_full_path AS "space_path"
+	,'' as "repo_path"
+	,rule_id
+	,rule_uid
+	,rule_type
+	,rule_state
+	,rule_pattern
+	,rule_repo_target
+	,rule_definition
+FROM spaces_with_path
+INNER JOIN rules ON rules.rule_space_id = spaces_with_path.space_id
+WHERE rule_state IN ('active', 'monitor') %s
+UNION ALL
+SELECT
+	 '' as "space_path"
+	,space_full_path || '/' || repo_info.repo_uid AS "repo_path"
+	,rule_id
+	,rule_uid
+	,rule_type
+	,rule_state
+	,rule_pattern
+	,rule_repo_target
+	,rule_definition
+FROM rules
+INNER JOIN repo_info ON repo_info.repo_id = rules.rule_repo_id
+INNER JOIN spaces_with_path ON spaces_with_path.space_id = repo_info.repo_space_id
+WHERE rule_state IN ('active', 'monitor') %s`
+
+var listRepoRulesQueryAll = fmt.Sprintf(listRepoRulesQuery, "", "")
+var listRepoRulesQueryTypesPg = fmt.Sprintf(listRepoRulesQuery, "AND rule_type = ANY($2)", "AND rule_type = ANY($2)")
+
+// ListAllRepoRules returns a list of all protection rules that can be applied on a repository.
+// This includes the rules defined directly on the repository and all those defined on the parent spaces.
+func (s *RuleStore) ListAllRepoRules(
+	ctx context.Context,
+	repoID int64,
+	ruleTypes ...enum.RuleType,
+) ([]types.RuleInfoInternal, error) {
+	useRuleTypes := len(ruleTypes) > 0
+
+	usingPostgres := s.db.DriverName() == PostgresDriverName
+
+	query := listRepoRulesQueryAll
+	if useRuleTypes && usingPostgres {
+		query = listRepoRulesQueryTypesPg
+	}
 
 	db := dbtx.GetAccessor(ctx, s.db)
 
+	var err error
 	result := make([]ruleInfo, 0)
-	if err := db.SelectContext(ctx, &result, query, repoID); err != nil {
+	if useRuleTypes {
+		if usingPostgres {
+			err = db.SelectContext(ctx, &result, query, repoID, pq.Array(ruleTypes))
+		} else {
+			ruleTypeQuery := ruleTypeQuery(ruleTypes...)
+			query = fmt.Sprintf(listRepoRulesQuery, ruleTypeQuery, ruleTypeQuery)
+			err = db.SelectContext(ctx, &result, query, repoID)
+		}
+	} else {
+		err = db.SelectContext(ctx, &result, query, repoID)
+	}
+	if err != nil {
 		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
 	}
 
 	return s.mapToRuleInfos(result), nil
 }
 
-func (*RuleStore) applyParentID(
-	stmt squirrel.SelectBuilder,
-	spaceID, repoID *int64,
-) squirrel.SelectBuilder {
-	if spaceID != nil {
-		stmt = stmt.Where("rule_space_id = ?", *spaceID)
+// ListOnlyRepoRules returns a list of only repo-level protection rules.
+func (s *RuleStore) ListOnlyRepoRules(
+	ctx context.Context,
+	repo *types.RepositoryCore,
+	ruleTypes ...enum.RuleType,
+) ([]types.RuleInfoInternal, error) {
+	columns := `
+		 rule_id
+		,rule_uid
+		,rule_type
+		,rule_state
+		,rule_pattern
+		,rule_repo_target
+		,rule_definition`
+
+	stmt := database.Builder.
+		Select(columns).
+		From("rules").
+		Where("rule_repo_id = ?", repo.ID).
+		Where(squirrel.Eq{"rule_state": []enum.RuleState{enum.RuleStateActive, enum.RuleStateMonitor}})
+
+	if len(ruleTypes) > 0 {
+		stmt = stmt.Where(squirrel.Eq{"rule_type": ruleTypes})
 	}
 
-	if repoID != nil {
-		stmt = stmt.Where("rule_repo_id = ?", *repoID)
+	query, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert query to sql: %w", err)
 	}
 
-	return stmt
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var result []ruleInfo
+
+	err = db.SelectContext(ctx, &result, query, args...)
+	if err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing list only repo rules query")
+	}
+
+	for i := range result {
+		result[i].RepoPath = repo.Path
+	}
+
+	return s.mapToRuleInfos(result), nil
+}
+
+func (s *RuleStore) UpdateParentSpace(
+	ctx context.Context,
+	srcParentSpaceID int64,
+	targetParentSpaceID int64,
+) (int64, error) {
+	stmt := database.Builder.Update("rules").
+		Set("rule_space_id", targetParentSpaceID).
+		Where("rule_space_id = ?", srcParentSpaceID)
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	query, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to bind query")
+	}
+
+	result, err := db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to update rule")
+	}
+
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "failed to get number of updated rows")
+	}
+
+	return count, nil
+}
+
+func ruleTypeQuery(ruleTypes ...enum.RuleType) string {
+	var b strings.Builder
+	b.WriteString(`AND rule_type IN (`)
+
+	for i, rt := range ruleTypes {
+		if i > 0 {
+			b.WriteString(`,`)
+		}
+		b.WriteByte('\'')
+		b.WriteString(string(rt))
+		b.WriteByte('\'')
+	}
+
+	b.WriteString(`)`)
+
+	return b.String()
 }
 
 func (*RuleStore) applyFilter(
@@ -452,8 +568,14 @@ func (*RuleStore) applyFilter(
 		stmt = stmt.Where(squirrel.Eq{"rule_state": filter.States})
 	}
 
+	if len(filter.Types) == 1 {
+		stmt = stmt.Where("rule_type = ?", filter.Types[0])
+	} else if len(filter.Types) > 1 {
+		stmt = stmt.Where(squirrel.Eq{"rule_type": filter.Types})
+	}
+
 	if filter.Query != "" {
-		stmt = stmt.Where("LOWER(rule_uid) LIKE ?", fmt.Sprintf("%%%s%%", strings.ToLower(filter.Query)))
+		stmt = stmt.Where(PartialMatch("rule_uid", filter.Query))
 	}
 
 	return stmt
@@ -476,7 +598,9 @@ func (s *RuleStore) mapToRule(
 		Type:        in.Type,
 		State:       in.State,
 		Pattern:     json.RawMessage(in.Pattern),
+		RepoTarget:  json.RawMessage(in.RepoTarget),
 		Definition:  json.RawMessage(in.Definition),
+		Scope:       in.Scope,
 	}
 
 	createdBy, err := s.pCache.Get(ctx, in.CreatedBy)
@@ -496,7 +620,7 @@ func (s *RuleStore) mapToRules(
 	rules []rule,
 ) []types.Rule {
 	res := make([]types.Rule, len(rules))
-	for i := 0; i < len(rules); i++ {
+	for i := range rules {
 		res[i] = s.mapToRule(ctx, &rules[i])
 	}
 	return res
@@ -516,7 +640,9 @@ func mapToInternalRule(in *types.Rule) rule {
 		Type:        in.Type,
 		State:       in.State,
 		Pattern:     string(in.Pattern),
+		RepoTarget:  string(in.RepoTarget),
 		Definition:  string(in.Definition),
+		Scope:       in.Scope,
 	}
 }
 
@@ -531,6 +657,7 @@ func (*RuleStore) mapToRuleInfo(in *ruleInfo) types.RuleInfoInternal {
 			State:      in.State,
 		},
 		Pattern:    json.RawMessage(in.Pattern),
+		RepoTarget: json.RawMessage(in.RepoTarget),
 		Definition: json.RawMessage(in.Definition),
 	}
 }
@@ -539,8 +666,33 @@ func (s *RuleStore) mapToRuleInfos(
 	ruleInfos []ruleInfo,
 ) []types.RuleInfoInternal {
 	res := make([]types.RuleInfoInternal, len(ruleInfos))
-	for i := 0; i < len(ruleInfos); i++ {
+	for i := range ruleInfos {
 		res[i] = s.mapToRuleInfo(&ruleInfos[i])
 	}
 	return res
+}
+
+func selectRuleParents(
+	parents []types.RuleParentInfo,
+	stmt *squirrel.SelectBuilder,
+) error {
+	var parentSelector squirrel.Or
+	for _, parent := range parents {
+		switch parent.Type {
+		case enum.RuleParentRepo:
+			parentSelector = append(parentSelector, squirrel.Eq{
+				"rule_repo_id": parent.ID,
+			})
+		case enum.RuleParentSpace:
+			parentSelector = append(parentSelector, squirrel.Eq{
+				"rule_space_id": parent.ID,
+			})
+		default:
+			return fmt.Errorf("rule parent type '%s' is not supported", parent.Type)
+		}
+	}
+
+	*stmt = stmt.Where(parentSelector)
+
+	return nil
 }

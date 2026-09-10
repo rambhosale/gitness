@@ -161,10 +161,10 @@ func Parse(
 
 // mapBuild populates build variables available to jsonnet templates.
 // Since we want to maintain compatibility with drone, the older format
-// needs to be maintained (even if the variables do not exist in gitness).
+// needs to be maintained (even if the variables do not exist in Harness).
 func mapBuild(v *types.Execution, vm *jsonnet.VM) {
-	vm.ExtVar(build+"event", v.Event)
-	vm.ExtVar(build+"action", v.Action)
+	vm.ExtVar(build+"event", string(v.Event))
+	vm.ExtVar(build+"action", string(v.Action))
 	vm.ExtVar(build+"environment", v.Deploy)
 	vm.ExtVar(build+"link", v.Link)
 	vm.ExtVar(build+"branch", v.Target)
@@ -188,7 +188,7 @@ func mapBuild(v *types.Execution, vm *jsonnet.VM) {
 
 // mapBuild populates repo level variables available to jsonnet templates.
 // Since we want to maintain compatibility with drone 2.x, the older format
-// needs to be maintained (even if the variables do not exist in gitness).
+// needs to be maintained (even if the variables do not exist in Harness).
 func mapRepo(v *types.Repository, p *types.Pipeline, vm *jsonnet.VM, publicRepo bool) {
 	namespace := v.Path
 	idx := strings.LastIndex(v.Path, "/")

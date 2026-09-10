@@ -27,7 +27,7 @@ import (
 )
 
 //go:embed postgres/*.sql
-var postgres embed.FS
+var Postgres embed.FS
 
 //go:embed sqlite/*.sql
 var sqlite embed.FS
@@ -43,19 +43,42 @@ const (
 )
 
 // Migrate performs the database migration.
-func Migrate(ctx context.Context, db *sqlx.DB) error {
+func Migrate(ctx context.Context, db *sqlx.DB) (err error) {
 	opts, err := getMigrator(db)
 	if err != nil {
 		return fmt.Errorf("failed to get migrator: %w", err)
 	}
+	if db.DriverName() == sqliteDriverName {
+		if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = OFF;`); err != nil {
+			return fmt.Errorf("failed to disable foreign keys: %w", err)
+		}
+		defer func() {
+			_, fkOnErr := db.ExecContext(ctx, `PRAGMA foreign_keys = ON;`)
+			if err == nil && fkOnErr != nil {
+				err = fmt.Errorf("failed to enable foreign keys: %w", fkOnErr)
+			}
+		}()
+	}
+
 	return migrate.New(opts).MigrateUp(ctx)
 }
 
 // To performs the database migration to the specific version.
-func To(ctx context.Context, db *sqlx.DB, version string) error {
+func To(ctx context.Context, db *sqlx.DB, version string) (err error) {
 	opts, err := getMigrator(db)
 	if err != nil {
 		return fmt.Errorf("failed to get migrator: %w", err)
+	}
+	if db.DriverName() == sqliteDriverName {
+		if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = OFF;`); err != nil {
+			return fmt.Errorf("failed to disable foreign keys: %w", err)
+		}
+		defer func() {
+			_, fkOnErr := db.ExecContext(ctx, `PRAGMA foreign_keys = ON;`)
+			if err == nil && fkOnErr != nil {
+				err = fmt.Errorf("failed to enable foreign keys: %w", fkOnErr)
+			}
+		}()
 	}
 	return migrate.New(opts).MigrateTo(ctx, version)
 }
@@ -129,6 +152,15 @@ func getMigrator(db *sqlx.DB) (migrate.Options, error) {
 			return migrateAfter_0039_alter_table_webhooks_uid(ctx, dbtx)
 		case "0042_alter_table_rules":
 			return migrateAfter_0042_alter_table_rules(ctx, dbtx)
+		case "0153_migrate_artifacts":
+			return MigrateAfter_0153_migrate_artifacts(ctx, dbtx, db.DriverName())
+		case "0155_migrate_rpm_artifacts":
+			return MigrateAfter_0155_migrate_rpm_artifacts(ctx, dbtx, db.DriverName())
+		case "0160":
+			return MigrateAfter_0160(ctx, dbtx)
+		case "0173":
+			return MigrateAfter_0153_migrate_artifacts(ctx, dbtx, db.DriverName())
+
 		default:
 			return nil
 		}
@@ -147,7 +179,7 @@ func getMigrator(db *sqlx.DB) (migrate.Options, error) {
 		folder, _ := fs.Sub(sqlite, sqliteSourceDir)
 		opts.FS = folder
 	case postgresDriverName:
-		folder, _ := fs.Sub(postgres, postgresSourceDir)
+		folder, _ := fs.Sub(Postgres, postgresSourceDir)
 		opts.FS = folder
 
 	default:

@@ -16,25 +16,28 @@ package request
 
 import (
 	"net/http"
-	"net/url"
+	"slices"
+	"strings"
 
+	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
 
 const (
-	PathParamRepoRef = "repo_ref"
-	QueryParamRepoID = "repo_id"
+	PathParamRepoRef        = "repo_ref"
+	QueryParamOnlyFavorites = "only_favorites"
+	QueryParamTag           = "tag"
+	QueryParamRepoPath      = "repo_path"
 )
 
 func GetRepoRefFromPath(r *http.Request) (string, error) {
-	rawRef, err := PathParamOrError(r, PathParamRepoRef)
-	if err != nil {
-		return "", err
-	}
+	return PathParamOrError(r, PathParamRepoRef)
+}
 
-	// paths are unescaped
-	return url.PathUnescape(rawRef)
+func GetRepoPathsFromQuery(r *http.Request) []string {
+	repoRefs, _ := QueryParamList(r, QueryParamRepoPath)
+	return repoRefs
 }
 
 // ParseSortRepo extracts the repo sort parameter from the url.
@@ -44,9 +47,47 @@ func ParseSortRepo(r *http.Request) enum.RepoAttr {
 	)
 }
 
+// ParseOnlyFavoritesFromQuery extracts the only_favorites option from the URL.
+func ParseOnlyFavoritesFromQuery(r *http.Request) (bool, error) {
+	return QueryParamAsBoolOrDefault(r, QueryParamOnlyFavorites, false)
+}
+
+func ParseTagsFromQuery(r *http.Request) map[string][]string {
+	tags, ok := QueryParamList(r, QueryParamTag)
+	if !ok {
+		return nil
+	}
+
+	result := make(map[string][]string)
+	for _, t := range tags {
+		before, after, found := strings.Cut(t, ":")
+		key := strings.TrimSpace(before)
+
+		// key without value
+		if !found {
+			// dominates everything else → just set to nil
+			result[key] = nil
+			continue
+		}
+
+		// key with value
+		if _, ok := result[key]; !ok || result[key] != nil {
+			val := strings.TrimSpace(after)
+			result[key] = append(result[key], val)
+		}
+	}
+
+	for key, values := range result {
+		slices.Sort(values)
+		result[key] = slices.Compact(values)
+	}
+
+	return result
+}
+
 // ParseRepoFilter extracts the repository filter from the url.
-func ParseRepoFilter(r *http.Request) (*types.RepoFilter, error) {
-	// recursive is optional to get all repos in a sapce and its subsapces recursively.
+func ParseRepoFilter(r *http.Request, session *auth.Session) (*types.RepoFilter, error) {
+	// recursive is optional to get all repos in a space and its subspaces recursively.
 	recursive, err := ParseRecursiveFromQuery(r)
 	if err != nil {
 		return nil, err
@@ -72,14 +113,30 @@ func ParseRepoFilter(r *http.Request) (*types.RepoFilter, error) {
 		deletedAt = &deletedAtVal
 	}
 
+	order := ParseOrder(r)
+	if order == enum.OrderDefault {
+		order = enum.OrderAsc
+	}
+
+	onlyFavorites, err := ParseOnlyFavoritesFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	var onlyFavoritesFor *int64
+	if onlyFavorites {
+		onlyFavoritesFor = &session.Principal.ID
+	}
+
 	return &types.RepoFilter{
 		Query:             ParseQuery(r),
-		Order:             ParseOrder(r),
+		Order:             order,
 		Page:              ParsePage(r),
 		Sort:              ParseSortRepo(r),
 		Size:              ParseLimit(r),
 		Recursive:         recursive,
 		DeletedAt:         deletedAt,
 		DeletedBeforeOrAt: deletedBeforeOrAt,
+		OnlyFavoritesFor:  onlyFavoritesFor,
+		Tags:              ParseTagsFromQuery(r),
 	}, nil
 }

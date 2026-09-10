@@ -69,6 +69,7 @@ type CommitTag struct {
 	Title       string
 	Message     string
 	Tagger      *Signature
+	SignedData  *SignedData
 	Commit      *Commit
 }
 
@@ -140,15 +141,15 @@ func (s *Service) ListCommitTags(
 	}
 
 	// get all tag and commit SHAs
-	annotatedTagSHAs := make([]string, 0, len(tags))
-	commitSHAs := make([]string, len(tags))
+	annotatedTagSHAs := make([]sha.SHA, 0, len(tags))
+	commitSHAs := make([]sha.SHA, len(tags))
 
 	for i, tag := range tags {
 		// always set the commit sha (will be overwritten for annotated tags)
-		commitSHAs[i] = tag.SHA.String()
+		commitSHAs[i] = tag.SHA
 
 		if tag.IsAnnotated {
-			annotatedTagSHAs = append(annotatedTagSHAs, tag.SHA.String())
+			annotatedTagSHAs = append(annotatedTagSHAs, tag.SHA)
 		}
 	}
 
@@ -183,17 +184,16 @@ func (s *Service) ListCommitTags(
 			}
 
 			// correct the commitSHA for the annotated tag (currently it is the tag sha, not the commit sha)
-			commitSHAs[wi] = aTags[ai].TargetSha.String()
+			commitSHAs[wi] = aTags[ai].TargetSHA
+
+			tagger := mapSignature(aTags[ai].Tagger)
 
 			// update tag information with annotation details
 			// NOTE: we keep the name from the reference and ignore the annotated name (similar to github)
 			tags[wi].Message = aTags[ai].Message
 			tags[wi].Title = aTags[ai].Title
-			tagger, err := mapSignature(&aTags[ai].Tagger)
-			if err != nil {
-				return nil, fmt.Errorf("signature mapping error: %w", err)
-			}
-			tags[wi].Tagger = tagger
+			tags[wi].Tagger = &tagger
+			tags[wi].SignedData = (*SignedData)(aTags[ai].SignedData)
 
 			ai++
 			wi++
@@ -212,7 +212,7 @@ func (s *Service) ListCommitTags(
 		}
 
 		for i := range gitCommits {
-			c, err := mapCommit(gitCommits[i])
+			c, err := mapCommit(&gitCommits[i])
 			if err != nil {
 				return nil, fmt.Errorf("commit mapping error: %w", err)
 			}
@@ -233,9 +233,9 @@ func (s *Service) CreateCommitTag(ctx context.Context, params *CreateCommitTagPa
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
 
-	targetCommit, err := s.git.GetCommit(ctx, repoPath, params.Target)
+	targetCommit, err := s.git.GetCommitFromRev(ctx, repoPath, params.Target)
 	if errors.IsNotFound(err) {
-		return nil, errors.NotFound("target '%s' doesn't exist", params.Target)
+		return nil, errors.NotFoundf("target '%s' doesn't exist", params.Target)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("CreateCommitTag: failed to get commit id for target '%s': %w", params.Target, err)
@@ -251,7 +251,7 @@ func (s *Service) CreateCommitTag(ctx context.Context, params *CreateCommitTagPa
 		return nil, fmt.Errorf("CreateCommitTag: failed to verify tag existence: %w", err)
 	}
 	if err == nil && !commitSHA.IsEmpty() {
-		return nil, errors.Conflict("tag '%s' already exists", tagName)
+		return nil, errors.Conflictf("tag '%s' already exists", tagName)
 	}
 
 	// create tag request
@@ -278,14 +278,14 @@ func (s *Service) CreateCommitTag(ctx context.Context, params *CreateCommitTagPa
 
 	// ref updater
 
-	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath, tagRef)
+	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ref updater to create the tag: %w", err)
 	}
 
 	// create the tag
 
-	err = sharedrepo.Run(ctx, refUpdater, s.tmpDir, repoPath, func(r *sharedrepo.SharedRepo) error {
+	err = sharedrepo.Run(ctx, refUpdater, s.sharedRepoRoot, repoPath, func(r *sharedrepo.SharedRepo) error {
 		if err := s.git.CreateTag(ctx, r.Directory(), tagName, targetCommit.SHA, createTagRequest); err != nil {
 			return fmt.Errorf("failed to create tag '%s': %w", tagName, err)
 		}
@@ -295,7 +295,13 @@ func (s *Service) CreateCommitTag(ctx context.Context, params *CreateCommitTagPa
 			return fmt.Errorf("failed to read annotated tag after creation: %w", err)
 		}
 
-		if err := refUpdater.Init(ctx, sha.Nil, tag.Sha); err != nil {
+		ref := hook.ReferenceUpdate{
+			Ref: tagRef,
+			Old: sha.Nil,
+			New: tag.Sha,
+		}
+
+		if err := refUpdater.Init(ctx, []hook.ReferenceUpdate{ref}); err != nil {
 			return fmt.Errorf("failed to init ref updater: %w", err)
 		}
 
@@ -337,16 +343,17 @@ func (s *Service) DeleteTag(ctx context.Context, params *DeleteTagParams) error 
 	}
 
 	repoPath := getFullPathForRepo(s.reposRoot, params.RepoUID)
-	tagRef := api.GetReferenceFromTagName(params.Name)
 
-	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath, tagRef)
+	refUpdater, err := hook.CreateRefUpdater(s.hookClientFactory, params.EnvVars, repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to create ref updater to delete the tag: %w", err)
 	}
 
-	err = refUpdater.Do(ctx, sha.None, sha.Nil) // delete whatever is there
+	tagRef := api.GetReferenceFromTagName(params.Name)
+
+	err = refUpdater.DoOne(ctx, tagRef, sha.None, sha.Nil) // delete whatever is there
 	if errors.IsNotFound(err) {
-		return errors.NotFound("tag %q does not exist", params.Name)
+		return errors.NotFoundf("tag %q does not exist", params.Name)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to init ref updater: %w", err)
@@ -369,7 +376,7 @@ func (s *Service) listCommitTagsLoadReferenceData(
 		params.PageSize,
 	)
 	if err != nil {
-		return nil, errors.InvalidArgument("invalid pagination details: %v", err)
+		return nil, errors.InvalidArgumentf("invalid pagination details: %v", err)
 	}
 
 	opts := &api.WalkReferencesOptions{

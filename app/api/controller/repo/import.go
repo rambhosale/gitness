@@ -16,13 +16,17 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/harness/gitness/app/api/controller/limiter"
+	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/audit"
+	"github.com/harness/gitness/store"
 
 	"github.com/rs/zerolog/log"
 )
@@ -42,7 +46,7 @@ type ImportInput struct {
 
 // Import creates a new empty repository and starts git import to it from a remote repository.
 func (c *Controller) Import(ctx context.Context, session *auth.Session, in *ImportInput) (*RepositoryOutput, error) {
-	if err := c.sanitizeImportInput(in); err != nil {
+	if err := c.sanitizeImportInput(in, session); err != nil {
 		return nil, fmt.Errorf("failed to sanitize input: %w", err)
 	}
 
@@ -51,7 +55,12 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		return nil, err
 	}
 
-	remoteRepository, provider, err := importer.LoadRepositoryFromProvider(ctx, in.Provider, in.ProviderRepo)
+	// a repository whose import failed occupies the identifier without holding any data - remove it.
+	if err := c.EnsureIdentifierAvailable(ctx, session, parentSpace.ID, in.Identifier); err != nil {
+		return nil, err
+	}
+
+	remoteRepository, provider, err := c.importer.LoadRepositoryFromProvider(ctx, in.Provider, in.ProviderRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -69,14 +78,26 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 			return fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
 		}
 
+		// A space that is over an enforced storage limit takes no new repository, and an
+		// import only adds more.
+		if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, parentSpace.ID); err != nil {
+			return err
+		}
+
 		// lock the space for update during repo creation to prevent racing conditions with space soft delete.
-		parentSpace, err = c.spaceStore.FindForUpdate(ctx, parentSpace.ID)
+		parentSpaceFull, err := c.spaceStore.FindForUpdate(ctx, parentSpace.ID)
 		if err != nil {
 			return fmt.Errorf("failed to find the parent space: %w", err)
 		}
 
+		repo.RootSpaceID = parentSpaceFull.RootSpaceID
+		repo.RootSpaceIdentifier = parentSpaceFull.RootSpaceIdentifier
+
 		err = c.repoStore.Create(ctx, repo)
-		if err != nil {
+		if errors.Is(err, store.ErrDuplicate) {
+			return usererror.Conflict(fmt.Sprintf(
+				"A repository with identifier %q already exists in this space.", repo.Identifier))
+		} else if err != nil {
 			return fmt.Errorf("failed to create repository in storage: %w", err)
 		}
 
@@ -97,8 +118,8 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		return nil, err
 	}
 
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
@@ -114,23 +135,39 @@ func (c *Controller) Import(ctx context.Context, session *auth.Session, in *Impo
 		log.Warn().Msgf("failed to insert audit log for import repository operation: %s", err)
 	}
 
-	return &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   false,
-	}, nil
+	err = c.instrumentation.Track(ctx, instrument.Event{
+		Type:      instrument.EventTypeRepositoryCreate,
+		Principal: session.Principal.ToPrincipalInfo(),
+		Path:      repo.Path,
+		Properties: map[instrument.Property]any{
+			instrument.PropertyRepositoryID:           repo.ID,
+			instrument.PropertyRepositoryName:         repo.Identifier,
+			instrument.PropertyRepositoryCreationType: instrument.CreationTypeImport,
+		},
+	})
+	if err != nil {
+		log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for import repository operation: %s", err)
+	}
+
+	repoOutput, err := GetRepoOutputWithAccess(ctx, c.repoFinder, false, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo output: %w", err)
+	}
+
+	return repoOutput, nil
 }
 
-func (c *Controller) sanitizeImportInput(in *ImportInput) error {
+func (c *Controller) sanitizeImportInput(in *ImportInput, session *auth.Session) error {
 	// TODO [CODE-1363]: remove after identifier migration.
 	if in.Identifier == "" {
 		in.Identifier = in.UID
 	}
 
-	if err := c.validateParentRef(in.ParentRef); err != nil {
+	if err := ValidateParentRef(in.ParentRef); err != nil {
 		return err
 	}
 
-	if err := c.identifierCheck(in.Identifier); err != nil {
+	if err := c.identifierCheck(in.Identifier, session); err != nil {
 		return err
 	}
 

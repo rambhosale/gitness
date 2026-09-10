@@ -16,8 +16,8 @@ package webhook
 
 import (
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/services/webhook"
-	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/encrypt"
 
 	"github.com/google/wire"
@@ -28,12 +28,15 @@ var WireSet = wire.NewSet(
 	ProvideController,
 )
 
-func ProvideController(config webhook.Config, authorizer authz.Authorizer,
-	webhookStore store.WebhookStore, webhookExecutionStore store.WebhookExecutionStore,
-	repoStore store.RepoStore, webhookService *webhook.Service, encrypter encrypt.Encrypter,
+func ProvideController(authorizer authz.Authorizer,
+	spaceFinder refcache.SpaceFinder, repoFinder refcache.RepoFinder,
+	webhookService *webhook.Service, encrypter encrypt.Encrypter,
+	preprocessor Preprocessor,
 ) *Controller {
 	return NewController(
-		config.AllowLoopback, config.AllowPrivateNetwork, authorizer,
-		webhookStore, webhookExecutionStore,
-		repoStore, webhookService, encrypter)
+		authorizer, spaceFinder, repoFinder, webhookService, encrypter, preprocessor)
+}
+
+func ProvidePreprocessor() Preprocessor {
+	return NoopPreprocessor{}
 }

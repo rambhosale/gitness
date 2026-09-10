@@ -40,6 +40,11 @@
   background: var(--grey-0) !important;
 }
 
+.branchActionsSectionContainer {
+  padding: var(--spacing-5) 2rem !important;
+  background: var(--grey-0) !important;
+}
+
 .borderRadius {
   border-radius: 4px;
 }
@@ -72,6 +77,14 @@
     .bp3-button-text {
       font-size: 13px !important;
       font-weight: 500 !important;
+    }
+  }
+}
+
+.blueTextColor {
+  :global {
+    .bp3-button-text {
+      color: var(--primary-7) !important;
     }
   }
 }
@@ -356,4 +369,51 @@
 .conflictingFileName {
   font-family: 'Roboto Mono' !important;
   font-weight: 600 !important;
+}
+
+.boldText {
+  color: var(--grey-500) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  line-height: 20px !important;
+}
+
+.branchContainer {
+  background: #f3f3fa !important;
+  padding: 2px 7px;
+  gap: 3px;
+  border-radius: 4px;
+  opacity: 0px;
+  display: flex;
+  align-items: center;
+}
+
+.widthContainer {
+  max-width: 220px !important;
+  min-width: min-content !important;
+}
+
+.reviewerContainer {
+  align-items: center !important;
+
+  :global {
+    [class*='Avatar--Avatar'] {
+      cursor: unset !important;
+      &:first-child {
+        margin-left: unset !important;
+      }
+    }
+  }
+}
+
+.reviewerTooltip {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.ugicon {
+  background-color: var(--yellow-700) !important;
+  color: var(--grey-0) !important;
+  border-radius: var(--spacing-xsmall);
+  padding: 3px !important;
 }

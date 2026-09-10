@@ -18,6 +18,13 @@ import (
 	"github.com/harness/gitness/types/enum"
 )
 
+type SpaceCore struct {
+	ID         int64  `json:"id"`
+	ParentID   int64  `json:"parent_id"`
+	Path       string `json:"path"`
+	Identifier string `json:"identifier"`
+}
+
 /*
 Space represents a space.
 There isn't a one-solves-all hierarchical data structure for DBs,
@@ -31,19 +38,36 @@ https://stackoverflow.com/questions/4048151/what-are-the-options-for-storing-hie
 https://www.slideshare.net/billkarwin/models-for-hierarchical-data
 */
 type Space struct {
-	ID          int64  `json:"id"`
-	Version     int64  `json:"-"`
-	ParentID    int64  `json:"parent_id"`
-	Path        string `json:"path"`
-	Identifier  string `json:"identifier"`
-	Description string `json:"description"`
-	CreatedBy   int64  `json:"created_by"`
-	Created     int64  `json:"created"`
-	Updated     int64  `json:"updated"`
-	Deleted     *int64 `json:"deleted,omitempty"`
+	ID                  int64  `json:"id"`
+	Version             int64  `json:"-"`
+	ParentID            int64  `json:"parent_id"`
+	Path                string `json:"path"`
+	Identifier          string `json:"identifier"`
+	Description         string `json:"description"`
+	RootSpaceID         int64  `json:"root_space_id"`
+	RootSpaceIdentifier string `json:"root_space_identifier"`
+	CreatedBy           int64  `json:"created_by"`
+	Created             int64  `json:"created"`
+	Updated             int64  `json:"updated"`
+	Deleted             *int64 `json:"deleted,omitempty"`
 }
 
-// Stores spaces query parameters.
+func (s *Space) Core() *SpaceCore {
+	return &SpaceCore{
+		ID:         s.ID,
+		ParentID:   s.ParentID,
+		Path:       s.Path,
+		Identifier: s.Identifier,
+	}
+}
+
+type SpaceParentData struct {
+	ID         int64  `json:"id"`
+	Identifier string `json:"identifier"`
+	ParentID   int64  `json:"parent_id"`
+}
+
+// SpaceFilter stores spaces query parameters.
 type SpaceFilter struct {
 	Page              int            `json:"page"`
 	Size              int            `json:"size"`
@@ -53,4 +77,11 @@ type SpaceFilter struct {
 	DeletedAt         *int64         `json:"deleted_at,omitempty"`
 	DeletedBeforeOrAt *int64         `json:"deleted_before_or_at,omitempty"`
 	Recursive         bool           `json:"recursive"`
+}
+
+type SpaceStorage struct {
+	ID         int64  `json:"id"`
+	Identifier string `json:"identifier"`
+	Size       int64  `json:"size"`
+	LFSSize    int64  `json:"lfs_size"`
 }

@@ -49,7 +49,7 @@ import { useGet, useMutate } from 'restful-react'
 import { Render } from 'react-jsx-match'
 import { compact, get } from 'lodash-es'
 import { useModalHook } from 'hooks/useModalHook'
-import { String, useStrings } from 'framework/strings'
+import { useStrings } from 'framework/strings'
 import {
   DEFAULT_BRANCH_NAME,
   getErrorMessage,
@@ -75,6 +75,7 @@ import type {
   OpenapiCreateRepositoryRequest
 } from 'services/code'
 import { useAppContext } from 'AppContext'
+import { usePublicResourceConfig } from 'hooks/usePublicResourceConfig'
 import ImportForm from './ImportForm/ImportForm'
 import ImportReposForm from './ImportReposForm/ImportReposForm'
 import Private from '../../icons/private.svg?url'
@@ -96,8 +97,10 @@ export interface NewRepoModalButtonProps extends Omit<ButtonProps, 'onClick' | '
   submitButtonTitle?: string
   cancelButtonTitle?: string
   onSubmit: (data: RepoRepositoryOutput & SpaceImportRepositoriesOutput) => void
-  newRepoModalOnly?: boolean
-  notFoundRepoName?: string
+  repoCreationType?: RepoCreationType
+  customRenderer?: (onChange: (event: any) => void) => React.ReactNode
+  isOPAError?: (error: any) => boolean
+  handleOPAError?: (error: any) => void
 }
 
 export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
@@ -106,12 +109,15 @@ export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
   submitButtonTitle,
   cancelButtonTitle,
   onSubmit,
+  isOPAError,
+  handleOPAError,
   ...props
 }) => {
   const ModalComponent: React.FC = () => {
     const { getString } = useStrings()
     const [branchName, setBranchName] = useState(DEFAULT_BRANCH_NAME)
-    const [enablePublicRepo, setEnablePublicRepo] = useState(false)
+    const { allowPublicResourceCreation, configLoading, systemConfigError, errorWhileFetchingAuthSettings } =
+      usePublicResourceConfig()
     const { showError } = useToaster()
 
     const { mutate: createRepo, loading: submitLoading } = useMutate<RepoRepositoryOutput>({
@@ -146,31 +152,19 @@ export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
       loading: licenseLoading,
       error: licenseError
     } = useGet({ path: '/api/v1/resources/license' })
-    const {
-      data: systemConfig,
-      loading: systemConfigLoading,
-      error: systemConfigError
-    } = useGet({ path: 'api/v1/system/config' })
 
     const loading =
-      submitLoading ||
-      gitIgnoreLoading ||
-      licenseLoading ||
-      importRepoLoading ||
-      submitImportLoading ||
-      systemConfigLoading
+      submitLoading || gitIgnoreLoading || licenseLoading || importRepoLoading || submitImportLoading || configLoading
 
     useEffect(() => {
-      if (gitIgnoreError || licenseError || systemConfigError) {
-        showError(getErrorMessage(gitIgnoreError || licenseError || systemConfigError), 0)
+      if (gitIgnoreError || licenseError || systemConfigError || errorWhileFetchingAuthSettings) {
+        showError(
+          getErrorMessage(gitIgnoreError || licenseError || systemConfigError || errorWhileFetchingAuthSettings),
+          0
+        )
       }
-    }, [gitIgnoreError, licenseError, systemConfigError, showError])
+    }, [gitIgnoreError, licenseError, systemConfigError, errorWhileFetchingAuthSettings, showError])
 
-    useEffect(() => {
-      if (systemConfig) {
-        setEnablePublicRepo(systemConfig.public_resource_creation_enabled)
-      }
-    }, [systemConfig])
     const handleSubmit = (formData: RepoFormData) => {
       try {
         const payload: OpenapiCreateRepositoryRequest = {
@@ -189,7 +183,11 @@ export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
             onSubmit(response)
           })
           .catch(_error => {
-            showError(getErrorMessage(_error), 0, getString('failedToCreateRepo'))
+            if (isOPAError && handleOPAError && isOPAError(_error.data)) {
+              handleOPAError(_error.data)
+            } else {
+              showError(getErrorMessage(_error), 0, getString('failedToCreateRepo'))
+            }
           })
       } catch (exception) {
         showError(getErrorMessage(exception), 0, getString('failedToCreateRepo'))
@@ -353,7 +351,7 @@ export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
                       {getString('createRepoModal.branch')}
                     </Text>
                   </Container>
-                  <Render when={enablePublicRepo}>
+                  <Render when={allowPublicResourceCreation}>
                     <hr className={css.dividerContainer} />
                     <Container>
                       <FormInput.RadioGroup
@@ -471,27 +469,26 @@ export const NewRepoModalButton: React.FC<NewRepoModalButtonProps> = ({
   const [openModal, hideModal] = useModalHook(ModalComponent, [onSubmit, repoOption])
   const { standalone } = useAppContext()
   const { hooks } = useAppContext()
+
   const permResult = hooks?.usePermissionTranslate?.(
     {
       resource: {
         resourceType: 'CODE_REPOSITORY'
       },
-      permissions: ['code_repo_push']
+      permissions: ['code_repo_create']
     },
     [space]
   )
 
-  return props?.newRepoModalOnly ? (
-    <MenuItem
-      icon="plus"
-      text={<String stringID="cde.create.repoNotFound" vars={{ repo: props?.notFoundRepoName }} useRichText />}
-      onClick={e => {
+  return props?.repoCreationType ? (
+    <>
+      {props?.customRenderer?.(e => {
         e.preventDefault()
         e.stopPropagation()
-        setRepoOption(repoCreateOptions[0])
+        setRepoOption(repoCreateOptions.find(option => option.type === props?.repoCreationType) || repoCreateOptions[0])
         setTimeout(() => openModal(), 0)
-      }}
-    />
+      })}
+    </>
   ) : (
     <SplitButton
       {...props}

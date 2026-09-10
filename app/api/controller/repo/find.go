@@ -16,6 +16,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
@@ -25,18 +26,34 @@ import (
 // Find finds a repo.
 func (c *Controller) Find(ctx context.Context, session *auth.Session, repoRef string) (*RepositoryOutput, error) {
 	// note: can't use c.getRepoCheckAccess because even repositories that are currently being imported can be fetched.
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repoCore, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, enum.PermissionRepoView); err != nil {
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repoCore, enum.PermissionRepoView); err != nil {
 		return nil, err
 	}
 
-	// backfill clone url
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo, err := c.repoStore.Find(ctx, repoCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch repo by ID: %w", err)
+	}
 
-	return GetRepoOutput(ctx, c.publicAccess, repo)
+	// backfill clone url
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
+
+	repoOut, err := GetRepoOutput(ctx, c.publicAccess, c.repoFinder, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo output for repo %q: %w", repo.Path, err)
+	}
+
+	favoritesMap, err := c.favoriteStore.Map(ctx, session.Principal.ID, enum.ResourceTypeRepo, []int64{repo.ID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to check if repo %q is marked as favorite: %w", repo.Path, err)
+	}
+	repoOut.IsFavorite = favoritesMap[repo.ID]
+
+	return repoOut, nil
 }

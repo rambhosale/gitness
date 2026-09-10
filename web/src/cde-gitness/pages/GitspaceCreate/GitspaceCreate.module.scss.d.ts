@@ -18,9 +18,17 @@
 // This is an auto-generated file
 export declare const cardMain: string
 export declare const cardTitle: string
+export declare const customBreadcumbStyles: string
 export declare const formContainer: string
 export declare const formDivider: string
 export declare const formOuterContainer: string
 export declare const formTitleContainer: string
+export declare const gitspaceNameContainer: string
+export declare const icon: string
+export declare const inputFieldContainer: string
+export declare const leftSection: string
 export declare const main: string
 export declare const subContainers: string
+export declare const suggestedName: string
+export declare const textSection: string
+export declare const titleContainer: string

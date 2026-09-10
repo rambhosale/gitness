@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import {
   Container,
   Layout,
@@ -32,23 +32,25 @@ import cx from 'classnames'
 import { Color, FontVariation, Intent } from '@harnessio/design-system'
 import { Icon } from '@harnessio/icons'
 import { noop } from 'lodash-es'
-import { useMutate, useGet } from 'restful-react'
+import { useGet, useMutate } from 'restful-react'
 import { Render } from 'react-jsx-match'
 import { ACCESS_MODES, getErrorMessage, permissionProps, voidFn } from 'utils/Utils'
 import { useStrings } from 'framework/strings'
 import type { RepoRepositoryOutput } from 'services/code'
 import { useAppContext } from 'AppContext'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
-import { RepoVisibility } from 'utils/GitUtils'
+import { RepoVisibility, RepoState } from 'utils/GitUtils'
 import { BranchTagSelect } from 'components/BranchTagSelect/BranchTagSelect'
 import { useModalHook } from 'hooks/useModalHook'
+import { usePublicResourceConfig } from 'hooks/usePublicResourceConfig'
 import useDeleteRepoModal from './DeleteRepoModal/DeleteRepoModal'
 import useDefaultBranchModal from './DefaultBranchModal/DefaultBranchModal'
+import useArchiveRepoModal from './ArchiveRepoModal/ArchiveRepoModal'
 import Private from '../../../icons/private.svg?url'
 import css from '../RepositorySettings.module.scss'
 
 interface GeneralSettingsProps {
-  repoMetadata: RepoRepositoryOutput | undefined
+  repoMetadata?: RepoRepositoryOutput
   refetch: () => void
   gitRef: string
   isRepositoryEmpty: boolean
@@ -62,14 +64,15 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
   const [defaultBranch, setDefaultBranch] = useState(ACCESS_MODES.VIEW)
   const { openModal: openDefaultBranchModal } = useDefaultBranchModal({ currentGitRef, setDefaultBranch, refetch })
   const { showError, showSuccess } = useToaster()
-
+  const { standalone, hooks, routingId } = useAppContext()
   const space = useGetSpaceParam()
-  const { standalone, hooks, isPublicAccessEnabledOnResources } = useAppContext()
+  const { allowPublicResourceCreation } = usePublicResourceConfig()
   const { getString } = useStrings()
   const currRepoVisibility = repoMetadata?.is_public === true ? RepoVisibility.PUBLIC : RepoVisibility.PRIVATE
-
+  const repoState = repoMetadata?.archived === true ? RepoState.ARCHIVED : RepoState.UNARCHIVED
+  const { openModal: openArchiveRepoModal } = useArchiveRepoModal()
   const [repoVis, setRepoVis] = useState<RepoVisibility>(currRepoVisibility)
-  const [enablePublicRepo, setEnablePublicRepo] = useState(false)
+
   const { mutate } = useMutate({
     verb: 'PATCH',
     path: `/api/v1/repos/${repoMetadata?.path}/+/`
@@ -78,6 +81,18 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
   const { mutate: changeVisibility } = useMutate({
     verb: 'POST',
     path: `/api/v1/repos/${repoMetadata?.path}/+/public-access`
+  })
+
+  const { CODE_GIT_LFS_ENABLED } = hooks?.useFeatureFlags()
+  const { data: generalSettingsData, refetch: refetchSettings } = useGet({
+    path: `/api/v1/repos/${repoMetadata?.path}/+/settings/general`,
+    queryParams: { routingId: routingId }
+  })
+
+  const { mutate: updateGeneralSettings } = useMutate({
+    verb: 'PATCH',
+    path: `/api/v1/repos/${repoMetadata?.path}/+/settings/general`,
+    queryParams: { routingId: routingId }
   })
 
   const permEditResult = hooks?.usePermissionTranslate?.(
@@ -100,19 +115,11 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
     },
     [space]
   )
-  const { data: systemConfig } = useGet({ path: 'api/v1/system/config' })
-
-  useEffect(() => {
-    if (systemConfig) {
-      setEnablePublicRepo(systemConfig.public_resource_creation_enabled)
-    }
-  }, [systemConfig])
 
   const ModalComponent: React.FC = () => {
     return (
       <Dialog
         className={css.dialogContainer}
-        style={{ width: 585, maxHeight: '95vh', overflow: 'auto' }}
         title={<Text font={{ variation: FontVariation.H4 }}>{getString('changeRepoVis')}</Text>}
         isOpen
         onClose={hideModal}>
@@ -144,7 +151,6 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
           </Container>
           <Layout.Horizontal className={css.buttonContainer}>
             <Button
-              margin={{ right: 'medium' }}
               type="submit"
               text={
                 <StringSubstitute
@@ -184,18 +190,20 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
 
   return (
     <Formik
+      enableReinitialize
       formName="repoGeneralSettings"
       initialValues={{
         name: repoMetadata?.identifier,
         desc: repoMetadata?.description,
         defaultBranch: repoMetadata?.default_branch,
-        isPublic: currRepoVisibility
+        isPublic: currRepoVisibility,
+        gitLFSEnabled: generalSettingsData?.git_lfs_enabled ?? true
       }}
       onSubmit={voidFn(mutate)}>
       {formik => {
         return (
           <Layout.Vertical padding={{ top: 'medium' }}>
-            <Container padding="large" margin={{ bottom: 'medium' }} className={css.generalContainer}>
+            <Container padding="medium" margin={{ bottom: 'medium' }} className={css.generalContainer}>
               <Layout.Horizontal padding={{ bottom: 'medium' }}>
                 <Container className={css.label}>
                   <Text color={Color.GREY_600} className={css.textSize}>
@@ -229,7 +237,7 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
                           variation={ButtonVariation.SECONDARY}
                           size={ButtonSize.SMALL}
                           onClick={() => {
-                            mutate({ description: formik.values?.desc })
+                            mutate({ description: formik.values?.desc?.replace(/\n/g, ' ') })
                               .then(() => {
                                 showSuccess(getString('repoUpdate'))
                                 setEditDesc(ACCESS_MODES.VIEW)
@@ -252,7 +260,7 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
                       </Layout.Horizontal>
                     </Layout.Vertical>
                   ) : (
-                    <Text color={Color.GREY_800} className={css.textSize}>
+                    <Text color={Color.GREY_800} className={cx(css.textSize, css.description)}>
                       {formik?.values?.desc || repoMetadata?.description}
                       <Button
                         className={css.textSize}
@@ -333,7 +341,7 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
                 </Container>
               </Layout.Horizontal>
             </Container>
-            <Render when={enablePublicRepo && isPublicAccessEnabledOnResources}>
+            <Render when={allowPublicResourceCreation}>
               <Container padding="large" margin={{ bottom: 'medium' }} className={css.generalContainer}>
                 <Layout.Horizontal padding={{ bottom: 'medium' }}>
                   <Container className={css.label}>
@@ -418,20 +426,103 @@ const GeneralSettingsContent = (props: GeneralSettingsProps) => {
                 </Layout.Horizontal>
               </Container>
             </Render>
-            <Container padding="medium" className={css.generalContainer}>
-              <Container className={css.deleteContainer}>
-                <Text icon="main-trash" color={Color.GREY_600} font={{ size: 'small' }}>
-                  {getString('dangerDeleteRepo')}
-                </Text>
-                <Button
-                  intent={Intent.DANGER}
-                  onClick={() => {
-                    openDeleteRepoModal()
-                  }}
-                  variation={ButtonVariation.SECONDARY}
-                  text={getString('delete')}
-                  {...permissionProps(permDeleteResult, standalone)}></Button>
+            <Render when={standalone || CODE_GIT_LFS_ENABLED}>
+              <Container padding="medium" margin={{ bottom: 'medium' }} className={css.generalContainer}>
+                <Layout.Horizontal padding={{ bottom: 'medium' }}>
+                  <Container className={css.label}>
+                    <Text color={Color.GREY_600} className={css.textSize} margin={{ top: 'medium' }}>
+                      {getString('generalSetting.features')}
+                    </Text>
+                  </Container>
+                  <Layout.Vertical spacing="small" padding={{ button: 'small', top: 'small' }}>
+                    <Container className={css.content}>
+                      <Layout.Horizontal flex={{ alignItems: 'center' }} spacing={'small'}>
+                        <FormInput.Toggle
+                          {...permissionProps(permEditResult, standalone)}
+                          key={'gitLFSEnabled'}
+                          style={{ margin: '0px' }}
+                          label=""
+                          name="gitLFSEnabled"
+                        />
+                        <Text color={Color.GREY_800} className={css.featureText}>
+                          {getString('generalSetting.gitLFSEnable')}
+                        </Text>
+                        <Text color={Color.GREY_500} className={css.featureText}>
+                          {getString('generalSetting.gitLFSEnableDesc')}
+                        </Text>
+                      </Layout.Horizontal>
+                      <Layout.Horizontal className={css.buttonContainer}>
+                        {generalSettingsData?.git_lfs_enabled !== formik.values.gitLFSEnabled ? (
+                          <Button
+                            margin={{ top: 'medium' }}
+                            type="submit"
+                            text={getString('save')}
+                            variation={ButtonVariation.PRIMARY}
+                            size={ButtonSize.SMALL}
+                            onClick={() => {
+                              updateGeneralSettings({ git_lfs_enabled: formik.values.gitLFSEnabled })
+                                .then(() => {
+                                  showSuccess(getString('repoUpdate'))
+                                  refetchSettings()
+                                })
+                                .catch(err => {
+                                  showError(getErrorMessage(err))
+                                })
+                            }}
+                            {...permissionProps(permEditResult, standalone)}
+                          />
+                        ) : null}
+                      </Layout.Horizontal>
+                    </Container>
+                  </Layout.Vertical>
+                </Layout.Horizontal>
               </Container>
+            </Render>
+            <Container padding="medium" margin={{ bottom: 'medium' }} className={css.generalContainer}>
+              <Layout.Horizontal padding={{ bottom: 'medium' }}>
+                <Container className={css.label}>
+                  <Text color={Color.GREY_600} className={css.textSize} margin={{ top: 'medium' }}>
+                    {getString('cautionZone')}
+                  </Text>
+                </Container>
+                <Layout.Vertical>
+                  <Container className={css.cautionContainer}>
+                    <Layout.Vertical spacing="small" padding={{ right: 'large' }}>
+                      <Text font={{ size: 'small' }} className={css.textSize}>
+                        {repoState === RepoState.ARCHIVED
+                          ? getString('repoArchive.unarchive')
+                          : getString('repoArchive.archive')}
+                      </Text>
+                      <Text font={{ variation: FontVariation.TINY }}>
+                        {repoState === RepoState.ARCHIVED
+                          ? getString('repoArchive.unarchiveInfo')
+                          : getString('repoArchive.archiveInfo')}
+                      </Text>
+                    </Layout.Vertical>
+                    <Button
+                      onClick={openArchiveRepoModal}
+                      variation={ButtonVariation.SECONDARY}
+                      text={repoState === RepoState.ARCHIVED ? getString('unarchive') : getString('archive')}
+                      {...permissionProps(permEditResult, standalone)}
+                    />
+                  </Container>
+                  <Container className={css.cautionContainer}>
+                    <Layout.Vertical spacing="small" padding={{ right: 'large' }}>
+                      <Text font={{ size: 'small' }} className={css.textSize}>
+                        {getString('deleteRepo')}
+                      </Text>
+                      <Text font={{ variation: FontVariation.TINY }}>{getString('deleteRepoMsg')}</Text>
+                    </Layout.Vertical>
+                    <Button
+                      intent={Intent.DANGER}
+                      onClick={openDeleteRepoModal}
+                      variation={ButtonVariation.SECONDARY}
+                      text={getString('delete')}
+                      {...permissionProps(permDeleteResult, standalone)}
+                    />
+                  </Container>
+                </Layout.Vertical>
+              </Layout.Horizontal>
             </Container>
           </Layout.Vertical>
         )

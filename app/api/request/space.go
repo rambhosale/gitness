@@ -15,8 +15,8 @@
 package request
 
 import (
+	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
@@ -24,16 +24,12 @@ import (
 
 const (
 	PathParamSpaceRef = "space_ref"
+
+	QueryParamIncludeSubspaces = "include_subspaces"
 )
 
 func GetSpaceRefFromPath(r *http.Request) (string, error) {
-	rawRef, err := PathParamOrError(r, PathParamSpaceRef)
-	if err != nil {
-		return "", err
-	}
-
-	// paths are unescaped and lower
-	return url.PathUnescape(rawRef)
+	return PathParamOrError(r, PathParamSpaceRef)
 }
 
 // ParseSortSpace extracts the space sort parameter from the url.
@@ -81,4 +77,13 @@ func ParseSpaceFilter(r *http.Request) (*types.SpaceFilter, error) {
 		DeletedAt:         deletedAt,
 		DeletedBeforeOrAt: deletedBeforeOrAt,
 	}, nil
+}
+
+func GetIncludeSubspacesFromQuery(r *http.Request) (bool, error) {
+	v, err := QueryParamAsBoolOrDefault(r, QueryParamIncludeSubspaces, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse include subspaces parameter: %w", err)
+	}
+
+	return v, nil
 }

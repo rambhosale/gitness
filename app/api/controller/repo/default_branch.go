@@ -21,7 +21,6 @@ import (
 
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/auth"
-	"github.com/harness/gitness/app/bootstrap"
 	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/audit"
@@ -49,7 +48,6 @@ func (c *Controller) UpdateDefaultBranch(
 		return nil, err
 	}
 
-	repoClone := repo.Clone()
 	// the max time we give an update default branch to succeed
 	const timeout = 2 * time.Minute
 
@@ -66,18 +64,21 @@ func (c *Controller) UpdateDefaultBranch(
 	}
 	defer unlock()
 
-	writeParams, err := controller.CreateRPCInternalWriteParams(ctx, c.urlProvider, session, repo)
+	// Use APIRefsOnly for default branch update.
+	writeParams, err := controller.CreateRPCAPIRefsWriteParams(ctx, c.urlProvider, session, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RPC write params: %w", err)
 	}
 
 	// create new, time-restricted context to guarantee update completion, even if request is canceled.
 	// TODO: a proper error handling solution required.
-	ctx, cancel := context.WithTimeout(
-		contextutil.WithNewValues(context.Background(), ctx),
-		timeout,
-	)
+	ctx, cancel := contextutil.WithNewTimeout(ctx, timeout)
 	defer cancel()
+
+	repoFull, err := c.repoStore.Find(ctx, repo.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find repo by ID: %w", err)
+	}
 
 	err = c.git.UpdateDefaultBranch(ctx, &git.UpdateDefaultBranchParams{
 		WriteParams: writeParams,
@@ -87,23 +88,31 @@ func (c *Controller) UpdateDefaultBranch(
 		return nil, fmt.Errorf("failed to update the repo default branch: %w", err)
 	}
 
-	oldName := repo.DefaultBranch
-	repo, err = c.repoStore.UpdateOptLock(ctx, repo, func(r *types.Repository) error {
+	var oldName string
+	var repoClone types.Repository
+
+	repoFull, err = c.repoStore.UpdateOptLock(ctx, repoFull, func(r *types.Repository) error {
+		repoClone = *repoFull
+
+		oldName = repoFull.DefaultBranch
 		r.DefaultBranch = in.Name
+
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update the repo default branch on db:%w", err)
 	}
 
-	repoOutput, err := GetRepoOutput(ctx, c.publicAccess, repo)
+	c.repoFinder.MarkChanged(ctx, repo)
+
+	repoOutput, err := GetRepoOutput(ctx, c.publicAccess, c.repoFinder, repoFull)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repo output: %w", err)
 	}
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
-		audit.NewResource(audit.ResourceTypeRepository, repo.Identifier),
+		audit.NewResource(audit.ResourceTypeRepositorySettings, repo.Identifier),
 		audit.ActionUpdated,
 		paths.Parent(repo.Path),
 		audit.WithOldObject(audit.RepositoryObject{
@@ -111,7 +120,7 @@ func (c *Controller) UpdateDefaultBranch(
 			IsPublic:   repoOutput.IsPublic,
 		}),
 		audit.WithNewObject(audit.RepositoryObject{
-			Repository: *repo,
+			Repository: *repoFull,
 			IsPublic:   repoOutput.IsPublic,
 		}),
 	)
@@ -120,10 +129,9 @@ func (c *Controller) UpdateDefaultBranch(
 	}
 
 	c.eventReporter.DefaultBranchUpdated(ctx, &repoevents.DefaultBranchUpdatedPayload{
-		RepoID:      repo.ID,
-		PrincipalID: bootstrap.NewSystemServiceSession().Principal.ID,
-		OldName:     oldName,
-		NewName:     repo.DefaultBranch,
+		Base:    eventBase(repo, &session.Principal),
+		OldName: oldName,
+		NewName: repoFull.DefaultBranch,
 	})
 
 	return repoOutput, nil

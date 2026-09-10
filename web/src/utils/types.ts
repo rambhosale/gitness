@@ -15,6 +15,7 @@
  */
 
 import type { DiffFile } from 'diff2html/lib/types'
+import type { DelegateSelector } from 'cde-gitness/constants'
 
 export interface DiffFileEntry extends DiffFile {
   fileId: string
@@ -43,6 +44,12 @@ export interface UsefulOrNotProps {
   className?: string
 }
 
+export interface DelegateSelectorsV2Props {
+  data?: DelegateSelector[]
+  selectedItems?: string[]
+  onTagInputChange?: (values: string[]) => void
+}
+
 enum Vote {
   None,
   Up,
@@ -53,4 +60,14 @@ export interface Identifier {
   accountId: string
   orgIdentifier: string
   projectIdentifier: string
+}
+
+export interface RuleSettingsParams {
+  accountId: string
+  orgIdentifier: string
+  projectIdentifier: string
+  repoName: string
+  settingSection: string
+  ruleId: string
+  settingSectionMode: string
 }

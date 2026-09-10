@@ -44,6 +44,14 @@ type BranchFilter struct {
 // BranchPrefix base dir of the branch information file store on git.
 const BranchPrefix = "refs/heads/"
 
+// EnsureBranchPrefix ensures the ref always has "refs/heads/" as prefix.
+func EnsureBranchPrefix(ref string) string {
+	if !strings.HasPrefix(ref, BranchPrefix) {
+		return BranchPrefix + ref
+	}
+	return ref
+}
+
 // GetBranch gets an existing branch.
 func (g *Git) GetBranch(
 	ctx context.Context,
@@ -58,7 +66,7 @@ func (g *Git) GetBranch(
 	}
 
 	ref := GetReferenceFromBranchName(branchName)
-	commit, err := GetCommit(ctx, repoPath, ref+"^{commit}") //nolint:goconst
+	commit, err := g.GetCommitFromRev(ctx, repoPath, ref+"^{commit}") //nolint:goconst
 	if err != nil {
 		return nil, fmt.Errorf("failed to find the commit for the branch: %w", err)
 	}
@@ -96,14 +104,22 @@ func (g *Git) HasBranches(
 
 func (g *Git) IsBranchExist(ctx context.Context, repoPath, name string) (bool, error) {
 	cmd := command.New("show-ref",
-		command.WithFlag("--verify", BranchPrefix+name),
+		command.WithFlag("--exists", BranchPrefix+name),
 	)
 	err := cmd.Run(ctx,
 		command.WithDir(repoPath),
 	)
-	if err != nil {
-		return false, fmt.Errorf("failed to check if branch '%s' exist: %w", name, err)
+	if cmdERR := command.AsError(err); cmdERR != nil && cmdERR.IsExitCode(2) {
+		// git returns exit code 2 in case the ref doesn't exist.
+		// On success it would be 0 and no error would be returned in the first place.
+		// Any other exit code we fall through to default error handling.
+		// https://git-scm.com/docs/git-show-ref#Documentation/git-show-ref.txt---exists
+		return false, nil
 	}
+	if err != nil {
+		return false, processGitErrorf(err, "failed to check if branch %q exist", name)
+	}
+
 	return true, nil
 }
 
@@ -123,25 +139,29 @@ func (g *Git) GetBranchCount(
 		command.WithFlag("--format=%(refname:short)"),
 	)
 
-	var err error
 	go func() {
-		defer pipeIn.Close()
-		err = cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(pipeIn))
+		err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(pipeIn))
+		if err != nil {
+			_ = pipeIn.CloseWithError(
+				processGitErrorf(err, "failed to trigger branch command"),
+			)
+			return
+		}
+		_ = pipeIn.Close()
 	}()
-	if err != nil {
-		return 0, processGitErrorf(err, "failed to trigger branch command")
-	}
 
-	return countLines(pipeOut), nil
+	return countLines(pipeOut)
 }
 
-func countLines(pipe io.Reader) int {
+func countLines(pipe io.Reader) (int, error) {
 	scanner := bufio.NewScanner(pipe)
 	count := 0
 
 	for scanner.Scan() {
 		count++
 	}
-
-	return count
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }

@@ -15,15 +15,15 @@
 package repo
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/render"
 	"github.com/harness/gitness/app/api/request"
+	"github.com/harness/gitness/app/services/rules"
 )
 
-// HandleRuleUpdate handles API that updates a protection rule of a repository.
+// HandleRuleUpdate updates a protection rule of a repository.
 func HandleRuleUpdate(repoCtrl *repo.Controller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -41,8 +41,8 @@ func HandleRuleUpdate(repoCtrl *repo.Controller) http.HandlerFunc {
 			return
 		}
 
-		in := new(repo.RuleUpdateInput)
-		err = json.NewDecoder(r.Body).Decode(in)
+		in := new(rules.UpdateInput)
+		err = request.DecodeBody(r, in)
 		if err != nil {
 			render.BadRequestf(ctx, w, "Invalid Request Body: %s.", err)
 			return

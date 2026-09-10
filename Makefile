@@ -5,8 +5,12 @@ ifndef GOBIN # derive value from gopath (default to first entry, similar to 'go 
 	GOBIN := $(shell go env GOPATH | sed 's/:.*//')/bin
 endif
 
-tools = $(addprefix $(GOBIN)/, golangci-lint goimports govulncheck protoc-gen-go protoc-gen-go-grpc gci)
+tools = $(addprefix $(GOBIN)/, goimports protoc-gen-go protoc-gen-go-grpc gci)
 deps = $(addprefix $(GOBIN)/, wire dbmate)
+
+# Tools managed as go tools in go.tool.mod (run via 'go tool -modfile=go.tool.mod <name>')
+GOTOOL_MODFILE = go.tool.mod
+GOTOOL = go tool -modfile=$(GOTOOL_MODFILE)
 
 ifneq (,$(wildcard ./.local.env))
     include ./.local.env
@@ -25,7 +29,7 @@ init: ## Install git hooks to perform pre-commit checks
 	git config core.hooksPath .githooks
 	git config commit.template .gitmessage
 
-dep: $(deps) ## Install the deps required to generate code and build gitness
+dep: $(deps) ## Install the deps required to generate code and build Harness
 	@echo "Installing dependencies"
 	@go mod download
 
@@ -34,18 +38,63 @@ tools: $(tools) ## Install tools required for the build
 
 ###############################################################################
 #
-# Build and testing rules
+# Harness Build and testing rules
 #
 ###############################################################################
 
-build: generate ## Build the all-in-one gitness binary
-	@echo "Building Gitness Server"
+web-build: ## Build the web frontend
+	@echo "Building web frontend"
+	@cd web && yarn install && yarn build
+
+build: generate ## Build the all-in-one Harness binary
+	@echo "Building Harness Server"
 	go build -o ./gitness ./cmd/gitness
 
 test: generate  ## Run the go tests
 	@echo "Running tests"
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out
+	@go test -v -coverprofile=coverage.out `go list ./... | egrep -v "./registry/tests/(maven|cargo|gopkg|npm)"`
+	@go tool cover -html=coverage.out
+
+
+
+###############################################################################
+#
+# Artifact Registry Build and testing rules
+#
+###############################################################################
+
+run: ar-clean build
+	./gitness server .local.env || true
+
+# Main conformance test targets
+ar-conformance-test: tools ar-clean build
+	./gitness server .local.env > logfile.log 2>&1 & echo $$! > server.PID
+	sleep 20
+	./registry/tests/conformance_test.sh localhost:3000
+	@EXIT_CODE=$$?;
+	@kill `cat server.PID` 2>/dev/null || true
+	@rm -f server.PID
+	@rm -f logfile.log
+	@exit $$EXIT_CODE
+
+ar-hot-conformance-test:
+	@echo "Running OCI conformance tests..."
+	rm -rf distribution-spec || true
+	./registry/tests/conformance_test.sh localhost:3000 || true
+
+ar-api-update:
+	@set -e; \
+	oapi-codegen --config ./registry/config/openapi/artifact-services.yaml ./registry/app/api/openapi/api.yaml; \
+	oapi-codegen --config ./registry/config/openapi/artifact-types.yaml ./registry/app/api/openapi/api.yaml;
+
+ar-clean:
+	@rm artifact-registry 2> /dev/null || true
+	@docker stop ps_artifacthub 2> /dev/null || true
+	rm -rf distribution-spec
+	@kill -9 $$(lsof -t -i:3000) || true
+	@rm server.PID || true
+	@rm logfile.log || true
+	go clean
 
 ###############################################################################
 #
@@ -54,18 +103,48 @@ test: generate  ## Run the go tests
 ###############################################################################
 
 format: tools # Format go code and error if any changes are made
-	@echo "Formating ..."
+	@echo "Formatting ..."
 	@goimports -w .
 	@gci write --skip-generated --custom-order -s standard -s "prefix(github.com/harness/gitness)" -s default -s blank -s dot .
 	@echo "Formatting complete"
 
-sec:
-	@echo "Vulnerability detection $(1)"
-	@govulncheck ./...
+modernize: # Report modernization suggestions (use modernize-fix to auto-apply)
+	@echo "Checking for modernization suggestions ..."
+	@go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -test ./...
 
-lint: tools generate # lint the golang code
+modernize-fix: # Auto-apply modernization fixes (review changes carefully!)
+	@echo "Applying modernization fixes ..."
+	@go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
+
+
+# Fails on vulnerabilities that have an upstream fix, reports the ones that don't - see the script.
+sec: govulncheck-check ## Scan the codebase for known vulnerabilities
+	@echo "Vulnerability detection"
+	@GOVULNCHECK="$(GOTOOL) govulncheck" sh ./scripts/security/govulncheck.sh ./...
+
+# Security matters: always check for a newer govulncheck before scanning and offer to install it.
+# Set GOVULNCHECK_SKIP_CHECK=1 to skip (e.g. offline), GOVULNCHECK_AUTO_UPDATE=1 to upgrade without asking.
+govulncheck-check: ## Check for a newer govulncheck and offer to install it
+	@GOVULNCHECK_MODFILE=$(GOTOOL_MODFILE) \
+		GOVULNCHECK_SKIP_CHECK="$(GOVULNCHECK_SKIP_CHECK)" \
+		GOVULNCHECK_AUTO_UPDATE="$(GOVULNCHECK_AUTO_UPDATE)" \
+		sh ./scripts/security/govulncheck-version.sh
+
+govulncheck-update: ## Upgrade govulncheck in go.tool.mod to the latest release
+	@GOVULNCHECK_MODFILE=$(GOTOOL_MODFILE) sh ./scripts/security/govulncheck-version.sh --update
+
+lint: # lint the golang code - CI
 	@echo "Linting $(1)"
-	@golangci-lint run --timeout=3m --verbose
+	@$(GOTOOL) golangci-lint run --timeout=5m --verbose --new-from-rev=HEAD~ --whole-files
+
+lint-full: # full linting the golang code
+	@echo "Linting $(1)"
+	@$(GOTOOL) golangci-lint run --timeout=5m --verbose
+
+lint-local: # lint the golang code - only untracked and staged changes
+	@echo "Linting $(1)"
+	@$(GOTOOL) golangci-lint run --new-from-merge-base=main --new --timeout=5m --verbose --whole-files
+
 
 ###############################################################################
 # Code Generation
@@ -73,6 +152,9 @@ lint: tools generate # lint the golang code
 # Some code generation can be slow, so we only run it if
 # the source file has changed.
 ###############################################################################
+
+generate-mocks:
+	@$(GOTOOL) mockery --config ./registry/app/api/controller/.mockery.yaml
 
 generate: wire
 	@echo "Generated Code"
@@ -97,15 +179,10 @@ update-tools: delete-tools $(tools) ## Update the tools by deleting and re-insta
 delete-tools: ## Delete the tools
 	@rm $(tools) || true
 
-# Install golangci-lint
-$(GOBIN)/golangci-lint:
-	@echo "🔘 Installing golangci-lint... (`date '+%H:%M:%S'`)"
-	@curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOBIN) v1.56.2
-
 # Install goimports to format code
 $(GOBIN)/goimports:
 	@echo "🔘 Installing goimports ... (`date '+%H:%M:%S'`)"
-	@go install golang.org/x/tools/cmd/goimports
+	@go install golang.org/x/tools/cmd/goimports@v0.47.0
 
 # Install wire to generate dependency injection
 $(GOBIN)/wire:
@@ -115,9 +192,6 @@ $(GOBIN)/wire:
 $(GOBIN)/dbmate:
 	go install github.com/amacneil/dbmate@v1.15.0
 
-$(GOBIN)/govulncheck:
-	go install golang.org/x/vuln/cmd/govulncheck@v1.1.1
-
 $(GOBIN)/protoc-gen-go:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
 
@@ -125,9 +199,9 @@ $(GOBIN)/protoc-gen-go-grpc:
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
 
 $(GOBIN)/gci:
-	go install github.com/daixiang0/gci@v0.13.1
+	go install github.com/daixiang0/gci@v0.13.7
 
 help: ## show help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m\033[0m\n"} /^[$$()% 0-9a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
-.PHONY: delete-tools update-tools help format lint
+.PHONY: delete-tools update-tools help format lint sec govulncheck-check govulncheck-update

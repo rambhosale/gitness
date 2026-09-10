@@ -57,18 +57,27 @@ func Connect(ctx context.Context, driver string, datasource string) (*sqlx.DB, e
 		return nil, fmt.Errorf("failed to ping the db: %w", err)
 	}
 
+	log.Ctx(ctx).Info().Str("driver", driver).Msg("Database connected")
+
 	return dbx, nil
 }
 
 // ConnectAndMigrate creates the database handle and migrates the database.
-func ConnectAndMigrate(ctx context.Context, driver string, datasource string, migrator Migrator) (*sqlx.DB, error) {
+func ConnectAndMigrate(
+	ctx context.Context,
+	driver string,
+	datasource string,
+	migrators ...Migrator,
+) (*sqlx.DB, error) {
 	dbx, err := Connect(ctx, driver, datasource)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = migrator(ctx, dbx); err != nil {
-		return nil, fmt.Errorf("failed to setup the db: %w", err)
+	for _, migrator := range migrators {
+		if err = migrator(ctx, dbx); err != nil {
+			return nil, fmt.Errorf("failed to setup the db: %w", err)
+		}
 	}
 
 	return dbx, nil

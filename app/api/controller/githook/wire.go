@@ -19,10 +19,15 @@ import (
 	"github.com/harness/gitness/app/auth/authz"
 	eventsgit "github.com/harness/gitness/app/events/git"
 	eventsrepo "github.com/harness/gitness/app/events/repo"
+	"github.com/harness/gitness/app/services/mergequeue"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/app/services/usergroup"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/git/hook"
 
@@ -36,7 +41,9 @@ var WireSet = wire.NewSet(
 
 func ProvideFactory() hook.ClientFactory {
 	return &ControllerClientFactory{
+		// fields are set in ProvideController to avoid import
 		githookCtrl: nil,
+		git:         nil,
 	}
 }
 
@@ -44,6 +51,7 @@ func ProvideController(
 	authorizer authz.Authorizer,
 	principalStore store.PrincipalStore,
 	repoStore store.RepoStore,
+	repoFinder refcache.RepoFinder,
 	gitReporter *eventsgit.Reporter,
 	repoReporter *eventsrepo.Reporter,
 	git git.Interface,
@@ -56,14 +64,19 @@ func ProvideController(
 	preReceiveExtender PreReceiveExtender,
 	updateExtender UpdateExtender,
 	postReceiveExtender PostReceiveExtender,
+	sseStreamer sse.Streamer,
+	lfsStore store.LFSObjectStore,
+	auditService audit.Service,
+	userGroupService usergroup.Service,
+	mergeQueueService *mergequeue.Service,
 ) *Controller {
 	ctrl := NewController(
 		authorizer,
 		principalStore,
 		repoStore,
+		repoFinder,
 		gitReporter,
 		repoReporter,
-		git,
 		pullreqStore,
 		urlProvider,
 		protectionManager,
@@ -72,6 +85,11 @@ func ProvideController(
 		preReceiveExtender,
 		updateExtender,
 		postReceiveExtender,
+		sseStreamer,
+		lfsStore,
+		auditService,
+		userGroupService,
+		mergeQueueService,
 	)
 
 	// TODO: improve wiring if possible

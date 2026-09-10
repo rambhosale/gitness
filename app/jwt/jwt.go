@@ -15,27 +15,37 @@
 package jwt
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
-	"github.com/golang-jwt/jwt"
-	"github.com/pkg/errors"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
+	//TODO: Update when ready to change repo and build
 	issuer = "Gitness"
 )
 
-// Claims defines gitness jwt claims.
+// Source represents the source of the SubClaimsAccessPermissions.
+type Source string
+
+const (
+	OciSource Source = "oci"
+)
+
+// Claims defines Harness jwt claims.
 type Claims struct {
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 
 	PrincipalID int64 `json:"pid,omitempty"`
 
-	Token      *SubClaimsToken      `json:"tkn,omitempty"`
-	Membership *SubClaimsMembership `json:"ms,omitempty"`
+	Token             *SubClaimsToken             `json:"tkn,omitempty"`
+	Membership        *SubClaimsMembership        `json:"ms,omitempty"`
+	AccessPermissions *SubClaimsAccessPermissions `json:"ap,omitempty"`
 }
 
 // SubClaimsToken contains information about the token the JWT was created for.
@@ -50,19 +60,63 @@ type SubClaimsMembership struct {
 	SpaceID int64               `json:"sid,omitempty"`
 }
 
+// SubClaimsAccessPermissions stores allowed actions on a resource.
+type SubClaimsAccessPermissions struct {
+	Source      Source              `json:"src,omitempty"`
+	Permissions []AccessPermissions `json:"permissions,omitempty"`
+}
+
+// AccessPermissions stores allowed actions on a resource.
+type AccessPermissions struct {
+	SpaceID     int64             `json:"sid,omitempty"`
+	Permissions []enum.Permission `json:"p"`
+}
+
+// extractFirstSecretFromList extracts the first secret from a comma-separated string.
+// This is a helper function to support JWT secret rotation.
+func extractFirstSecretFromList(secret string) (string, error) {
+	if secret == "" {
+		return "", fmt.Errorf("empty secret provided")
+	}
+
+	// If no comma in the string, just trim and return directly.
+	if !strings.Contains(secret, ",") {
+		trimmed := strings.TrimSpace(secret)
+		if trimmed == "" {
+			return "", fmt.Errorf("secret cannot be empty")
+		}
+		return trimmed, nil
+	}
+
+	parts := strings.Split(secret, ",")
+	firstSecret := strings.TrimSpace(parts[0])
+
+	if firstSecret == "" {
+		return "", fmt.Errorf("first secret in list cannot be empty")
+	}
+
+	return firstSecret, nil
+}
+
 // GenerateForToken generates a jwt for a given token.
 func GenerateForToken(token *types.Token, secret string) (string, error) {
-	var expiresAt int64
+	// Use the first secret for signing (support for rotation)
+	signingSecret, err := extractFirstSecretFromList(secret)
+	if err != nil {
+		return "", fmt.Errorf("failed to get first secret: %w", err)
+	}
+
+	var expiresAt *jwt.NumericDate
 	if token.ExpiresAt != nil {
-		expiresAt = *token.ExpiresAt
+		expiresAt = jwt.NewNumericDate(time.UnixMilli(*token.ExpiresAt))
 	}
 
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
-		StandardClaims: jwt.StandardClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: issuer,
 			// times required to be in sec not millisec
-			IssuedAt:  token.IssuedAt / 1000,
-			ExpiresAt: expiresAt / 1000,
+			IssuedAt:  jwt.NewNumericDate(time.UnixMilli(token.IssuedAt)),
+			ExpiresAt: expiresAt,
 		},
 		PrincipalID: token.PrincipalID,
 		Token: &SubClaimsToken{
@@ -71,9 +125,9 @@ func GenerateForToken(token *types.Token, secret string) (string, error) {
 		},
 	})
 
-	res, err := jwtToken.SignedString([]byte(secret))
+	res, err := jwtToken.SignedString([]byte(signingSecret))
 	if err != nil {
-		return "", errors.Wrap(err, "Failed to sign token")
+		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
 	return res, nil
@@ -87,15 +141,21 @@ func GenerateWithMembership(
 	lifetime time.Duration,
 	secret string,
 ) (string, error) {
+	// Use the first secret for signing (support for rotation)
+	signingSecret, err := extractFirstSecretFromList(secret)
+	if err != nil {
+		return "", fmt.Errorf("failed to get first secret: %w", err)
+	}
+
 	issuedAt := time.Now()
 	expiresAt := issuedAt.Add(lifetime)
 
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
-		StandardClaims: jwt.StandardClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: issuer,
 			// times required to be in sec
-			IssuedAt:  issuedAt.Unix(),
-			ExpiresAt: expiresAt.Unix(),
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
 		PrincipalID: principalID,
 		Membership: &SubClaimsMembership{
@@ -104,9 +164,45 @@ func GenerateWithMembership(
 		},
 	})
 
-	res, err := jwtToken.SignedString([]byte(secret))
+	res, err := jwtToken.SignedString([]byte(signingSecret))
 	if err != nil {
-		return "", errors.Wrap(err, "Failed to sign token")
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return res, nil
+}
+
+// GenerateForTokenWithAccessPermissions generates a jwt for a given token.
+func GenerateForTokenWithAccessPermissions(
+	principalID int64,
+	lifetime *time.Duration,
+	secret string, accessPermissions *SubClaimsAccessPermissions,
+) (string, error) {
+	// Use the first secret for signing (support for rotation)
+	signingSecret, err := extractFirstSecretFromList(secret)
+	if err != nil {
+		return "", fmt.Errorf("failed to get first secret: %w", err)
+	}
+
+	issuedAt := time.Now()
+	if lifetime == nil {
+		return "", fmt.Errorf("token lifetime is required")
+	}
+	expiresAt := issuedAt.Add(*lifetime)
+
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    issuer,
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+		},
+		PrincipalID:       principalID,
+		AccessPermissions: accessPermissions,
+	})
+
+	res, err := jwtToken.SignedString([]byte(signingSecret))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
 	return res, nil

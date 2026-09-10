@@ -15,8 +15,14 @@
 package importer
 
 import (
+	"context"
+	"fmt"
+
+	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/services/keywordsearch"
 	"github.com/harness/gitness/app/services/publicaccess"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/settings"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
@@ -24,6 +30,7 @@ import (
 	"github.com/harness/gitness/encrypt"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/job"
+	"github.com/harness/gitness/netpolicy"
 	"github.com/harness/gitness/store/database/dbtx"
 	"github.com/harness/gitness/types"
 
@@ -31,10 +38,21 @@ import (
 )
 
 var WireSet = wire.NewSet(
-	ProvideRepoImporter,
+	ProvideImporter,
+	ProvideJobRepositoryImport,
+	ProvideJobRepositoryLink,
+	ProvideJobReferenceSync,
 )
 
-func ProvideRepoImporter(
+func ProvideConnectorService() ConnectorService {
+	return connectorServiceNoop{}
+}
+
+func ProvideWebhookService() WebhookService {
+	return webhookServiceNoop{}
+}
+
+func ProvideImporter(
 	config *types.Config,
 	urlProvider url.Provider,
 	git git.Interface,
@@ -42,31 +60,131 @@ func ProvideRepoImporter(
 	repoStore store.RepoStore,
 	pipelineStore store.PipelineStore,
 	triggerStore store.TriggerStore,
-	encrypter encrypt.Encrypter,
-	scheduler *job.Scheduler,
-	executor *job.Executor,
+	repoFinder refcache.RepoFinder,
 	sseStreamer sse.Streamer,
 	indexer keywordsearch.Indexer,
 	publicAccess publicaccess.Service,
+	eventReporter *repoevents.Reporter,
 	auditService audit.Service,
-) (*Repository, error) {
-	importer := &Repository{
+	settings *settings.Service,
+) *Importer {
+	return NewImporter(
+		config.Git.DefaultBranch,
+		urlProvider,
+		git,
+		tx,
+		repoStore,
+		pipelineStore,
+		triggerStore,
+		repoFinder,
+		sseStreamer,
+		indexer,
+		publicAccess,
+		eventReporter,
+		auditService,
+		settings,
+		// the provider host of an import is user provided, so restrict which
+		// addresses an import is allowed to reach.
+		netpolicy.Policy{
+			AllowLoopback:       config.Importer.AllowLoopback,
+			AllowPrivateNetwork: config.Importer.AllowPrivateNetwork,
+			AllowLinkLocal:      config.Importer.AllowLinkLocal,
+		},
+	)
+}
+
+func ProvideJobRepositoryImport(
+	encrypter encrypt.Encrypter,
+	scheduler *job.Scheduler,
+	executor *job.Executor,
+	importer *Importer,
+) (*JobRepository, error) {
+	j := &JobRepository{
+		encrypter: encrypter,
+		scheduler: scheduler,
+		importer:  importer,
+	}
+
+	if err := executor.Register(jobTypeRepositoryImport, j); err != nil {
+		return nil, err
+	}
+
+	return j, nil
+}
+
+func ProvideJobRepositoryLink(
+	ctx context.Context,
+	config *types.Config,
+	scheduler *job.Scheduler,
+	executor *job.Executor,
+	urlProvider url.Provider,
+	git git.Interface,
+	connectorService ConnectorService,
+	repoStore store.RepoStore,
+	linkedRepoStore store.LinkedRepoStore,
+	repoFinder refcache.RepoFinder,
+	sseStreamer sse.Streamer,
+	indexer keywordsearch.Indexer,
+	eventReporter *repoevents.Reporter,
+) (*JobRepositoryLink, error) {
+	j := NewJobRepositoryLink(
+		scheduler,
+		urlProvider,
+		git,
+		connectorService,
+		repoStore,
+		linkedRepoStore,
+		repoFinder,
+		sseStreamer,
+		indexer,
+		eventReporter,
+	)
+
+	if err := executor.Register(jobTypeRepositoryLink, j); err != nil {
+		return nil, err
+	}
+
+	if err := CreateAndRegisterJobSyncLinkedRepositories(
+		ctx,
+		scheduler,
+		executor,
+		config.Git.DefaultBranch,
+		urlProvider,
+		git,
+		repoFinder,
+		linkedRepoStore,
+		indexer,
+		connectorService,
+	); err != nil {
+		return nil, fmt.Errorf("unable to register job sync linked repositories: %w", err)
+	}
+
+	return j, nil
+}
+
+func ProvideJobReferenceSync(
+	config *types.Config,
+	urlProvider url.Provider,
+	git git.Interface,
+	repoStore store.RepoStore,
+	repoFinder refcache.RepoFinder,
+	scheduler *job.Scheduler,
+	executor *job.Executor,
+	indexer keywordsearch.Indexer,
+	eventReporter *repoevents.Reporter,
+) (*JobReferenceSync, error) {
+	importer := &JobReferenceSync{
 		defaultBranch: config.Git.DefaultBranch,
 		urlProvider:   urlProvider,
 		git:           git,
-		tx:            tx,
 		repoStore:     repoStore,
-		pipelineStore: pipelineStore,
-		triggerStore:  triggerStore,
-		encrypter:     encrypter,
+		repoFinder:    repoFinder,
 		scheduler:     scheduler,
-		sseStreamer:   sseStreamer,
 		indexer:       indexer,
-		publicAccess:  publicAccess,
-		auditService:  auditService,
+		eventReporter: eventReporter,
 	}
 
-	err := executor.Register(jobType, importer)
+	err := executor.Register(refSyncJobType, importer)
 	if err != nil {
 		return nil, err
 	}

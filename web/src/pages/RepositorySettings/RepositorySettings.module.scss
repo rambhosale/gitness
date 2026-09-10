@@ -15,7 +15,7 @@
  */
 
 .main {
-  max-height: calc(var(--page-height) - 160px);
+  min-height: calc(var(--page-height) - 160px);
   background-color: var(--primary-bg) !important;
   width: 100%;
   margin: var(--spacing-small);
@@ -27,7 +27,6 @@
 
     .bp3-tab-panel {
       width: 100%;
-      height: 500px;
     }
 
     .bp3-tab {
@@ -105,13 +104,24 @@
   width: 80%;
 }
 
-.deleteContainer {
-  display: flex;
-  justify-content: space-between;
+.cautionContainer {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center;
+  width: 100% !important;
+  padding: var(--spacing-medium) var(--spacing-small) !important;
+  white-space: nowrap !important;
 }
 
 .text {
   text-transform: capitalize;
+}
+
+.featureText {
+  font-size: 12px !important;
+  font-style: normal !important;
+  font-weight: 300 !important;
+  white-space: nowrap !important;
 }
 
 .dividerContainer {
@@ -122,6 +132,9 @@
 }
 
 .dialogContainer {
+  width: 600px;
+  max-height: 95vh;
+  overflow: auto;
   :global(.bp3-dialog-header) {
     margin-bottom: var(--spacing-medium) !important;
   }
@@ -145,12 +158,20 @@
 .buttonContainer {
   width: 20%;
   padding-top: var(--spacing-xsmall) !important;
-  gap: 10px;
+  gap: 15px;
   margin-left: auto !important;
 }
 
 .textSize {
   font-size: 13px !important;
+}
+
+.description {
+  width: 80%;
+  word-wrap: break-word;
+  word-break: break-all;
+  white-space: normal;
+  margin: 0 auto;
 }
 
 .tabsContainer {

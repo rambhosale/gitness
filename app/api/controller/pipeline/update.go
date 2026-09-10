@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"strings"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/auth"
+	events "github.com/harness/gitness/app/events/pipeline"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/check"
 	"github.com/harness/gitness/types/enum"
@@ -42,13 +42,9 @@ func (c *Controller) Update(
 	identifier string,
 	in *UpdateInput,
 ) (*types.Pipeline, error) {
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.getRepoCheckPipelineAccess(ctx, session, repoRef, identifier, enum.PermissionPipelineEdit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find repo by ref: %w", err)
-	}
-	err = apiauth.CheckPipeline(ctx, c.authorizer, session, repo.Path, identifier, enum.PermissionPipelineEdit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to authorize pipeline: %w", err)
+		return nil, err
 	}
 
 	if err = c.sanitizeUpdateInput(in); err != nil {
@@ -60,7 +56,7 @@ func (c *Controller) Update(
 		return nil, fmt.Errorf("failed to find pipeline: %w", err)
 	}
 
-	return c.pipelineStore.UpdateOptLock(ctx, pipeline, func(pipeline *types.Pipeline) error {
+	updated, err := c.pipelineStore.UpdateOptLock(ctx, pipeline, func(pipeline *types.Pipeline) error {
 		if in.Identifier != nil {
 			pipeline.Identifier = *in.Identifier
 		}
@@ -76,6 +72,11 @@ func (c *Controller) Update(
 
 		return nil
 	})
+
+	// send pipeline update event
+	c.reporter.Updated(ctx, &events.UpdatedPayload{PipelineID: pipeline.ID, RepoID: pipeline.RepoID})
+
+	return updated, err
 }
 
 func (c *Controller) sanitizeUpdateInput(in *UpdateInput) error {

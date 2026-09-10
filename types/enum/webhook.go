@@ -84,7 +84,7 @@ func (a WebhookAttr) String() string {
 // WebhookParent defines different types of parents of a webhook.
 type WebhookParent string
 
-func (WebhookParent) Enum() []interface{} { return toInterfaceSlice(webhookParents) }
+func (WebhookParent) Enum() []any { return toInterfaceSlice(webhookParents) }
 
 const (
 	// WebhookParentRepo describes a repo as webhook owner.
@@ -92,17 +92,21 @@ const (
 
 	// WebhookParentSpace describes a space as webhook owner.
 	WebhookParentSpace WebhookParent = "space"
+
+	// WebhookParentRegistry describes a registry as webhook owner.
+	WebhookParentRegistry WebhookParent = "registry"
 )
 
 var webhookParents = sortEnum([]WebhookParent{
 	WebhookParentRepo,
 	WebhookParentSpace,
+	WebhookParentRegistry,
 })
 
 // WebhookExecutionResult defines the different results of a webhook execution.
 type WebhookExecutionResult string
 
-func (WebhookExecutionResult) Enum() []interface{} { return toInterfaceSlice(webhookExecutionResults) }
+func (WebhookExecutionResult) Enum() []any { return toInterfaceSlice(webhookExecutionResults) }
 
 const (
 	// WebhookExecutionResultSuccess describes a webhook execution result that succeeded.
@@ -121,10 +125,32 @@ var webhookExecutionResults = sortEnum([]WebhookExecutionResult{
 	WebhookExecutionResultFatalError,
 })
 
+// WebhookType defines different types of a webhook.
+type WebhookType int
+
+func (WebhookType) Enum() []any { return toInterfaceSlice(webhookTypes) }
+
+const (
+	// WebhookTypeExternal describes a webhook url pointing to external source.
+	WebhookTypeExternal WebhookType = iota
+
+	// WebhookTypeInternal describes a repo webhook url pointing to internal url.
+	WebhookTypeInternal
+
+	// WebhookTypeJira describes a webhook url pointing to jira.
+	WebhookTypeJira
+)
+
+var webhookTypes = sortEnum([]WebhookType{
+	WebhookTypeExternal,
+	WebhookTypeInternal,
+	WebhookTypeJira,
+})
+
 // WebhookTrigger defines the different types of webhook triggers available.
 type WebhookTrigger string
 
-func (WebhookTrigger) Enum() []interface{}                { return toInterfaceSlice(webhookTriggers) }
+func (WebhookTrigger) Enum() []any                        { return toInterfaceSlice(webhookTriggers) }
 func (s WebhookTrigger) Sanitize() (WebhookTrigger, bool) { return Sanitize(s, GetAllWebhookTriggers) }
 
 func GetAllWebhookTriggers() ([]WebhookTrigger, WebhookTrigger) {
@@ -156,8 +182,30 @@ const (
 	WebhookTriggerPullReqClosed WebhookTrigger = "pullreq_closed"
 	// WebhookTriggerPullReqCommentCreated gets triggered when a pull request comment gets created.
 	WebhookTriggerPullReqCommentCreated WebhookTrigger = "pullreq_comment_created"
+	// WebhookTriggerPullReqCommentUpdated gets triggered when a pull request comment gets edited.
+	WebhookTriggerPullReqCommentUpdated WebhookTrigger = "pullreq_comment_updated"
+	// WebhookTriggerPullReqCommentStatusUpdated gets triggered when a pull request comment status gets updated.
+	WebhookTriggerPullReqCommentStatusUpdated WebhookTrigger = "pullreq_comment_status_updated"
 	// WebhookTriggerPullReqMerged gets triggered when a pull request is merged.
 	WebhookTriggerPullReqMerged WebhookTrigger = "pullreq_merged"
+	// WebhookTriggerPullReqUpdated gets triggered when a pull request gets updated.
+	WebhookTriggerPullReqUpdated WebhookTrigger = "pullreq_updated"
+	// WebhookTriggerPullReqLabelAssigned gets triggered when a label is assigned to a pull request.
+	WebhookTriggerPullReqLabelAssigned WebhookTrigger = "pullreq_label_assigned"
+	// WebhookTriggerPullReqReviewSubmitted gets triggered when a pull request review is submitted.
+	WebhookTriggerPullReqReviewSubmitted = "pullreq_review_submitted"
+	// WebhookTriggerPullReqTargetBranchChanged gets triggered when a pull request target branch is changed.
+	WebhookTriggerPullReqTargetBranchChanged = "pullreq_target_branch_changed"
+
+	// WebhookTriggerMergeQueueChecksRequested gets triggered when merge queue checks are requested.
+	WebhookTriggerMergeQueueChecksRequested WebhookTrigger = "merge_queue_checks_requested"
+	// WebhookTriggerMergeQueueChecksCanceled gets triggered when merge queue checks are canceled.
+	WebhookTriggerMergeQueueChecksCanceled WebhookTrigger = "merge_queue_checks_canceled"
+
+	// WebhookTriggerArtifactCreated gets triggered when an artifact gets created.
+	WebhookTriggerArtifactCreated WebhookTrigger = "artifact_created"
+	// WebhookTriggerArtifactDeleted gets triggered when an artifact gets deleted.
+	WebhookTriggerArtifactDeleted WebhookTrigger = "artifact_deleted"
 )
 
 var webhookTriggers = sortEnum([]WebhookTrigger{
@@ -168,9 +216,19 @@ var webhookTriggers = sortEnum([]WebhookTrigger{
 	WebhookTriggerTagUpdated,
 	WebhookTriggerTagDeleted,
 	WebhookTriggerPullReqCreated,
+	WebhookTriggerPullReqUpdated,
 	WebhookTriggerPullReqReopened,
 	WebhookTriggerPullReqBranchUpdated,
 	WebhookTriggerPullReqClosed,
 	WebhookTriggerPullReqCommentCreated,
+	WebhookTriggerPullReqCommentUpdated,
+	WebhookTriggerPullReqCommentStatusUpdated,
 	WebhookTriggerPullReqMerged,
+	WebhookTriggerPullReqLabelAssigned,
+	WebhookTriggerPullReqReviewSubmitted,
+	WebhookTriggerPullReqTargetBranchChanged,
+	WebhookTriggerMergeQueueChecksRequested,
+	WebhookTriggerMergeQueueChecksCanceled,
+	WebhookTriggerArtifactCreated,
+	WebhookTriggerArtifactDeleted,
 })

@@ -18,18 +18,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
-	apiauth "github.com/harness/gitness/app/api/auth"
 	"github.com/harness/gitness/app/api/controller/limiter"
-	repoCtrl "github.com/harness/gitness/app/api/controller/repo"
+	repoctrl "github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/paths"
-	"github.com/harness/gitness/app/services/importer"
+	"github.com/harness/gitness/app/services/instrument"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/store"
 	"github.com/harness/gitness/types"
-	"github.com/harness/gitness/types/enum"
 
 	"github.com/rs/zerolog/log"
 )
@@ -39,39 +38,10 @@ type ImportRepositoriesInput struct {
 }
 
 type ImportRepositoriesOutput struct {
-	ImportingRepos []*repoCtrl.RepositoryOutput `json:"importing_repos"`
-	DuplicateRepos []*repoCtrl.RepositoryOutput `json:"duplicate_repos"` // repos which already exist in the space.
+	ImportingRepos []*repoctrl.RepositoryOutput `json:"importing_repos"` //nolint:tagliatelle
 }
 
-// getSpaceCheckAuthRepoCreation checks whether the user has permissions to create repos
-// in the given space.
-func (c *Controller) getSpaceCheckAuthRepoCreation(
-	ctx context.Context,
-	session *auth.Session,
-	spaceRef string,
-) (*types.Space, error) {
-	space, err := c.spaceStore.FindByRef(ctx, spaceRef)
-	if err != nil {
-		return nil, fmt.Errorf("parent space not found: %w", err)
-	}
-
-	// create is a special case - check permission without specific resource
-	scope := &types.Scope{SpacePath: space.Path}
-	resource := &types.Resource{
-		Type:       enum.ResourceTypeRepo,
-		Identifier: "",
-	}
-
-	err = apiauth.Check(ctx, c.authorizer, session, scope, resource, enum.PermissionRepoEdit)
-	if err != nil {
-		return nil, fmt.Errorf("auth check failed: %w", err)
-	}
-
-	return space, nil
-}
-
-// ImportRepositories imports repositories into an existing space. It ignores and continues on
-// repo naming conflicts.
+// ImportRepositories imports repositories into an existing space.
 //
 //nolint:gocognit
 func (c *Controller) ImportRepositories(
@@ -86,17 +56,16 @@ func (c *Controller) ImportRepositories(
 	}
 
 	remoteRepositories, provider, err :=
-		importer.LoadRepositoriesFromProviderSpace(ctx, in.Provider, in.ProviderSpace)
+		c.importer.LoadRepositoriesFromProviderSpace(ctx, in.Provider, in.ProviderSpace, in.IncludeSubgroupsRepos)
 	if err != nil {
 		return ImportRepositoriesOutput{}, err
 	}
 
 	if len(remoteRepositories) == 0 {
-		return ImportRepositoriesOutput{}, usererror.BadRequestf("found no repositories at %s", in.ProviderSpace)
+		return ImportRepositoriesOutput{}, usererror.BadRequestf("Found no repositories in %q", in.ProviderSpace)
 	}
 
 	repos := make([]*types.Repository, 0, len(remoteRepositories))
-	duplicateRepos := make([]*types.Repository, 0, len(remoteRepositories))
 	repoIDs := make([]int64, 0, len(remoteRepositories))
 	repoIsPublicVals := make([]bool, 0, len(remoteRepositories))
 	cloneURLs := make([]string, 0, len(remoteRepositories))
@@ -109,6 +78,9 @@ func (c *Controller) ImportRepositories(
 			"",
 			&session.Principal,
 		)
+		if err := c.repoIdentifierCheck(repo.Identifier, session); err != nil {
+			return ImportRepositoriesOutput{}, fmt.Errorf("failed to sanitize the repo %s: %w", repo.Identifier, err)
+		}
 
 		repos = append(repos, repo)
 		repoIsPublicVals = append(repoIsPublicVals, isPublic)
@@ -117,7 +89,7 @@ func (c *Controller) ImportRepositories(
 
 	err = c.tx.WithTx(ctx, func(ctx context.Context) error {
 		// lock the space for update during repo creation to prevent racing conditions with space soft delete.
-		space, err = c.spaceStore.FindForUpdate(ctx, space.ID)
+		spaceFull, err := c.spaceStore.FindForUpdate(ctx, space.ID)
 		if err != nil {
 			return fmt.Errorf("failed to find the parent space: %w", err)
 		}
@@ -127,15 +99,20 @@ func (c *Controller) ImportRepositories(
 			return fmt.Errorf("resource limit exceeded: %w", limiter.ErrMaxNumReposReached)
 		}
 
+		// A space that is over an enforced storage limit takes no new repository, and an
+		// import only adds more.
+		if err := limiter.RejectIfStorageOverLimit(ctx, c.resourceLimiter, space.ID); err != nil {
+			return err
+		}
+
 		for _, repo := range repos {
+			repo.RootSpaceID = spaceFull.RootSpaceID
+			repo.RootSpaceIdentifier = spaceFull.RootSpaceIdentifier
+
 			err = c.repoStore.Create(ctx, repo)
 			if errors.Is(err, store.ErrDuplicate) {
-				log.Ctx(ctx).Warn().Err(err).Msg("skipping duplicate repo")
-				duplicateRepos = append(duplicateRepos, repo)
-				l := len(repoIDs)
-				repoIsPublicVals = append(repoIsPublicVals[:l], repoIsPublicVals[l+1:]...)
-				cloneURLs = append(cloneURLs[:l], cloneURLs[l+1:]...)
-				continue
+				return usererror.Conflict(fmt.Sprintf(
+					"A repository with identifier %q already exists in this space.", repo.Identifier))
 			} else if err != nil {
 				return fmt.Errorf("failed to create repository in storage: %w", err)
 			}
@@ -165,11 +142,11 @@ func (c *Controller) ImportRepositories(
 		return ImportRepositoriesOutput{}, err
 	}
 
-	reposOut := make([]*repoCtrl.RepositoryOutput, len(repos))
+	reposOut := make([]*repoctrl.RepositoryOutput, len(repos))
 	for i, repo := range repos {
-		reposOut[i] = &repoCtrl.RepositoryOutput{
-			Repository: *repo,
-			IsPublic:   false,
+		reposOut[i], err = repoctrl.GetRepoOutputWithAccess(ctx, c.repoFinder, false, repo)
+		if err != nil {
+			return ImportRepositoriesOutput{}, fmt.Errorf("failed to get repo output: %w", err)
 		}
 
 		err = c.auditService.Log(ctx,
@@ -185,15 +162,21 @@ func (c *Controller) ImportRepositories(
 		if err != nil {
 			log.Warn().Msgf("failed to insert audit log for import repository operation: %s", err)
 		}
-	}
-
-	duplicateReposOut := make([]*repoCtrl.RepositoryOutput, len(duplicateRepos))
-	for i, dupRepo := range duplicateRepos {
-		duplicateReposOut[i] = &repoCtrl.RepositoryOutput{
-			Repository: *dupRepo,
-			IsPublic:   false,
+		err = c.instrumentation.Track(ctx, instrument.Event{
+			Type:      instrument.EventTypeRepositoryCreate,
+			Principal: session.Principal.ToPrincipalInfo(),
+			Timestamp: time.Now(),
+			Path:      space.Path,
+			Properties: map[instrument.Property]any{
+				instrument.PropertyRepositoryID:           repo.ID,
+				instrument.PropertyRepositoryName:         repo.Identifier,
+				instrument.PropertyRepositoryCreationType: instrument.CreationTypeImport,
+			},
+		})
+		if err != nil {
+			log.Ctx(ctx).Warn().Msgf("failed to insert instrumentation record for import repository operation: %s", err)
 		}
 	}
 
-	return ImportRepositoriesOutput{ImportingRepos: reposOut, DuplicateRepos: duplicateReposOut}, nil
+	return ImportRepositoriesOutput{ImportingRepos: reposOut}, nil
 }

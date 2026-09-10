@@ -22,12 +22,17 @@ import (
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
-	eventsgit "github.com/harness/gitness/app/events/git"
-	eventsrepo "github.com/harness/gitness/app/events/repo"
+	gitevents "github.com/harness/gitness/app/events/git"
+	repoevents "github.com/harness/gitness/app/events/repo"
+	"github.com/harness/gitness/app/services/mergequeue"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/app/services/usergroup"
+	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/git/api"
@@ -35,15 +40,17 @@ import (
 	"github.com/harness/gitness/git/sha"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
+
+	"github.com/rs/zerolog/log"
 )
 
 type Controller struct {
 	authorizer          authz.Authorizer
 	principalStore      store.PrincipalStore
 	repoStore           store.RepoStore
-	gitReporter         *eventsgit.Reporter
-	repoReporter        *eventsrepo.Reporter
-	git                 git.Interface
+	repoFinder          refcache.RepoFinder
+	gitReporter         *gitevents.Reporter
+	repoReporter        *repoevents.Reporter
 	pullreqStore        store.PullReqStore
 	urlProvider         url.Provider
 	protectionManager   *protection.Manager
@@ -52,15 +59,20 @@ type Controller struct {
 	preReceiveExtender  PreReceiveExtender
 	updateExtender      UpdateExtender
 	postReceiveExtender PostReceiveExtender
+	sseStreamer         sse.Streamer
+	lfsStore            store.LFSObjectStore
+	auditService        audit.Service
+	userGroupService    usergroup.Service
+	mergeQueueService   *mergequeue.Service
 }
 
 func NewController(
 	authorizer authz.Authorizer,
 	principalStore store.PrincipalStore,
 	repoStore store.RepoStore,
-	gitReporter *eventsgit.Reporter,
-	repoReporter *eventsrepo.Reporter,
-	git git.Interface,
+	repoFinder refcache.RepoFinder,
+	gitReporter *gitevents.Reporter,
+	repoReporter *repoevents.Reporter,
 	pullreqStore store.PullReqStore,
 	urlProvider url.Provider,
 	protectionManager *protection.Manager,
@@ -69,14 +81,19 @@ func NewController(
 	preReceiveExtender PreReceiveExtender,
 	updateExtender UpdateExtender,
 	postReceiveExtender PostReceiveExtender,
+	sseStreamer sse.Streamer,
+	lfsStore store.LFSObjectStore,
+	auditService audit.Service,
+	userGroupService usergroup.Service,
+	mergeQueueService *mergequeue.Service,
 ) *Controller {
 	return &Controller{
 		authorizer:          authorizer,
 		principalStore:      principalStore,
 		repoStore:           repoStore,
+		repoFinder:          repoFinder,
 		gitReporter:         gitReporter,
 		repoReporter:        repoReporter,
-		git:                 git,
 		pullreqStore:        pullreqStore,
 		urlProvider:         urlProvider,
 		protectionManager:   protectionManager,
@@ -85,21 +102,31 @@ func NewController(
 		preReceiveExtender:  preReceiveExtender,
 		updateExtender:      updateExtender,
 		postReceiveExtender: postReceiveExtender,
+		sseStreamer:         sseStreamer,
+		lfsStore:            lfsStore,
+		auditService:        auditService,
+		userGroupService:    userGroupService,
+		mergeQueueService:   mergeQueueService,
 	}
 }
 
-func (c *Controller) getRepoCheckAccess(ctx context.Context,
-	_ *auth.Session, repoID int64, _ enum.Permission) (*types.Repository, error) {
+func (c *Controller) getRepoCheckAccess(
+	ctx context.Context,
+	_ *auth.Session,
+	repoID int64,
+	_ enum.Permission,
+) (*types.RepositoryCore, error) {
 	if repoID < 1 {
 		return nil, usererror.BadRequest("A valid repository reference must be provided.")
 	}
 
-	repo, err := c.repoStore.Find(ctx, repoID)
+	repo, err := c.repoFinder.FindByID(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repo with id %d: %w", repoID, err)
 	}
+	// repo state check is done in pre-receive.
 
-	// TODO: execute permission check. block anything but gitness service?
+	// TODO: execute permission check. block anything but Harness service?
 
 	return repo, nil
 }
@@ -111,7 +138,7 @@ func (c *Controller) getRepoCheckAccess(ctx context.Context,
 func GetBaseSHAForScanningChanges(
 	ctx context.Context,
 	rgit RestrictedGIT,
-	repo *types.Repository,
+	repo *types.RepositoryCore,
 	env hook.Environment,
 	refUpdates []hook.ReferenceUpdate,
 	findBaseFor hook.ReferenceUpdate,
@@ -155,4 +182,60 @@ func GetBaseSHAForScanningChanges(
 	}
 
 	return dfltBranchOut.Branch.SHA, true, nil
+}
+
+func isForcePush(
+	ctx context.Context,
+	rgit RestrictedGIT,
+	gitUID string,
+	alternateObjectDirs []string,
+	refUpdate hook.ReferenceUpdate,
+) (bool, error) {
+	if refUpdate.Old.IsNil() || refUpdate.New.IsNil() {
+		return false, nil
+	}
+
+	if isTag(refUpdate.Ref) {
+		return true, nil
+	}
+
+	result, err := rgit.IsAncestor(ctx, git.IsAncestorParams{
+		ReadParams: git.ReadParams{
+			RepoUID:             gitUID,
+			AlternateObjectDirs: alternateObjectDirs,
+		},
+		AncestorCommitSHA:   refUpdate.Old,
+		DescendantCommitSHA: refUpdate.New,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return !result.Ancestor, nil
+}
+
+func logOutputFor(ctx context.Context, hookName string, output hook.Output) {
+	event := log.Ctx(ctx).Info()
+
+	if output.Error != nil {
+		event = event.Str("output.error", *output.Error)
+	}
+
+	if len(output.Messages) > 0 {
+		filteredMsgs := make([]string, 0, len(output.Messages)/2+1)
+		for _, msg := range output.Messages {
+			if msg == "" {
+				continue
+			}
+			filteredMsgs = append(filteredMsgs, msg)
+		}
+
+		const maxMessageLines = 16
+		if len(filteredMsgs) > maxMessageLines {
+			filteredMsgs = append(filteredMsgs[:maxMessageLines], fmt.Sprintf("... %d more", len(filteredMsgs)-maxMessageLines))
+		}
+		event = event.Strs("output.messages", filteredMsgs)
+	}
+
+	event.Msgf("%s hook output", hookName)
 }

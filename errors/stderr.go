@@ -27,3 +27,9 @@ func Is(err error, target error) bool {
 func As(err error, target any) bool {
 	return errors.As(err, target)
 }
+
+// AsType is As for a single target type, so that a caller can bind the error and test it
+// in one expression: quotaErr, ok := AsType[*QuotaError](err).
+func AsType[T error](err error) (T, bool) {
+	return errors.AsType[T](err)
+}

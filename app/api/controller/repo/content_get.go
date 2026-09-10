@@ -24,6 +24,7 @@ import (
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/git/parser"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
@@ -33,7 +34,7 @@ import (
 const (
 	// maxGetContentFileSize specifies the maximum number of bytes a file content response contains.
 	// If a file is any larger, the content is truncated.
-	maxGetContentFileSize = 1 << 22 // 4 MB
+	maxGetContentFileSize = 10 * 1024 * 1024 // 10 MB
 )
 
 type ContentType string
@@ -64,10 +65,12 @@ type Content interface {
 }
 
 type FileContent struct {
-	Encoding enum.ContentEncodingType `json:"encoding"`
-	Data     string                   `json:"data"`
-	Size     int64                    `json:"size"`
-	DataSize int64                    `json:"data_size"`
+	Encoding      enum.ContentEncodingType `json:"encoding"`
+	Data          string                   `json:"data"`
+	Size          int64                    `json:"size"`
+	DataSize      int64                    `json:"data_size"`
+	LFSObjectID   string                   `json:"lfs_object_id,omitempty"`
+	LFSObjectSize int64                    `json:"lfs_object_size,omitempty"`
 }
 
 func (c *FileContent) isContent() {}
@@ -100,6 +103,7 @@ func (c *Controller) GetContent(ctx context.Context,
 	gitRef string,
 	repoPath string,
 	includeLatestCommit bool,
+	flattenDirectories bool,
 ) (*GetContentOutput, error) {
 	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
 	if err != nil {
@@ -132,7 +136,7 @@ func (c *Controller) GetContent(ctx context.Context,
 	var content Content
 	switch info.Type {
 	case ContentTypeDir:
-		content, err = c.getDirContent(ctx, readParams, gitRef, repoPath, includeLatestCommit)
+		content, err = c.getDirContent(ctx, readParams, gitRef, repoPath, flattenDirectories)
 	case ContentTypeFile:
 		content, err = c.getFileContent(ctx, readParams, info.SHA)
 	case ContentTypeSymlink:
@@ -145,6 +149,14 @@ func (c *Controller) GetContent(ctx context.Context,
 
 	if err != nil {
 		return nil, err
+	}
+
+	if info.LatestCommit != nil {
+		err = c.signatureVerifyService.VerifyCommits(ctx, repo.ID, []*types.Commit{info.LatestCommit})
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify signature of the last commit SHA=%s: %w",
+				info.LatestCommit.SHA.String(), err)
+		}
 	}
 
 	return &GetContentOutput{
@@ -199,6 +211,19 @@ func (c *Controller) getFileContent(ctx context.Context,
 		return nil, fmt.Errorf("failed to read blob content: %w", err)
 	}
 
+	// check if blob is an LFS pointer
+	lfsInfo, ok := parser.IsLFSPointer(ctx, content, output.Size)
+	if ok {
+		return &FileContent{
+			Size:          output.Size,
+			DataSize:      output.ContentSize,
+			Encoding:      enum.ContentEncodingTypeBase64,
+			Data:          base64.StdEncoding.EncodeToString(content),
+			LFSObjectID:   lfsInfo.OID,
+			LFSObjectSize: lfsInfo.Size,
+		}, nil
+	}
+
 	return &FileContent{
 		Size:     output.Size,
 		DataSize: output.ContentSize,
@@ -242,13 +267,13 @@ func (c *Controller) getDirContent(ctx context.Context,
 	readParams git.ReadParams,
 	gitRef string,
 	repoPath string,
-	includeLatestCommit bool,
+	flattenDirectories bool,
 ) (*DirContent, error) {
 	output, err := c.git.ListTreeNodes(ctx, &git.ListTreeNodeParams{
-		ReadParams:          readParams,
-		GitREF:              gitRef,
-		Path:                repoPath,
-		IncludeLatestCommit: includeLatestCommit,
+		ReadParams:         readParams,
+		GitREF:             gitRef,
+		Path:               repoPath,
+		FlattenDirectories: flattenDirectories,
 	})
 	if err != nil {
 		// TODO: handle not found error
@@ -283,10 +308,7 @@ func mapToContentInfo(node git.TreeNode, commit *git.Commit, includeLatestCommit
 
 	// parse commit only if available
 	if commit != nil && includeLatestCommit {
-		res.LatestCommit, err = controller.MapCommit(commit)
-		if err != nil {
-			return ContentInfo{}, err
-		}
+		res.LatestCommit = controller.MapCommit(commit)
 	}
 
 	return res, nil
@@ -303,6 +325,6 @@ func mapNodeModeToContentType(m git.TreeNodeMode) (ContentType, error) {
 	case git.TreeNodeModeTree:
 		return ContentTypeDir, nil
 	default:
-		return ContentTypeFile, errors.Internal(nil, "unsupported tree node mode '%s'", m)
+		return ContentTypeFile, errors.Internalf(nil, "unsupported tree node mode '%s'", m)
 	}
 }

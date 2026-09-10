@@ -18,9 +18,18 @@ import (
 	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/api/controller/repo"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/autolink"
 	"github.com/harness/gitness/app/services/exporter"
+	"github.com/harness/gitness/app/services/gitspace"
 	"github.com/harness/gitness/app/services/importer"
+	infraprovider2 "github.com/harness/gitness/app/services/infraprovider"
+	"github.com/harness/gitness/app/services/instrument"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/publicaccess"
+	"github.com/harness/gitness/app/services/pullreq"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/rules"
+	"github.com/harness/gitness/app/services/space"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
@@ -42,13 +51,27 @@ func ProvideController(config *types.Config, tx dbtx.Transactor, urlProvider url
 	pipelineStore store.PipelineStore, secretStore store.SecretStore,
 	connectorStore store.ConnectorStore, templateStore store.TemplateStore,
 	spaceStore store.SpaceStore, repoStore store.RepoStore, principalStore store.PrincipalStore,
-	repoCtrl *repo.Controller, membershipStore store.MembershipStore, importer *importer.Repository,
-	exporter *exporter.Repository, limiter limiter.ResourceLimiter, publicAccess publicaccess.Service,
-	auditService audit.Service, gitspaceStore store.GitspaceConfigStore,
+	repoCtrl *repo.Controller, membershipStore store.MembershipStore, prListService *pullreq.ListService,
+	spaceFinder refcache.SpaceFinder, repoFinder refcache.RepoFinder,
+	importer *importer.JobRepository, exporter *exporter.Repository,
+	limiter limiter.ResourceLimiter, publicAccess publicaccess.Service,
+	auditService audit.Service, gitspaceService *gitspace.Service,
+	labelSvc *label.Service, instrumentation instrument.Service, executionStore store.ExecutionStore,
+	rulesSvc *rules.Service, usageMetricStore store.UsageMetricStore, repoIdentifierCheck check.RepoIdentifier,
+	infraProviderSvc *infraprovider2.Service, favoriteStore store.FavoriteStore, autolinkSvc *autolink.Service,
+	spaceSvc *space.Service,
 ) *Controller {
-	return NewController(config, tx, urlProvider, sseStreamer, identifierCheck, authorizer,
+	return NewController(config, tx, urlProvider,
+		sseStreamer, identifierCheck, authorizer,
 		spacePathStore, pipelineStore, secretStore,
 		connectorStore, templateStore,
 		spaceStore, repoStore, principalStore,
-		repoCtrl, membershipStore, importer, exporter, limiter, publicAccess, auditService, gitspaceStore)
+		repoCtrl, membershipStore, prListService,
+		spaceFinder, repoFinder,
+		importer, exporter, limiter, publicAccess,
+		auditService, gitspaceService,
+		labelSvc, instrumentation, executionStore,
+		rulesSvc, usageMetricStore, repoIdentifierCheck,
+		infraProviderSvc, favoriteStore, autolinkSvc, spaceSvc,
+	)
 }

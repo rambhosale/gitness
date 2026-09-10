@@ -15,8 +15,18 @@
 package migrate
 
 import (
+	"github.com/harness/gitness/app/api/controller/limiter"
 	"github.com/harness/gitness/app/auth/authz"
+	repoevents "github.com/harness/gitness/app/events/repo"
+	"github.com/harness/gitness/app/services/migrate"
+	"github.com/harness/gitness/app/services/publicaccess"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
+	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/store/database/dbtx"
+	"github.com/harness/gitness/types/check"
 
 	"github.com/google/wire"
 )
@@ -28,10 +38,40 @@ var WireSet = wire.NewSet(
 
 func ProvideController(
 	authorizer authz.Authorizer,
-	principalStore store.PrincipalStore,
+	publicAccess publicaccess.Service,
+	rpcClient git.Interface,
+	urlProvider url.Provider,
+	pullreqImporter *migrate.PullReq,
+	ruleImporter *migrate.Rule,
+	webhookImporter *migrate.Webhook,
+	labelImporter *migrate.Label,
+	resourceLimiter limiter.ResourceLimiter,
+	auditService audit.Service,
+	identifierCheck check.RepoIdentifier,
+	tx dbtx.Transactor,
+	spaceStore store.SpaceStore,
+	repoStore store.RepoStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
+	eventReporter *repoevents.Reporter,
 ) *Controller {
 	return NewController(
 		authorizer,
-		principalStore,
+		publicAccess,
+		rpcClient,
+		urlProvider,
+		pullreqImporter,
+		ruleImporter,
+		webhookImporter,
+		labelImporter,
+		resourceLimiter,
+		auditService,
+		identifierCheck,
+		tx,
+		spaceStore,
+		repoStore,
+		spaceFinder,
+		repoFinder,
+		eventReporter,
 	)
 }

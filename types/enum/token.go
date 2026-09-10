@@ -26,4 +26,7 @@ const (
 
 	// TokenTypeSAT is a service account access token.
 	TokenTypeSAT TokenType = "sat"
+
+	// TokenTypeRemoteAuth is the token returned during ssh git-lfs-authenticate.
+	TokenTypeRemoteAuth TokenType = "remoteAuth"
 )

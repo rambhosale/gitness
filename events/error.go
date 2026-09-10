@@ -24,7 +24,7 @@ var (
 )
 
 // discardEventError is an error which, if returned by the event handler,
-// causes the source event to be discarded despite any erros.
+// causes the source event to be discarded despite any errors.
 type discardEventError struct {
 	inner error
 }
@@ -35,7 +35,7 @@ func NewDiscardEventError(inner error) error {
 	}
 }
 
-func NewDiscardEventErrorf(format string, args ...interface{}) error {
+func NewDiscardEventErrorf(format string, args ...any) error {
 	return &discardEventError{
 		inner: fmt.Errorf(format, args...),
 	}

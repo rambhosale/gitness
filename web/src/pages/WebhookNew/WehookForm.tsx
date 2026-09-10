@@ -16,6 +16,7 @@
 
 import {
   ButtonVariation,
+  ButtonSize,
   Container,
   FlexExpander,
   Formik,
@@ -30,38 +31,29 @@ import { FontVariation } from '@harnessio/design-system'
 import { useMutate } from 'restful-react'
 import { FormGroup } from '@blueprintjs/core'
 import { useHistory } from 'react-router-dom'
+import { FieldArray } from 'formik'
 import * as yup from 'yup'
 import React from 'react'
-import type { OpenapiUpdateWebhookRequest, EnumWebhookTrigger, OpenapiWebhookType } from 'services/code'
+import type {
+  OpenapiUpdateRepoWebhookRequest,
+  EnumWebhookTrigger,
+  OpenapiWebhookType,
+  TypesExtraHeader
+} from 'services/code'
 import { getErrorMessage, permissionProps } from 'utils/Utils'
 import { useStrings } from 'framework/strings'
-import type { GitInfoProps } from 'utils/GitUtils'
+import { WebhookIndividualEvent, type GitInfoProps, WebhookEventType } from 'utils/GitUtils'
 import { useAppContext } from 'AppContext'
 import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import css from './WehookForm.module.scss'
 
-enum WebhookEventType {
-  PUSH = 'push',
-  ALL = 'all',
-  INDIVIDUAL = 'individual'
-}
-
-enum WebhookIndividualEvent {
-  BRANCH_CREATED = 'branch_created',
-  BRANCH_UPDATED = 'branch_updated',
-  BRANCH_DELETED = 'branch_deleted',
-  TAG_CREATED = 'tag_created',
-  TAG_UPDATED = 'tag_updated',
-  TAG_DELETED = 'tag_deleted',
-  PR_CREATED = 'pullreq_created',
-  PR_REOPENED = 'pullreq_reopened',
-  PR_BRANCH_UPDATED = 'pullreq_branch_updated',
-  PR_CLOSED = 'pullreq_closed',
-  PR_COMMENT_CREATED = 'pullreq_comment_created',
-  PR_MERGED = 'pullreq_merged'
-}
-
 const SECRET_MASK = '********'
+
+interface CustomHeader {
+  key: string
+  value: string
+  masked: boolean
+}
 
 interface FormData {
   name: string
@@ -78,11 +70,17 @@ interface FormData {
   tagUpdated: boolean
   tagDeleted: boolean
   prCreated: boolean
+  prUpdated: boolean
   prReopened: boolean
   prBranchUpdated: boolean
   prClosed: boolean
   prCommentCreated: boolean
   prMerged: boolean
+  prLabelAssigned: boolean
+  prCommentStatusUpdated: boolean
+  prCommentUpdated: boolean
+  prReviewSubmitted: boolean
+  customHeaders: CustomHeader[]
 }
 
 interface WebHookFormProps extends Pick<GitInfoProps, 'repoMetadata'> {
@@ -129,12 +127,23 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
             tagUpdated: webhook?.triggers?.includes(WebhookIndividualEvent.TAG_UPDATED) || false,
             tagDeleted: webhook?.triggers?.includes(WebhookIndividualEvent.TAG_DELETED) || false,
             prCreated: webhook?.triggers?.includes(WebhookIndividualEvent.PR_CREATED) || false,
+            prUpdated: webhook?.triggers?.includes(WebhookIndividualEvent.PR_UPDATED) || false,
             prReopened: webhook?.triggers?.includes(WebhookIndividualEvent.PR_REOPENED) || false,
             prBranchUpdated: webhook?.triggers?.includes(WebhookIndividualEvent.PR_BRANCH_UPDATED) || false,
             prClosed: webhook?.triggers?.includes(WebhookIndividualEvent.PR_CLOSED) || false,
             prCommentCreated: webhook?.triggers?.includes(WebhookIndividualEvent.PR_COMMENT_CREATED) || false,
             prMerged: webhook?.triggers?.includes(WebhookIndividualEvent.PR_MERGED) || false,
-            events: (webhook?.triggers?.length || 0) > 0 ? WebhookEventType.INDIVIDUAL : WebhookEventType.ALL
+            prLabelAssigned: webhook?.triggers?.includes(WebhookIndividualEvent.PR_LABEL_ASSIGNED) || false,
+            prCommentStatusUpdated:
+              webhook?.triggers?.includes(WebhookIndividualEvent.PR_COMMENT_STATUS_UPDATED) || false,
+            prCommentUpdated: webhook?.triggers?.includes(WebhookIndividualEvent.PR_COMMENT_UPDATED) || false,
+            prReviewSubmitted: webhook?.triggers?.includes(WebhookIndividualEvent.PR_REVIEW_SUBMITTED) || false,
+            events: (webhook?.triggers?.length || 0) > 0 ? WebhookEventType.INDIVIDUAL : WebhookEventType.ALL,
+            customHeaders: (webhook?.extra_headers || []).map(h => ({
+              key: h.key || '',
+              value: h.value || '',
+              masked: h.masked || false
+            }))
           }}
           formName="create-webhook-form"
           enableReinitialize={true}
@@ -171,6 +180,9 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
               if (formData.prCreated) {
                 triggers.push(WebhookIndividualEvent.PR_CREATED)
               }
+              if (formData.prUpdated) {
+                triggers.push(WebhookIndividualEvent.PR_UPDATED)
+              }
               if (formData.prReopened) {
                 triggers.push(WebhookIndividualEvent.PR_REOPENED)
               }
@@ -183,8 +195,21 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
               if (formData.prCommentCreated) {
                 triggers.push(WebhookIndividualEvent.PR_COMMENT_CREATED)
               }
+
+              if (formData.prCommentStatusUpdated) {
+                triggers.push(WebhookIndividualEvent.PR_COMMENT_STATUS_UPDATED)
+              }
+              if (formData.prCommentUpdated) {
+                triggers.push(WebhookIndividualEvent.PR_COMMENT_UPDATED)
+              }
+              if (formData.prReviewSubmitted) {
+                triggers.push(WebhookIndividualEvent.PR_REVIEW_SUBMITTED)
+              }
               if (formData.prMerged) {
                 triggers.push(WebhookIndividualEvent.PR_MERGED)
+              }
+              if (formData.prLabelAssigned) {
+                triggers.push(WebhookIndividualEvent.PR_LABEL_ASSIGNED)
               }
               if (!triggers.length) {
                 return showError(getString('oneMustBeSelected'))
@@ -193,14 +218,24 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
 
             const secret = (formData.secret || '').trim()
 
-            const data: OpenapiUpdateWebhookRequest = {
+            // Filter out empty custom headers
+            const customHeaders: TypesExtraHeader[] = formData.customHeaders
+              .filter(h => h.key.trim() !== '')
+              .map(h => ({
+                key: h.key,
+                value: h.value,
+                masked: h.masked
+              }))
+
+            const data: OpenapiUpdateRepoWebhookRequest = {
               identifier: formData.name,
               description: formData.description,
               url: formData.url,
               secret: secret !== SECRET_MASK ? secret : undefined,
               enabled: formData.enabled,
               insecure: !formData.secure,
-              triggers
+              triggers,
+              extra_headers: isEdit ? customHeaders : customHeaders.length > 0 ? customHeaders : undefined
             }
 
             mutate(data)
@@ -250,6 +285,60 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
                   inputGroup={{ type: 'password' }}
                 />
 
+                <FormGroup>
+                  <Text
+                    font={{ variation: FontVariation.FORM_LABEL, weight: 'bold' }}
+                    padding={{ bottom: 10 }}
+                    className="bp3-label">
+                    {getString('customHeaders')}
+                  </Text>
+                  <FieldArray
+                    name="customHeaders"
+                    render={({ push, remove, form }) => {
+                      const headers = form.values.customHeaders || []
+                      return (
+                        <Layout.Vertical spacing="small">
+                          {headers.map((header: CustomHeader, index: number) => (
+                            <Layout.Horizontal
+                              key={`${header.key}-${index}`}
+                              spacing="medium"
+                              flex={{ alignItems: 'center' }}>
+                              <FormInput.Text
+                                inline
+                                name={`customHeaders[${index}].key`}
+                                label={getString('headerKey')}
+                                placeholder={getString('headerKeyPlaceholder')}
+                              />
+                              <FormInput.Text
+                                inline
+                                name={`customHeaders[${index}].value`}
+                                label={getString('headerValue')}
+                                placeholder={getString('headerValuePlaceholder')}
+                              />
+                              <FormInput.CheckBox name={`customHeaders[${index}].masked`} label={getString('masked')} />
+                              <Button
+                                type="button"
+                                variation={ButtonVariation.ICON}
+                                icon="code-delete"
+                                onClick={() => remove(index)}
+                              />
+                            </Layout.Horizontal>
+                          ))}
+                          <Button
+                            type="button"
+                            size={ButtonSize.SMALL}
+                            icon="plus"
+                            variation={ButtonVariation.LINK}
+                            disabled={headers.length >= 20}
+                            onClick={() => push({ key: '', value: '', masked: false })}>
+                            {getString('addCustomHeader')}
+                          </Button>
+                        </Layout.Vertical>
+                      )
+                    }}
+                  />
+                </FormGroup>
+
                 <FormGroup className={css.eventRadioGroup}>
                   <FormInput.RadioGroup
                     name="events"
@@ -263,7 +352,14 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
                   />
                   {values.events === WebhookEventType.INDIVIDUAL ? (
                     <article
-                      style={{ display: 'flex', gap: '6rem', flexWrap: 'wrap', marginLeft: '30px', marginTop: '10px' }}>
+                      style={{
+                        display: 'flex',
+                        gap: '4rem',
+                        flexWrap: 'wrap',
+                        marginLeft: '30px',
+                        marginTop: '10px',
+                        marginBottom: '20px'
+                      }}>
                       <section>
                         <FormInput.CheckBox
                           label={getString('webhookBranchCreated')}
@@ -280,8 +376,6 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
                           name="branchDeleted"
                           className={css.checkbox}
                         />
-                      </section>
-                      <section>
                         <FormInput.CheckBox
                           label={getString('webhookTagCreated')}
                           name="tagCreated"
@@ -305,13 +399,13 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
                           className={css.checkbox}
                         />
                         <FormInput.CheckBox
-                          label={getString('webhookPRReopened')}
-                          name="prReopened"
+                          label={getString('webhookPRUpdated')}
+                          name="prUpdated"
                           className={css.checkbox}
                         />
                         <FormInput.CheckBox
-                          label={getString('webhookPRBranchUpdated')}
-                          name="prBranchUpdated"
+                          label={getString('webhookPRReopened')}
+                          name="prReopened"
                           className={css.checkbox}
                         />
                         <FormInput.CheckBox
@@ -320,13 +414,40 @@ export function WehookForm({ repoMetadata, isEdit, webhook }: WebHookFormProps) 
                           className={css.checkbox}
                         />
                         <FormInput.CheckBox
+                          label={getString('webhookPRMerged')}
+                          name="prMerged"
+                          className={css.checkbox}
+                        />
+                      </section>
+                      <section>
+                        <FormInput.CheckBox
+                          label={getString('webhookPRBranchUpdated')}
+                          name="prBranchUpdated"
+                          className={css.checkbox}
+                        />
+                        <FormInput.CheckBox
                           label={getString('webhookPRCommentCreated')}
                           name="prCommentCreated"
                           className={css.checkbox}
                         />
                         <FormInput.CheckBox
-                          label={getString('webhookPRMerged')}
-                          name="prMerged"
+                          label={getString('webhookPRCommentStatusUpdated')}
+                          name="prCommentStatusUpdated"
+                          className={css.checkbox}
+                        />
+                        <FormInput.CheckBox
+                          label={getString('webhookPRCommentUpdated')}
+                          name="prCommentUpdated"
+                          className={css.checkbox}
+                        />
+                        <FormInput.CheckBox
+                          label={getString('webhookPRReviewSubmitted')}
+                          name="prReviewSubmitted"
+                          className={css.checkbox}
+                        />
+                        <FormInput.CheckBox
+                          label={getString('webhookPRLabelAssigned')}
+                          name="prLabelAssigned"
                           className={css.checkbox}
                         />
                       </section>

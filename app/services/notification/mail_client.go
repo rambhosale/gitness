@@ -26,6 +26,7 @@ import (
 
 const (
 	TemplateReviewerAdded        = "reviewer_added.html"
+	TemplateReviewersAdded       = "reviewers_added.html"
 	TemplateCommentPRAuthor      = "comment_pr_author.html"
 	TemplateCommentMentions      = "comment_mentions.html"
 	TemplateCommentParticipants  = "comment_participants.html"
@@ -118,6 +119,43 @@ func (m MailClient) SendReviewerAdded(
 	return m.Mailer.Send(ctx, *email)
 }
 
+func (m MailClient) SendReviewersAdded(
+	ctx context.Context,
+	recipients []*types.PrincipalInfo,
+	payload *ReviewersAddedPayload,
+) error {
+	email, err := GenerateEmailFromPayload(
+		TemplateReviewersAdded,
+		recipients,
+		payload.Base,
+		payload,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to generate mail requests after processing reviewers added event: %w", err)
+	}
+
+	return m.Mailer.Send(ctx, *email)
+}
+
+func (m MailClient) SendUserGroupReviewerAdded(
+	ctx context.Context,
+	recipients []*types.PrincipalInfo,
+	payload *ReviewersAddedPayload,
+) error {
+	email, err := GenerateEmailFromPayload(
+		TemplateReviewersAdded,
+		recipients,
+		payload.Base,
+		payload,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to generate mail requests after processing %s event: %w",
+			pullreqevents.UserGroupReviewerAdded, err)
+	}
+
+	return m.Mailer.Send(ctx, *email)
+}
+
 func (m MailClient) SendPullReqBranchUpdated(
 	ctx context.Context,
 	recipients []*types.PrincipalInfo,
@@ -177,7 +215,7 @@ func GetSubjectPullRequest(
 	return fmt.Sprintf(subjectPullReqEvent, repoIdentifier, prTitle, prNum)
 }
 
-func GetHTMLBody(templateName string, data interface{}) ([]byte, error) {
+func GetHTMLBody(templateName string, data any) ([]byte, error) {
 	tmpl := htmlTemplates[templateName]
 	tmplOutput := bytes.Buffer{}
 	err := tmpl.Execute(&tmplOutput, data)
@@ -192,7 +230,7 @@ func GenerateEmailFromPayload(
 	templateName string,
 	recipients []*types.PrincipalInfo,
 	base *BasePullReqPayload,
-	payload interface{},
+	payload any,
 ) (*mailer.Payload, error) {
 	subject := GetSubjectPullRequest(base.Repo.Identifier, base.PullReq.Number,
 		base.PullReq.Title)

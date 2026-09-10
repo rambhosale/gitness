@@ -16,7 +16,6 @@
 
 import React from 'react'
 import cx from 'classnames'
-
 import { PageBody, Container, Tabs } from '@harnessio/uicore'
 import { useHistory } from 'react-router-dom'
 import { useGetRepositoryMetadata } from 'hooks/useGetRepositoryMetadata'
@@ -24,32 +23,33 @@ import { useDisableCodeMainLinks } from 'hooks/useDisableCodeMainLinks'
 import { useGetResourceContent } from 'hooks/useGetResourceContent'
 import { useStrings } from 'framework/strings'
 import { RepositoryPageHeader } from 'components/RepositoryPageHeader/RepositoryPageHeader'
-import { getErrorMessage, voidFn } from 'utils/Utils'
 import { LoadingSpinner } from 'components/LoadingSpinner/LoadingSpinner'
-// import Webhooks from 'pages/Webhooks/Webhooks'
+import ProtectionRulesListing from 'components/ProtectionRules/ProtectionRulesListing'
 import { useAppContext } from 'AppContext'
-import BranchProtectionListing from 'components/BranchProtection/BranchProtectionListing'
 import { SettingsTab, normalizeGitRef } from 'utils/GitUtils'
+import { getErrorMessage, voidFn } from 'utils/Utils'
 import SecurityScanSettings from 'pages/RepositorySettings/SecurityScanSettings/SecurityScanSettings'
+import LabelsListing from 'pages/Labels/LabelsListing'
+import { useGetSpaceParam } from 'hooks/useGetSpaceParam'
 import GeneralSettingsContent from './GeneralSettingsContent/GeneralSettingsContent'
 import css from './RepositorySettings.module.scss'
 
 export default function RepositorySettings() {
   const { repoMetadata, error, loading, refetch, settingSection, gitRef, resourcePath } = useGetRepositoryMetadata()
+  const space = useGetSpaceParam()
   const history = useHistory()
   const { routes } = useAppContext()
-  const [activeTab, setActiveTab] = React.useState<string>(settingSection || SettingsTab.general)
+  const [activeTab, setActiveTab] = React.useState<string>(settingSection || SettingsTab.GENERAL)
   const { getString } = useStrings()
   const { isRepositoryEmpty } = useGetResourceContent({
     repoMetadata,
     gitRef: normalizeGitRef(gitRef) as string,
     resourcePath
   })
-
   useDisableCodeMainLinks(!!isRepositoryEmpty)
   const tabListArray = [
     {
-      id: SettingsTab.general,
+      id: SettingsTab.GENERAL,
       title: getString('settings'),
       panel: (
         <Container padding={'large'}>
@@ -63,31 +63,27 @@ export default function RepositorySettings() {
       )
     },
     {
-      id: SettingsTab.branchProtection,
-      title: getString('branchProtection.title'),
-      panel: <BranchProtectionListing activeTab={activeTab} />
+      id: SettingsTab.LABELS,
+      title: getString('labels.labels'),
+      panel: <LabelsListing activeTab={activeTab} repoMetadata={repoMetadata} space={space} />
     },
     {
-      id: SettingsTab.security,
+      id: SettingsTab.PROTECTION_RULES,
+      title: getString('protectionRules.title'),
+      panel: <ProtectionRulesListing repoMetadata={repoMetadata} activeTab={activeTab} />
+    },
+    {
+      id: SettingsTab.SECURITY,
       title: getString('security'),
       panel: <SecurityScanSettings repoMetadata={repoMetadata} activeTab={activeTab} />
     }
-    // {
-    //   id: SettingsTab.webhooks,
-    //   title: getString('webhooks'),
-    //   panel: (
-    //     <Container padding={'large'}>
-    //       <Webhooks />
-    //     </Container>
-    //   )
-    // }
   ]
   return (
     <Container className={css.main}>
       <RepositoryPageHeader
         className={css.headerContainer}
         repoMetadata={repoMetadata}
-        title={getString('settings')}
+        title={getString('manageRepository')}
         dataTooltipId="repositorySettings"
       />
       <PageBody error={getErrorMessage(error)} retryOnError={voidFn(refetch)}>
@@ -105,7 +101,7 @@ export default function RepositorySettings() {
                   routes.toCODESettings({
                     repoPath: repoMetadata?.path as string,
 
-                    settingSection: id !== SettingsTab.general ? (id as string) : ''
+                    settingSection: id !== SettingsTab.GENERAL ? (id as string) : ''
                   })
                 )
               }}

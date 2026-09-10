@@ -30,10 +30,9 @@ type UseSpaceSSEProps = {
 }
 
 const useSpaceSSE = ({ space, events: _events, onEvent, onError, shouldRun = true }: UseSpaceSSEProps) => {
-  const { standalone, routingId, hooks } = useAppContext()
+  const { standalone, routingId } = useAppContext()
   const [events, setEvents] = useState(_events)
   const eventSourceRef = useRef<EventSource | null>(null)
-  const bearerToken = hooks?.useGetToken?.() || ''
 
   useEffect(() => {
     if (!isEqual(events, _events)) {
@@ -48,12 +47,12 @@ const useSpaceSSE = ({ space, events: _events, onEvent, onError, shouldRun = tru
         const pathAndQuery = getConfig(
           `code/api/v1/spaces/${space}/+/events${standalone ? '' : `?routingId=${routingId}`}`
         )
-        const options: { heartbeatTimeout: number; headers?: { Authorization?: string } } = {
-          heartbeatTimeout: 999999999
-        }
-
-        if (!standalone) {
-          options.headers = { Authorization: `Bearer ${bearerToken}` }
+        const options: {
+          heartbeatTimeout: number
+          withCredentials: boolean
+        } = {
+          heartbeatTimeout: 999999999,
+          withCredentials: true
         }
 
         eventSourceRef.current = new EventSourcePolyfill(pathAndQuery, options)
@@ -93,7 +92,7 @@ const useSpaceSSE = ({ space, events: _events, onEvent, onError, shouldRun = tru
         eventSourceRef.current = null
       }
     }
-  }, [space, events, shouldRun, onEvent, onError, routingId, standalone, bearerToken])
+  }, [space, events, shouldRun, onEvent, onError, routingId, standalone])
 }
 
 export enum SSEEvents {

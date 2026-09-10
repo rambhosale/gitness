@@ -37,14 +37,15 @@ import type {
   TypesPullReq,
   TypesPullReqStats,
   TypesCodeOwnerEvaluation,
-  TypesPullReqReviewer,
-  TypesListCommitResponse
+  TypesListCommitResponse,
+  TypesScopesLabels,
+  PullreqCombinedListResponse
 } from 'services/code'
 import { CommentAction, CommentBox, CommentBoxOutletPosition, CommentItem } from 'components/CommentBox/CommentBox'
 import { useConfirmAct } from 'hooks/useConfirmAction'
 import {
   getErrorMessage,
-  orderSortDate,
+  OrderSortDate,
   ButtonRoleProps,
   PullRequestSection,
   filenameToLanguage,
@@ -59,6 +60,7 @@ import { CodeCommentSecondarySaveButton } from 'components/CodeCommentSecondaryS
 import type { PRChecksDecisionResult } from 'hooks/usePRChecksDecision'
 import { UserPreference, useUserPreference } from 'hooks/useUserPreference'
 import { CommentThreadTopDecoration } from 'components/CommentThreadTopDecoration/CommentThreadTopDecoration'
+import { getConfig } from 'services/config'
 import { PullRequestTabContentWrapper } from '../PullRequestTabContentWrapper'
 import { DescriptionBox } from './DescriptionBox'
 import PullRequestSideBar from './PullRequestSideBar/PullRequestSideBar'
@@ -77,7 +79,9 @@ export interface ConversationProps extends Pick<GitInfoProps, 'repoMetadata' | '
   prChecksDecisionResult?: PRChecksDecisionResult
   standalone: boolean
   routingId: string
-  pullReqCommits: TypesListCommitResponse | undefined
+  pullReqCommits?: TypesListCommitResponse
+  refetchActivities: () => void
+  refetchPullReq: () => void
 }
 
 export const Conversation: React.FC<ConversationProps> = ({
@@ -90,18 +94,26 @@ export const Conversation: React.FC<ConversationProps> = ({
   prChecksDecisionResult,
   standalone,
   routingId,
-  pullReqCommits
+  pullReqCommits,
+  refetchActivities,
+  refetchPullReq
 }) => {
   const { getString } = useStrings()
   const { currentUser, routes } = useAppContext()
   const location = useLocation()
   const activities = usePullReqActivities()
   const {
-    data: reviewers,
+    data: combinedReviewers,
     refetch: refetchReviewers,
     loading: loadingReviewers
-  } = useGet<TypesPullReqReviewer[]>({
-    path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/reviewers`,
+  } = useGet<PullreqCombinedListResponse>({
+    path: `/api/v1/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/reviewers/combined`,
+    debounce: 500
+  })
+
+  const { data: labels, refetch: refetchLabels } = useGet<TypesScopesLabels>({
+    base: getConfig('code/api/v1'),
+    path: `/repos/${repoMetadata.path}/+/pullreq/${pullReqMetadata.number}/labels`,
     debounce: 500
   })
 
@@ -111,9 +123,9 @@ export const Conversation: React.FC<ConversationProps> = ({
   })
 
   const { showError } = useToaster()
-  const [dateOrderSort, setDateOrderSort] = useUserPreference<orderSortDate.ASC | orderSortDate.DESC>(
+  const [dateOrderSort, setDateOrderSort] = useUserPreference<OrderSortDate.ASC | OrderSortDate.DESC>(
     UserPreference.PULL_REQUEST_ACTIVITY_ORDER,
-    orderSortDate.ASC
+    OrderSortDate.ASC
   )
   const activityFilters = useActivityFilters()
   const [activityFilter, setActivityFilter] = useUserPreference<SelectOption>(
@@ -256,7 +268,6 @@ export const Conversation: React.FC<ConversationProps> = ({
     () =>
       activityBlocks?.map((commentItems, index) => {
         const threadId = commentItems[0].payload?.id
-
         if (isSystemComment(commentItems)) {
           return (
             <ThreadSection
@@ -412,7 +423,7 @@ export const Conversation: React.FC<ConversationProps> = ({
       <Container>
         <Layout.Vertical spacing="xlarge">
           <Container>
-            <Layout.Horizontal width="calc(var(--page-container-width) - 48px)">
+            <Layout.Horizontal>
               <Container width={`70%`}>
                 <Layout.Vertical spacing="xlarge">
                   {prChecksDecisionResult && (
@@ -424,11 +435,13 @@ export const Conversation: React.FC<ConversationProps> = ({
                         refetchReviewers={refetchReviewers}
                         prChecksDecisionResult={prChecksDecisionResult}
                         codeOwners={codeOwners}
-                        reviewers={reviewers}
+                        combinedReviewers={combinedReviewers}
                         pullReqCommits={pullReqCommits}
                         setActivityFilter={setActivityFilter}
                         loadingReviewers={loadingReviewers}
+                        refetchActivities={refetchActivities}
                         refetchCodeOwners={refetchCodeOwners}
+                        refetchPullReq={refetchPullReq}
                         activities={activities}
                       />
                     </Container>
@@ -464,35 +477,38 @@ export const Conversation: React.FC<ConversationProps> = ({
                       {...ButtonRoleProps}
                       className={css.timeButton}
                       rightIconProps={{ size: 24 }}
-                      rightIcon={dateOrderSort === orderSortDate.ASC ? 'code-ascending' : 'code-descending'}
+                      rightIcon={dateOrderSort === OrderSortDate.ASC ? 'code-ascending' : 'code-descending'}
                       onClick={() => {
-                        if (dateOrderSort === orderSortDate.ASC) {
-                          setDateOrderSort(orderSortDate.DESC)
+                        if (dateOrderSort === OrderSortDate.ASC) {
+                          setDateOrderSort(OrderSortDate.DESC)
                         } else {
-                          setDateOrderSort(orderSortDate.ASC)
+                          setDateOrderSort(OrderSortDate.ASC)
                         }
                       }}>
-                      {dateOrderSort === orderSortDate.ASC ? getString('ascending') : getString('descending')}
+                      {dateOrderSort === OrderSortDate.ASC ? getString('ascending') : getString('descending')}
                     </Text>
                   </Layout.Horizontal>
 
-                  {dateOrderSort != orderSortDate.DESC ? null : (
+                  {dateOrderSort != OrderSortDate.DESC ? null : (
                     <Container className={css.descContainer}>{newCommentBox}</Container>
                   )}
 
                   {renderedActivityBlocks}
 
-                  {dateOrderSort != orderSortDate.ASC ? null : (
+                  {dateOrderSort != OrderSortDate.ASC ? null : (
                     <Container className={css.ascContainer}>{newCommentBox}</Container>
                   )}
                 </Layout.Vertical>
               </Container>
 
               <PullRequestSideBar
-                reviewers={reviewers}
+                combinedReviewers={combinedReviewers}
                 repoMetadata={repoMetadata}
                 pullRequestMetadata={pullReqMetadata}
                 refetchReviewers={refetchReviewers}
+                labels={labels}
+                refetchLabels={refetchLabels}
+                refetchActivities={refetchActivities}
               />
             </Layout.Horizontal>
           </Container>

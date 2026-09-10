@@ -22,10 +22,9 @@ import (
 	"github.com/harness/gitness/app/api/controller"
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	events "github.com/harness/gitness/app/events/pullreq"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
-
-	"github.com/rs/zerolog/log"
 )
 
 type CommentStatusInput struct {
@@ -59,13 +58,20 @@ func (c *Controller) CommentStatus(
 	commentID int64,
 	in *CommentStatusInput,
 ) (*types.PullReqActivity, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoView)
+	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoReview)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire access to repo: %w", err)
 	}
 
+	if errValidate := in.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+
 	var pr *types.PullReq
 	var act *types.PullReqActivity
+
+	var oldStatus enum.PullReqCommentStatus
+	var oldResolvedBy *int64
 
 	err = controller.TxOptLock(ctx, c.tx, func(ctx context.Context) error {
 		pr, err = c.pullreqStore.FindByNumber(ctx, repo.ID, prNum)
@@ -73,13 +79,15 @@ func (c *Controller) CommentStatus(
 			return fmt.Errorf("failed to find pull request by number: %w", err)
 		}
 
-		if errValidate := in.Validate(); errValidate != nil {
-			return errValidate
-		}
-
 		act, err = c.getCommentCheckChangeStatusAccess(ctx, pr, commentID)
 		if err != nil {
 			return fmt.Errorf("failed to get comment: %w", err)
+		}
+
+		oldStatus = enum.PullReqCommentStatusActive
+		oldResolvedBy = act.ResolvedBy
+		if act.Resolved != nil {
+			oldStatus = enum.PullReqCommentStatusResolved
 		}
 
 		if !in.hasChanges(act, session.Principal.ID) {
@@ -125,9 +133,29 @@ func (c *Controller) CommentStatus(
 		return nil, err
 	}
 
-	if err = c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullRequestUpdated, pr); err != nil {
-		log.Ctx(ctx).Warn().Err(err).Msg("failed to publish PR changed event")
+	isChanged := oldResolvedBy != nil && act.ResolvedBy != nil && *oldResolvedBy != *act.ResolvedBy ||
+		oldResolvedBy == nil && act.ResolvedBy != nil ||
+		oldResolvedBy != nil && act.ResolvedBy == nil
+	if !isChanged {
+		return act, nil
 	}
+
+	c.sseStreamer.Publish(ctx, repo.ParentID, enum.SSETypePullReqUpdated, pr)
+
+	c.eventReporter.CommentStatusUpdated(ctx, &events.CommentStatusUpdatedPayload{
+		Base: events.Base{
+			PullReqID:    pr.ID,
+			SourceRepoID: pr.SourceRepoID,
+			TargetRepoID: pr.TargetRepoID,
+			PrincipalID:  session.Principal.ID,
+			Number:       pr.Number,
+		},
+		ActivityID:    act.ID,
+		OldStatus:     oldStatus,
+		NewStatus:     in.Status,
+		OldResolvedBy: oldResolvedBy,
+		NewResolvedBy: act.ResolvedBy,
+	})
 
 	return act, nil
 }

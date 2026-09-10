@@ -16,6 +16,8 @@ package command
 
 import (
 	"fmt"
+	"math"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -29,6 +31,8 @@ const (
 
 type builder struct {
 	flags                  uint
+	options                func() []CmdOptionFunc
+	actions                map[string]uint
 	validatePositionalArgs func([]string) error
 }
 
@@ -53,7 +57,11 @@ var descriptions = map[string]builder{
 				if strings.HasPrefix(arg, "-") {
 					// check if the argument is a level of compression
 					if _, err := strconv.Atoi(arg[1:]); err == nil {
-						return nil
+						// accept this single compression-level arg and keep
+						// validating the rest; returning here would disable
+						// validation for every subsequent argument and allow
+						// flag smuggling (e.g. --add-file, --output, --remote).
+						continue
 					}
 				}
 				if err := validatePositionalArg(arg); err != nil {
@@ -172,7 +180,8 @@ var descriptions = map[string]builder{
 		flags: NoRefUpdates,
 	},
 	"pack-objects": {
-		flags: NoRefUpdates,
+		flags:   NoRefUpdates,
+		options: configurePackOptions,
 	},
 	"patch-id": {
 		flags: NoRefUpdates | NoEndOfOptions,
@@ -196,6 +205,16 @@ var descriptions = map[string]builder{
 		// While git-remote(1)'s `add` subcommand does support `--end-of-options`,
 		// `remove` doesn't.
 		flags: NoEndOfOptions,
+		actions: map[string]uint{
+			"add":          0,
+			"rename":       0,
+			"remove":       0,
+			"set-head":     0,
+			"set-branches": 0,
+			"get-url":      0,
+			"set-url":      0,
+			"prune":        0,
+		},
 	},
 	"repack": {
 		flags: NoRefUpdates,
@@ -256,6 +275,12 @@ var descriptions = map[string]builder{
 	},
 	"upload-pack": {
 		flags: NoRefUpdates,
+		options: func() []CmdOptionFunc {
+			return append([]CmdOptionFunc{
+				WithConfig("uploadpack.allowFilter", "true"),
+				WithConfig("uploadpack.allowAnySHA1InWant", "true"),
+			}, configurePackOptions()...)
+		},
 	},
 	"version": {
 		flags: NoRefUpdates,
@@ -269,8 +294,12 @@ var descriptions = map[string]builder{
 }
 
 // args validates the given flags and arguments and, if valid, returns the complete command line.
-func (b builder) args(flags []string, args []string, postSepArgs []string) ([]string, error) {
-	var cmdArgs []string
+func (b builder) args(
+	flags []string,
+	args []string,
+	postSepArgs []string,
+) ([]string, error) {
+	cmdArgs := make([]string, 0, len(flags)+len(args)+len(postSepArgs))
 
 	cmdArgs = append(cmdArgs, flags...)
 
@@ -306,4 +335,24 @@ func validatePositionalArg(arg string) error {
 		return fmt.Errorf("positional arg %q cannot start with dash '-': %w", arg, ErrInvalidArg)
 	}
 	return nil
+}
+
+// threadsConfigValue limits the number of threads to prevent overwhelming the system and
+// exhausting all available CPU resources.
+func threadsConfigValue(numCPUs int) string {
+	return fmt.Sprintf("%d", int(math.Max(1, math.Floor(math.Log2(float64(numCPUs))))))
+}
+
+func configurePackOptions() []CmdOptionFunc {
+	return []CmdOptionFunc{
+		// configuration variable that controls the maximum amount of memory a single thread can use
+		// for the "delta search window" during the packing process. The packing process, performed
+		// by git pack-objects, compresses Git objects (like commits, trees, blobs, and tags)
+		// into a more efficient "packfile" format.
+		WithConfig("pack.windowMemory", "100m"),
+		// configuration variable which controls the number of threads used during packing operations,
+		// specifically when resolving deltas and searching for optimal delta matches. This setting is
+		// relevant for commands like git repack and git pack-objects.
+		WithConfig("pack.threads", threadsConfigValue(runtime.NumCPU())),
+	}
 }

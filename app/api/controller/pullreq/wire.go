@@ -17,14 +17,26 @@ package pullreq
 import (
 	"github.com/harness/gitness/app/auth/authz"
 	pullreqevents "github.com/harness/gitness/app/events/pullreq"
+	"github.com/harness/gitness/app/services/automerge"
 	"github.com/harness/gitness/app/services/codecomments"
 	"github.com/harness/gitness/app/services/codeowners"
+	"github.com/harness/gitness/app/services/dotrange"
+	"github.com/harness/gitness/app/services/instrument"
+	"github.com/harness/gitness/app/services/label"
 	"github.com/harness/gitness/app/services/locker"
+	"github.com/harness/gitness/app/services/merge"
+	mergequeuesvc "github.com/harness/gitness/app/services/mergequeue"
+	"github.com/harness/gitness/app/services/migrate"
 	"github.com/harness/gitness/app/services/protection"
+	"github.com/harness/gitness/app/services/publickey"
 	"github.com/harness/gitness/app/services/pullreq"
+	"github.com/harness/gitness/app/services/refcache"
+	"github.com/harness/gitness/app/services/settings"
+	"github.com/harness/gitness/app/services/usergroup"
 	"github.com/harness/gitness/app/sse"
 	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/app/url"
+	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/git"
 	"github.com/harness/gitness/store/database/dbtx"
 
@@ -36,25 +48,101 @@ var WireSet = wire.NewSet(
 	ProvideController,
 )
 
-func ProvideController(tx dbtx.Transactor, urlProvider url.Provider, authorizer authz.Authorizer,
-	pullReqStore store.PullReqStore, pullReqActivityStore store.PullReqActivityStore,
+func ProvideController(
+	tx dbtx.Transactor,
+	urlProvider url.Provider,
+	authorizer authz.Authorizer,
+	auditService audit.Service,
+	pullReqStore store.PullReqStore,
+	pullReqActivityStore store.PullReqActivityStore,
 	codeCommentsView store.CodeCommentView,
-	pullReqReviewStore store.PullReqReviewStore, pullReqReviewerStore store.PullReqReviewerStore,
-	repoStore store.RepoStore, principalStore store.PrincipalStore, principalInfoCache store.PrincipalInfoCache,
-	fileViewStore store.PullReqFileViewStore, membershipStore store.MembershipStore,
+	pullReqReviewStore store.PullReqReviewStore,
+	pullReqReviewerStore store.PullReqReviewerStore,
+	pullReqReviewerSuggestionStore store.PullReqReviewerSuggestionStore,
+	repoStore store.RepoStore,
+	principalStore store.PrincipalStore,
+	userGroupStore store.UserGroupStore,
+	userGroupReviewerStore store.UserGroupReviewerStore,
+	principalInfoCache store.PrincipalInfoCache,
+	fileViewStore store.PullReqFileViewStore,
+	fileGroupStore store.PullReqFileGroupStore,
+	membershipStore store.MembershipStore,
 	checkStore store.CheckStore,
-	rpcClient git.Interface, eventReporter *pullreqevents.Reporter, codeCommentMigrator *codecomments.Migrator,
-	pullreqService *pullreq.Service, ruleManager *protection.Manager, sseStreamer sse.Streamer,
-	codeOwners *codeowners.Service, locker *locker.Locker,
+	autoMergeStore store.AutoMergeStore,
+	mergeQueueStore store.MergeQueueStore,
+	mergeQueueEntryStore store.MergeQueueEntryStore,
+	mergeQueueService *mergequeuesvc.Service,
+	rpcClient git.Interface,
+	repoFinder refcache.RepoFinder,
+	eventReporter *pullreqevents.Reporter,
+	codeCommentMigrator *codecomments.Migrator,
+	pullreqService *pullreq.Service,
+	pullreqListService *pullreq.ListService,
+	mergeService *merge.Service,
+	autoMergeService *automerge.Service,
+	ruleManager *protection.Manager,
+	sseStreamer sse.Streamer,
+	dotRangeService *dotrange.Service,
+	codeOwners *codeowners.Service,
+	locker *locker.Locker,
+	settings *settings.Service,
+	importer *migrate.PullReq,
+	labelSvc *label.Service,
+	labelStore store.LabelStore,
+	labelValueStore store.LabelValueStore,
+	labelSuggestionStore store.PullReqLabelSuggestionStore,
+	instrumentation instrument.Service,
+	userGroupService usergroup.Service,
+	branchStore store.BranchStore,
+	userGroupResolver usergroup.Resolver,
+	signatureVerifyService publickey.SignatureVerifyService,
 ) *Controller {
-	return NewController(tx, urlProvider, authorizer,
-		pullReqStore, pullReqActivityStore,
+	return NewController(tx,
+		urlProvider,
+		authorizer,
+		auditService,
+		pullReqStore,
+		pullReqActivityStore,
 		codeCommentsView,
-		pullReqReviewStore, pullReqReviewerStore,
-		repoStore, principalStore, principalInfoCache,
-		fileViewStore, membershipStore,
+		pullReqReviewStore,
+		pullReqReviewerStore,
+		pullReqReviewerSuggestionStore,
+		repoStore,
+		principalStore,
+		userGroupStore,
+		userGroupReviewerStore,
+		principalInfoCache,
+		fileViewStore,
+		fileGroupStore,
+		membershipStore,
 		checkStore,
-		rpcClient, eventReporter,
+		autoMergeStore,
+		mergeQueueStore,
+		mergeQueueEntryStore,
+		mergeQueueService,
+		rpcClient,
+		repoFinder,
+		eventReporter,
 		codeCommentMigrator,
-		pullreqService, ruleManager, sseStreamer, codeOwners, locker)
+		pullreqService,
+		pullreqListService,
+		mergeService,
+		autoMergeService,
+		ruleManager,
+		sseStreamer,
+		dotRangeService,
+		codeOwners,
+		locker,
+		settings,
+		importer,
+		labelSvc,
+		labelStore,
+		labelValueStore,
+		labelSuggestionStore,
+		instrumentation,
+		userGroupService,
+		branchStore,
+		userGroupResolver,
+		signatureVerifyService,
+	)
 }

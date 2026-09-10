@@ -17,8 +17,9 @@ package cache
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/constraints"
@@ -34,8 +35,8 @@ type TTLCache[K comparable, V any] struct {
 	purgeStop chan struct{}
 	getter    Getter[K, V]
 	maxAge    time.Duration
-	countHit  int64
-	countMiss int64
+	countHit  atomic.Int64
+	countMiss atomic.Int64
 }
 
 // ExtendedTTLCache is an extended version of the TTLCache.
@@ -113,7 +114,19 @@ func (c *TTLCache[K, V]) Stop() {
 
 // Stats returns number of cache hits and misses and can be used to monitor the cache efficiency.
 func (c *TTLCache[K, V]) Stats() (int64, int64) {
-	return c.countHit, c.countMiss
+	return c.countHit.Load(), c.countMiss.Load()
+}
+
+func (c *TTLCache[K, V]) Evict(_ context.Context, key K) {
+	c.mx.Lock()
+	delete(c.cache, key)
+	c.mx.Unlock()
+}
+
+func (c *TTLCache[K, V]) EvictAll(_ context.Context) {
+	c.mx.Lock()
+	clear(c.cache)
+	c.mx.Unlock()
 }
 
 func (c *TTLCache[K, V]) fetch(key K, now time.Time) (V, bool) {
@@ -122,12 +135,12 @@ func (c *TTLCache[K, V]) fetch(key K, now time.Time) (V, bool) {
 
 	item, ok := c.cache[key]
 	if !ok || now.Sub(item.added) > c.maxAge {
-		c.countMiss++
+		c.countMiss.Add(1)
 		var nothing V
 		return nothing, false
 	}
 
-	c.countHit++
+	c.countHit.Add(1)
 
 	// we deliberately don't update the `item.added` timestamp for `now` because
 	// we want to cache the items only for a short period.
@@ -140,7 +153,7 @@ func (c *ExtendedTTLCache[K, V]) Map(ctx context.Context, keys []K) (map[K]V, er
 	m := make(map[K]V)
 	now := time.Now()
 
-	keys = deduplicate(keys)
+	keys = Deduplicate(keys)
 
 	// Check what's already available in the cache.
 
@@ -211,13 +224,13 @@ func (c *TTLCache[K, V]) Get(ctx context.Context, key K) (V, error) {
 	return item, nil
 }
 
-// deduplicate is a utility function that removes duplicates from slice.
-func deduplicate[V constraints.Ordered](slice []V) []V {
+// Deduplicate is a utility function that removes duplicates from slice.
+func Deduplicate[V constraints.Ordered](slice []V) []V {
 	if len(slice) <= 1 {
 		return slice
 	}
 
-	sort.Slice(slice, func(i, j int) bool { return slice[i] < slice[j] })
+	slices.Sort(slice)
 
 	pointer := 0
 	for i := 1; i < len(slice); i++ {

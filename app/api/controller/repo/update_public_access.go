@@ -18,7 +18,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
+	repoevents "github.com/harness/gitness/app/events/repo"
 	"github.com/harness/gitness/app/paths"
 	"github.com/harness/gitness/audit"
 	"github.com/harness/gitness/types/enum"
@@ -30,21 +32,27 @@ type UpdatePublicAccessInput struct {
 	IsPublic bool `json:"is_public"`
 }
 
-func (c *Controller) UpdatePublicAccess(ctx context.Context,
+func (c *Controller) UpdatePublicAccess(
+	ctx context.Context,
 	session *auth.Session,
 	repoRef string,
 	in *UpdatePublicAccessInput,
 ) (*RepositoryOutput, error) {
-	repo, err := c.getRepoCheckAccess(ctx, session, repoRef, enum.PermissionRepoEdit)
+	repoCore, err := c.getRepoCheckAccessWithLinked(ctx, session, repoRef, enum.PermissionRepoEdit)
 	if err != nil {
 		return nil, err
 	}
 
-	parentPath, _, err := paths.DisectLeaf(repo.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to disect path %q: %w", repo.Path, err)
+	if repoCore.ForkID != 0 && in.IsPublic {
+		return nil, usererror.BadRequest("It is not allowed to make a fork repository public.")
 	}
-	isPublicAccessSupported, err := c.publicAccess.IsPublicAccessSupported(ctx, parentPath)
+
+	parentPath, _, err := paths.DisectLeaf(repoCore.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to disect path %q: %w", repoCore.Path, err)
+	}
+
+	isPublicAccessSupported, err := c.publicAccess.IsPublicAccessSupported(ctx, enum.PublicResourceTypeRepo, parentPath)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to check if public access is supported for parent space %q: %w",
@@ -56,17 +64,24 @@ func (c *Controller) UpdatePublicAccess(ctx context.Context,
 		return nil, errPublicRepoCreationDisabled
 	}
 
-	isPublic, err := c.publicAccess.Get(ctx, enum.PublicResourceTypeRepo, repo.Path)
+	isPublic, err := c.publicAccess.Get(ctx, enum.PublicResourceTypeRepo, repoCore.Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check current public access status: %w", err)
 	}
 
+	repo, err := c.repoStore.Find(ctx, repoCore.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find repo by ID: %w", err)
+	}
+
 	// no op
 	if isPublic == in.IsPublic {
-		return &RepositoryOutput{
-			Repository: *repo,
-			IsPublic:   isPublic,
-		}, nil
+		repoOutput, err := GetRepoOutputWithAccess(ctx, c.repoFinder, isPublic, repo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get repo output: %w", err)
+		}
+
+		return repoOutput, nil
 	}
 
 	if err = c.publicAccess.Set(ctx, enum.PublicResourceTypeRepo, repo.Path, in.IsPublic); err != nil {
@@ -74,8 +89,8 @@ func (c *Controller) UpdatePublicAccess(ctx context.Context,
 	}
 
 	// backfill GitURL
-	repo.GitURL = c.urlProvider.GenerateGITCloneURL(repo.Path)
-	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(repo.Path)
+	repo.GitURL = c.urlProvider.GenerateGITCloneURL(ctx, repo.Path)
+	repo.GitSSHURL = c.urlProvider.GenerateGITCloneSSHURL(ctx, repo.Path)
 
 	err = c.auditService.Log(ctx,
 		session.Principal,
@@ -95,8 +110,16 @@ func (c *Controller) UpdatePublicAccess(ctx context.Context,
 		log.Ctx(ctx).Warn().Msgf("failed to insert audit log for update repository operation: %s", err)
 	}
 
-	return &RepositoryOutput{
-		Repository: *repo,
-		IsPublic:   in.IsPublic,
-	}, nil
+	c.eventReporter.PublicAccessChanged(ctx, &repoevents.PublicAccessChangedPayload{
+		Base:        eventBase(repo.Core(), &session.Principal),
+		OldIsPublic: isPublic,
+		NewIsPublic: in.IsPublic,
+	})
+
+	repoOutput, err := GetRepoOutputWithAccess(ctx, c.repoFinder, in.IsPublic, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo output: %w", err)
+	}
+
+	return repoOutput, nil
 }

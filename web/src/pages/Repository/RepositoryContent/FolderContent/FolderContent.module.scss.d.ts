@@ -21,7 +21,7 @@ export declare const commitMsgLayout: string
 export declare const fileIcon: string
 export declare const folderContent: string
 export declare const heading: string
-export declare const hightlight: string
+export declare const highlight: string
 export declare const link: string
 export declare const linkContainer: string
 export declare const noShrink: string

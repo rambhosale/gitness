@@ -15,6 +15,7 @@
 package types
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -37,15 +38,21 @@ type Rule struct {
 	Identifier  string `json:"identifier"`
 	Description string `json:"description"`
 
-	Type  RuleType       `json:"type"`
+	Type  enum.RuleType  `json:"type"`
 	State enum.RuleState `json:"state"`
 
 	Pattern    json.RawMessage `json:"pattern"`
+	RepoTarget json.RawMessage `json:"repo_target"`
 	Definition json.RawMessage `json:"definition"`
 
 	CreatedByInfo PrincipalInfo `json:"created_by"`
 
-	Users map[int64]*PrincipalInfo `json:"users"`
+	Users        map[int64]*PrincipalInfo  `json:"users"`
+	UserGroups   map[int64]*UserGroupInfo  `json:"user_groups"`
+	Repositories map[int64]*RepositoryCore `json:"repositories"`
+
+	// scope 0 indicates repo; scope > 0 indicates space depth level
+	Scope int64 `json:"scope"`
 }
 
 // TODO [CODE-1363]: remove after identifier migration.
@@ -61,7 +68,7 @@ func (r Rule) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (r Rule) MarshalYAML() (interface{}, error) {
+func (r Rule) MarshalYAML() (any, error) {
 	// yaml cannot marshal json.RawMessage
 	pattern := make(map[string]any)
 	err := yaml.Unmarshal(r.Pattern, pattern)
@@ -123,13 +130,19 @@ func (r Rule) Clone() Rule {
 	return r
 }
 
-type RuleType string
+func (r *Rule) IsEqual(rule *Rule) bool {
+	return r.Identifier == rule.Identifier && r.State == rule.State &&
+		r.Description == rule.Description && bytes.Equal(r.Pattern, rule.Pattern) &&
+		bytes.Equal(r.RepoTarget, rule.RepoTarget) &&
+		bytes.Equal(r.Definition, rule.Definition)
+}
 
 type RuleFilter struct {
 	ListQueryFilter
 	States []enum.RuleState
-	Sort   enum.RuleSort `json:"sort"`
-	Order  enum.Order    `json:"order"`
+	Types  []enum.RuleType `json:"types"`
+	Sort   enum.RuleSort   `json:"sort"`
+	Order  enum.Order      `json:"order"`
 }
 
 // Violation represents a single violation.
@@ -178,7 +191,7 @@ type RuleInfo struct {
 
 	ID         int64          `json:"-"`
 	Identifier string         `json:"identifier"`
-	Type       RuleType       `json:"type"`
+	Type       enum.RuleType  `json:"type"`
 	State      enum.RuleState `json:"state"`
 }
 
@@ -197,10 +210,22 @@ func (r RuleInfo) MarshalJSON() ([]byte, error) {
 
 type RuleInfoInternal struct {
 	RuleInfo
+	RepoTarget json.RawMessage
 	Pattern    json.RawMessage
 	Definition json.RawMessage
 }
 
 type RulesViolations struct {
+	Message    string           `json:"message"`
 	Violations []RuleViolations `json:"violations"`
+}
+
+type DryRunRulesOutput struct {
+	DryRunRules    bool             `json:"dry_run_rules,omitempty"`
+	RuleViolations []RuleViolations `json:"rule_violations,omitempty"`
+}
+
+type RuleParentInfo struct {
+	Type enum.RuleParent
+	ID   int64
 }

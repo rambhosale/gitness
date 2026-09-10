@@ -170,7 +170,7 @@ func (r *SharedRepo) LsFiles(
 	}
 
 	files := make([]string, 0)
-	for _, line := range bytes.Split(stdout.Bytes(), []byte{'\000'}) {
+	for line := range bytes.SplitSeq(stdout.Bytes(), []byte{'\000'}) {
 		files = append(files, string(line))
 	}
 
@@ -241,8 +241,8 @@ func (r *SharedRepo) GetTreeSHA(
 		command.WithStdout(stdout),
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "ambiguous argument") {
-			return sha.None, errors.NotFound("could not resolve git revision %q", rev)
+		if command.AsError(err).IsAmbiguousArgErr() {
+			return sha.None, errors.NotFoundf("could not resolve git revision %q", rev)
 		}
 		return sha.None, fmt.Errorf("failed to get tree sha: %w", err)
 	}
@@ -282,7 +282,7 @@ func (r *SharedRepo) AddObjectToIndex(
 
 	if err := cmd.Run(ctx, command.WithDir(r.repoPath)); err != nil {
 		if matched, _ := regexp.MatchString(".*Invalid path '.*", err.Error()); matched {
-			return errors.InvalidArgument("invalid path '%s'", objectPath)
+			return errors.InvalidArgumentf("invalid path '%s'", objectPath)
 		}
 		return fmt.Errorf("failed to add object to index in shared repo (path=%s): %w", objectPath, err)
 	}
@@ -331,7 +331,7 @@ func (r *SharedRepo) MergeTree(
 	}
 
 	// exit code=1: the output is the tree object SHA, and list of files in conflict.
-	if cErr := command.AsError(err); cErr != nil && cErr.ExitCode() == 1 {
+	if cErr := command.AsError(err); cErr != nil && cErr.IsExitCode(1) {
 		output := strings.TrimSpace(stdout.String())
 		lines := strings.Split(output, "\n")
 		if len(lines) < 2 {
@@ -391,13 +391,12 @@ func (r *SharedRepo) CommitTree(
 
 	messageBytes := new(bytes.Buffer)
 	_, _ = messageBytes.WriteString(message)
-	_, _ = messageBytes.WriteString("\n")
 
 	if signoff {
 		// Signed-off-by
 		_, _ = messageBytes.WriteString("\n")
 		_, _ = messageBytes.WriteString("Signed-off-by: ")
-		_, _ = messageBytes.WriteString(fmt.Sprintf("%s <%s>", committer.Identity.Name, committer.Identity.Email))
+		_, _ = fmt.Fprintf(messageBytes, "%s <%s>\n", committer.Identity.Name, committer.Identity.Email)
 	}
 
 	stdout := bytes.NewBuffer(nil)
@@ -466,30 +465,61 @@ func (r *SharedRepo) MergeBase(
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// WriteDiff runs git diff between two revisions and stores the output to the provided writer.
+// The diff output would also include changes to binary files.
+func (r *SharedRepo) WriteDiff(
+	ctx context.Context,
+	revFrom, revTo string,
+	wr io.Writer,
+) error {
+	cmd := command.New("diff", command.WithFlag("--binary"),
+		command.WithArg(revFrom), command.WithArg(revTo))
+
+	if err := cmd.Run(ctx, command.WithDir(r.repoPath), command.WithStdout(wr)); err != nil {
+		return fmt.Errorf("failed to diff in shared repo: %w", err)
+	}
+
+	return nil
+}
+
+// ApplyToIndex runs 'git apply --cached' which would update the current index with the provided diff patch.
+func (r *SharedRepo) ApplyToIndex(
+	ctx context.Context,
+	inputFileName string,
+) error {
+	cmd := command.New("apply", command.WithFlag("--cached"), command.WithArg(inputFileName))
+
+	if err := cmd.Run(ctx, command.WithDir(r.repoPath)); err != nil {
+		return fmt.Errorf("failed to apply a patch in shared repo: %w", err)
+	}
+
+	return nil
+}
+
 func (r *SharedRepo) CreateFile(
 	ctx context.Context,
 	treeishSHA sha.SHA,
 	filePath, mode string,
 	payload []byte,
-) error {
+) (sha.SHA, error) {
 	// only check path availability if a source commit is available (empty repo won't have such a commit)
 	if !treeishSHA.IsEmpty() {
 		if err := r.checkPathAvailability(ctx, treeishSHA, filePath, true); err != nil {
-			return err
+			return sha.None, err
 		}
 	}
 
 	objectSHA, err := r.WriteGitObject(ctx, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("createFile: error hashing object: %w", err)
+		return sha.None, fmt.Errorf("createFile: error hashing object: %w", err)
 	}
 
 	// Add the object to the index
 	if err = r.AddObjectToIndex(ctx, mode, objectSHA, filePath); err != nil {
-		return fmt.Errorf("createFile: error creating object: %w", err)
+		return sha.None, fmt.Errorf("createFile: error creating object: %w", err)
 	}
 
-	return nil
+	return objectSHA, nil
 }
 
 func (r *SharedRepo) UpdateFile(
@@ -499,11 +529,11 @@ func (r *SharedRepo) UpdateFile(
 	objectSHA sha.SHA,
 	mode string,
 	payload []byte,
-) error {
+) (sha.SHA, error) {
 	// get file mode from existing file (default unless executable)
 	entry, err := r.getFileEntry(ctx, treeishSHA, objectSHA, filePath)
 	if err != nil {
-		return err
+		return sha.None, err
 	}
 
 	if entry.IsExecutable() {
@@ -512,14 +542,14 @@ func (r *SharedRepo) UpdateFile(
 
 	objectSHA, err = r.WriteGitObject(ctx, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("updateFile: error hashing object: %w", err)
+		return sha.None, fmt.Errorf("updateFile: error hashing object: %w", err)
 	}
 
 	if err = r.AddObjectToIndex(ctx, mode, objectSHA, filePath); err != nil {
-		return fmt.Errorf("updateFile: error updating object: %w", err)
+		return sha.None, fmt.Errorf("updateFile: error updating object: %w", err)
 	}
 
-	return nil
+	return objectSHA, nil
 }
 
 func (r *SharedRepo) MoveFile(
@@ -529,21 +559,21 @@ func (r *SharedRepo) MoveFile(
 	objectSHA sha.SHA,
 	mode string,
 	payload []byte,
-) (string, error) {
+) (string, sha.SHA, error) {
 	newPath, newContent, err := parseMovePayload(payload)
 	if err != nil {
-		return "", err
+		return "", sha.None, err
 	}
 
 	// ensure file exists and matches SHA
 	entry, err := r.getFileEntry(ctx, treeishSHA, objectSHA, filePath)
 	if err != nil {
-		return "", err
+		return "", sha.None, err
 	}
 
 	// ensure new path is available
 	if err = r.checkPathAvailability(ctx, treeishSHA, newPath, false); err != nil {
-		return "", err
+		return "", sha.None, err
 	}
 
 	var fileHash sha.SHA
@@ -551,7 +581,7 @@ func (r *SharedRepo) MoveFile(
 	if newContent != nil {
 		hash, err := r.WriteGitObject(ctx, bytes.NewReader(newContent))
 		if err != nil {
-			return "", fmt.Errorf("moveFile: error hashing object: %w", err)
+			return "", sha.None, fmt.Errorf("moveFile: error hashing object: %w", err)
 		}
 
 		fileHash = hash
@@ -566,14 +596,14 @@ func (r *SharedRepo) MoveFile(
 	}
 
 	if err = r.AddObjectToIndex(ctx, fileMode, fileHash, newPath); err != nil {
-		return "", fmt.Errorf("moveFile: add object error: %w", err)
+		return "", sha.None, fmt.Errorf("moveFile: add object error: %w", err)
 	}
 
 	if err = r.RemoveFilesFromIndex(ctx, filePath); err != nil {
-		return "", fmt.Errorf("moveFile: remove object error: %w", err)
+		return "", sha.None, fmt.Errorf("moveFile: remove object error: %w", err)
 	}
 
-	return newPath, nil
+	return newPath, fileHash, nil
 }
 
 func (r *SharedRepo) DeleteFile(ctx context.Context, filePath string) error {
@@ -582,7 +612,7 @@ func (r *SharedRepo) DeleteFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("deleteFile: listing files error: %w", err)
 	}
 	if !slices.Contains(filesInIndex, filePath) {
-		return errors.NotFound("file path %s not found", filePath)
+		return errors.NotFoundf("file path %s not found", filePath)
 	}
 
 	if err = r.RemoveFilesFromIndex(ctx, filePath); err != nil {
@@ -597,25 +627,25 @@ func (r *SharedRepo) PatchTextFile(
 	filePath string,
 	objectSHA sha.SHA,
 	payloadsRaw [][]byte,
-) error {
+) (sha.SHA, error) {
 	payloads, err := parsePatchTextFilePayloads(payloadsRaw)
 	if err != nil {
-		return err
+		return sha.None, err
 	}
 
 	entry, err := r.getFileEntry(ctx, treeishSHA, objectSHA, filePath)
 	if err != nil {
-		return err
+		return sha.None, err
 	}
 
 	blob, err := api.GetBlob(ctx, r.repoPath, nil, entry.SHA, 0)
 	if err != nil {
-		return fmt.Errorf("error reading blob: %w", err)
+		return sha.None, fmt.Errorf("error reading blob: %w", err)
 	}
 
 	scanner, lineEnding, err := parser.ReadTextFile(blob.Content, nil)
 	if err != nil {
-		return fmt.Errorf("error reading blob as text file: %w", err)
+		return sha.None, fmt.Errorf("error reading blob as text file: %w", err)
 	}
 
 	pipeReader, pipeWriter := io.Pipe()
@@ -629,14 +659,14 @@ func (r *SharedRepo) PatchTextFile(
 
 	objectSHA, err = r.WriteGitObject(ctx, pipeReader)
 	if err != nil {
-		return fmt.Errorf("error writing patched file to git store: %w", err)
+		return sha.None, fmt.Errorf("error writing patched file to git store: %w", err)
 	}
 
 	if err = r.AddObjectToIndex(ctx, entry.Mode.String(), objectSHA, filePath); err != nil {
-		return fmt.Errorf("error updating object: %w", err)
+		return sha.None, fmt.Errorf("error updating object: %w", err)
 	}
 
-	return nil
+	return objectSHA, nil
 }
 
 // nolint: gocognit, gocyclo, cyclop
@@ -663,7 +693,7 @@ func patchTextFileWritePatchedFile(
 			break
 		}
 		if replacements[i].OmitFrom < replacements[i-1].ContinueFrom {
-			return errors.InvalidArgument(
+			return errors.InvalidArgumentf(
 				"Patch actions have conflicting ranges [%s,%s)x[%s,%s)",
 				replacements[i-1].OmitFrom, replacements[i-1].ContinueFrom,
 				replacements[i].OmitFrom, replacements[i].ContinueFrom,
@@ -775,7 +805,7 @@ func patchTextFileWritePatchedFile(
 
 		// ensure replacement range isn't out of bounds
 		if replacements[i].OmitFrom > ln || replacements[i].ContinueFrom > ln {
-			return errors.InvalidArgument(
+			return errors.InvalidArgumentf(
 				"Patch action for [%s,%s) is exceeding end of file with %d line(s).",
 				originalOmitFrom, originalContinueFrom, ln-1,
 			)
@@ -784,7 +814,7 @@ func patchTextFileWritePatchedFile(
 		// ensure no overlap with next element
 		if i+1 < len(replacements) &&
 			replacements[i+1].OmitFrom < replacements[i].ContinueFrom {
-			return errors.InvalidArgument(
+			return errors.InvalidArgumentf(
 				"Patch actions have conflicting ranges [%s,%s)x[%s,%s) for file with %d line(s).",
 				originalOmitFrom, originalContinueFrom,
 				replacements[i+1].OmitFrom, replacements[i+1].ContinueFrom,
@@ -817,7 +847,7 @@ func (r *SharedRepo) getFileEntry(
 ) (*api.TreeNode, error) {
 	entry, err := api.GetTreeNode(ctx, r.repoPath, treeishSHA.String(), path, false)
 	if errors.IsNotFound(err) {
-		return nil, errors.NotFound("path %s not found", path)
+		return nil, errors.NotFoundf("path %s not found", path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("getFileEntry: failed to get tree for path %s: %w", path, err)
@@ -825,7 +855,7 @@ func (r *SharedRepo) getFileEntry(
 
 	// If a SHA was given and the SHA given doesn't match the SHA of the fromTreePath, throw error
 	if !objectSHA.IsEmpty() && !objectSHA.Equal(entry.SHA) {
-		return nil, errors.InvalidArgument("sha does not match for path %s [given: %s, expected: %s]",
+		return nil, errors.InvalidArgumentf("sha does not match for path %s [given: %s, expected: %s]",
 			path, objectSHA, entry.SHA)
 	}
 
@@ -861,17 +891,17 @@ func (r *SharedRepo) checkPathAvailability(
 		switch {
 		case index < len(parts)-1:
 			if !entry.IsDir() {
-				return errors.Conflict("a file already exists where you're trying to create a subdirectory [path: %s]",
+				return errors.Conflictf("a file already exists where you're trying to create a subdirectory [path: %s]",
 					subTreePath)
 			}
 		case entry.IsLink():
-			return errors.Conflict("a symbolic link already exist where you're trying to create a subdirectory [path: %s]",
+			return errors.Conflictf("a symbolic link already exist where you're trying to create a subdirectory [path: %s]",
 				subTreePath)
 		case entry.IsDir():
-			return errors.Conflict("a directory already exists where you're trying to create a subdirectory [path: %s]",
+			return errors.Conflictf("a directory already exists where you're trying to create a subdirectory [path: %s]",
 				subTreePath)
 		case filePath != "" || isNewFile:
-			return errors.Conflict("file path %s already exists", filePath)
+			return errors.Conflictf("file path %s already exists", filePath)
 		}
 	}
 	return nil
@@ -946,7 +976,7 @@ func (r *SharedRepo) MoveObjects(ctx context.Context) error {
 
 		// Try to copy the file
 
-		copyError := func() error {
+		errCopy := func() error {
 			srcFile, err := os.Open(f.fullPath)
 			if err != nil {
 				return fmt.Errorf("failed to open source file: %w", err)
@@ -966,17 +996,25 @@ func (r *SharedRepo) MoveObjects(ctx context.Context) error {
 
 			return nil
 		}()
-		if copyError != nil {
-			log.Ctx(ctx).Err(copyError).
+		if errCopy != nil {
+			// Make sure that an invalid or incomplete file does not remain in the repository if copying fails.
+			errRemove := os.Remove(dstPath)
+			if os.IsNotExist(errRemove) {
+				errRemove = nil
+			}
+
+			log.Ctx(ctx).Err(errCopy).
 				Str("object", f.relPath).
-				Str("renameErr", errRename.Error()).
+				Str("errRename", errRename.Error()).
+				Str("errRemove", errRemove.Error()).
 				Msg("failed to move or copy git object")
-			return fmt.Errorf("failed to move or copy git object: %w", copyError)
+
+			return fmt.Errorf("failed to move or copy git object: %w", errCopy)
 		}
 
 		log.Ctx(ctx).Warn().
 			Str("object", f.relPath).
-			Str("renameErr", errRename.Error()).
+			Str("errRename", errRename.Error()).
 			Msg("copied git object")
 	}
 
@@ -1070,11 +1108,11 @@ func parsePatchTextFilePayload(payloadRaw []byte) (patchTextFileReplacement, err
 
 	start, err := parseLineNumber(startBytes)
 	if err != nil {
-		return patchTextFileReplacement{}, errors.InvalidArgument("Payload start line number is invalid: %s", err)
+		return patchTextFileReplacement{}, errors.InvalidArgumentf("Payload start line number is invalid: %s", err)
 	}
 	end, err := parseLineNumber(endBytes)
 	if err != nil {
-		return patchTextFileReplacement{}, errors.InvalidArgument("Payload end line number is invalid: %s", err)
+		return patchTextFileReplacement{}, errors.InvalidArgumentf("Payload end line number is invalid: %s", err)
 	}
 
 	if end < start {

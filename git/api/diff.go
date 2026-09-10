@@ -84,8 +84,8 @@ func modifyHeader(hunk parser.HunkHeader, startLine, endLine int) []byte {
 		}
 	}
 
-	return []byte(fmt.Sprintf("@@ -%d,%d +%d,%d @@",
-		oldStartLine, oldSpan, newStartLine, newSpan))
+	return fmt.Appendf(nil, "@@ -%d,%d +%d,%d @@",
+		oldStartLine, oldSpan, newStartLine, newSpan)
 }
 
 // cutLinesFromFullFileDiff reads from r and writes to w headers and between
@@ -156,6 +156,7 @@ func cutLinesFromFullFileDiff(w io.Writer, r io.Reader, startLine, endLine int) 
 	return scanner.Err()
 }
 
+//nolint:gocognit
 func (g *Git) RawDiff(
 	ctx context.Context,
 	w io.Writer,
@@ -163,6 +164,7 @@ func (g *Git) RawDiff(
 	baseRef string,
 	headRef string,
 	mergeBase bool,
+	ignoreWhitespace bool,
 	alternates []string,
 	files ...FileDiffRequest,
 ) error {
@@ -172,12 +174,21 @@ func (g *Git) RawDiff(
 
 	baseTag, err := g.GetAnnotatedTag(ctx, repoPath, baseRef)
 	if err == nil {
-		baseRef = baseTag.TargetSha.String()
+		baseRef = baseTag.TargetSHA.String()
 	}
 
 	headTag, err := g.GetAnnotatedTag(ctx, repoPath, headRef)
 	if err == nil {
-		headRef = headTag.TargetSha.String()
+		headRef = headTag.TargetSHA.String()
+	}
+
+	if mergeBase {
+		mergeBaseSHA, _, err := g.GetMergeBase(ctx, repoPath, "", baseRef, headRef, true)
+		if err != nil {
+			return fmt.Errorf("failed to get merge base for %s and %s: %w", baseRef, headRef, err)
+		}
+
+		baseRef = mergeBaseSHA.String()
 	}
 
 	cmd := command.New("diff",
@@ -185,8 +196,9 @@ func (g *Git) RawDiff(
 		command.WithFlag("--full-index"),
 		command.WithAlternateObjectDirs(alternates...),
 	)
-	if mergeBase {
-		cmd.Add(command.WithFlag("--merge-base"))
+	if ignoreWhitespace {
+		// Ignore whitespace when comparing lines.
+		cmd.Add(command.WithFlag("-w"))
 	}
 
 	perFileDiffRequired := false
@@ -235,11 +247,14 @@ again:
 			_ = pipeWrite.CloseWithError(err)
 		}()
 
-		if err = newCmd.Run(ctx,
-			command.WithDir(repoPath),
-			command.WithStdout(pipeWrite),
-		); err != nil {
+		err = newCmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(pipeWrite))
+		if err != nil {
 			err = processGitErrorf(err, "git diff failed between %q and %q", baseRef, headRef)
+			if cErr := command.AsError(err); cErr != nil {
+				if cErr.IsExitCode(128) && cErr.IsBadObject() {
+					err = errors.NotFound("commit not found")
+				}
+			}
 		}
 	}()
 
@@ -262,6 +277,7 @@ func (g *Git) CommitDiff(
 	ctx context.Context,
 	repoPath string,
 	rev string,
+	ignoreWhitespace bool,
 	w io.Writer,
 ) error {
 	if repoPath == "" {
@@ -276,6 +292,11 @@ func (g *Git) CommitDiff(
 		command.WithFlag("--pretty=format:%b"),
 		command.WithArg(rev),
 	)
+
+	if ignoreWhitespace {
+		// Ignore whitespace when comparing lines.
+		cmd.Add(command.WithFlag("-w"))
+	}
 
 	if err := cmd.Run(ctx,
 		command.WithDir(repoPath),
@@ -292,6 +313,7 @@ func (g *Git) DiffShortStat(
 	baseRef string,
 	headRef string,
 	useMergeBase bool,
+	ignoreWhitespace bool,
 ) (DiffShortStat, error) {
 	if repoPath == "" {
 		return DiffShortStat{}, ErrRepositoryPathEmpty
@@ -305,7 +327,7 @@ func (g *Git) DiffShortStat(
 	if len(baseRef) == 0 || baseRef == types.NilSHA {
 		shortstatArgs = []string{sha.EmptyTree.String(), headRef}
 	}
-	stat, err := GetDiffShortStat(ctx, repoPath, shortstatArgs...)
+	stat, err := GetDiffShortStat(ctx, repoPath, ignoreWhitespace, shortstatArgs...)
 	if err != nil {
 		return DiffShortStat{}, processGitErrorf(err, "failed to get diff short stat between %s and %s",
 			baseRef, headRef)
@@ -344,6 +366,7 @@ func (g *Git) GetDiffHunkHeaders(
 			command.WithArg(sourceRef),
 			command.WithArg(targetRef),
 		)
+
 		err = cmd.Run(ctx,
 			command.WithDir(repoPath),
 			command.WithStdout(pipeWrite),
@@ -376,6 +399,7 @@ func (g *Git) DiffCut(
 	targetRef string,
 	sourceRef string,
 	path string,
+	ignoreWhitespace bool,
 	params parser.DiffCutParams,
 ) (parser.HunkHeader, parser.Hunk, error) {
 	if repoPath == "" {
@@ -400,6 +424,10 @@ func (g *Git) DiffCut(
 			command.WithFlag("--find-renames"),
 			command.WithArg(targetRef),
 			command.WithArg(sourceRef))
+		if ignoreWhitespace {
+			// Ignore whitespace when comparing lines.
+			cmd.Add(command.WithFlag("-w"))
+		}
 		err = cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(pipeWrite))
 	}()
 
@@ -464,7 +492,7 @@ func (g *Git) DiffCut(
 			// For modified and renamed compare file blob SHAs directly.
 			oldSHA = entry.OldBlobSHA
 			newSHA = entry.NewBlobSHA
-			hunkHeader, hunk, err = g.diffCutFromHunk(ctx, repoPath, oldSHA, newSHA, params)
+			hunkHeader, hunk, err = g.diffCutFromHunk(ctx, repoPath, oldSHA, newSHA, ignoreWhitespace, params)
 		case parser.DiffStatusAdded, parser.DiffStatusDeleted, parser.DiffStatusType:
 			// for added and deleted files read the file content directly
 			if params.LineStartNew {
@@ -497,6 +525,7 @@ func (g *Git) diffCutFromHunk(
 	repoPath string,
 	oldSHA string,
 	newSHA string,
+	ignoreWhitespace bool,
 	params parser.DiffCutParams,
 ) (parser.HunkHeader, parser.Hunk, error) {
 	pipeRead, pipeWrite := io.Pipe()
@@ -516,6 +545,11 @@ func (g *Git) diffCutFromHunk(
 			command.WithFlag("--unified=100000000"),
 			command.WithArg(oldSHA),
 			command.WithArg(newSHA))
+
+		if ignoreWhitespace {
+			// Ignore whitespace when comparing lines.
+			cmd.Add(command.WithFlag("-w"))
+		}
 
 		err = cmd.Run(ctx,
 			command.WithDir(repoPath),
@@ -610,12 +644,18 @@ func (g *Git) DiffFileName(ctx context.Context,
 	baseRef string,
 	headRef string,
 	mergeBase bool,
+	ignoreWhitespace bool,
 ) ([]string, error) {
 	cmd := command.New("diff", command.WithFlag("--name-only"))
 	if mergeBase {
 		cmd.Add(command.WithFlag("--merge-base"))
 	}
 	cmd.Add(command.WithArg(baseRef, headRef))
+
+	if ignoreWhitespace {
+		// Ignore whitespace when comparing lines.
+		cmd.Add(command.WithFlag("-w"))
+	}
 
 	stdout := &bytes.Buffer{}
 	err := cmd.Run(ctx,
@@ -633,6 +673,7 @@ func (g *Git) DiffFileName(ctx context.Context,
 func GetDiffShortStat(
 	ctx context.Context,
 	repoPath string,
+	ignoreWhitespace bool,
 	args ...string,
 ) (DiffShortStat, error) {
 	// Now if we call:
@@ -644,6 +685,11 @@ func GetDiffShortStat(
 		command.WithFlag("--shortstat"),
 		command.WithArg(args...),
 	)
+
+	if ignoreWhitespace {
+		// Ignore whitespace when comparing lines.
+		cmd.Add(command.WithFlag("-w"))
+	}
 
 	stdout := &bytes.Buffer{}
 	if err := cmd.Run(ctx,

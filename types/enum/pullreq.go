@@ -21,7 +21,7 @@ import (
 // PullReqState defines pull request state.
 type PullReqState string
 
-func (PullReqState) Enum() []interface{}                  { return toInterfaceSlice(pullReqStates) }
+func (PullReqState) Enum() []any                          { return toInterfaceSlice(pullReqStates) }
 func (s PullReqState) Sanitize() (PullReqState, bool)     { return Sanitize(s, GetAllPullReqStates) }
 func GetAllPullReqStates() ([]PullReqState, PullReqState) { return pullReqStates, "" }
 
@@ -38,10 +38,32 @@ var pullReqStates = sortEnum([]PullReqState{
 	PullReqStateClosed,
 })
 
+// PullReqSubState defines pull request sub-state.
+type PullReqSubState string
+
+func (PullReqSubState) Enum() []any { return toInterfaceSlice(pullReqSubStates) }
+func (s PullReqSubState) Sanitize() (PullReqSubState, bool) {
+	return Sanitize(s, GetAllPullReqSubStates)
+}
+func GetAllPullReqSubStates() ([]PullReqSubState, PullReqSubState) { return pullReqSubStates, "" }
+
+// PullReqSubState enumeration.
+const (
+	PullReqSubStateNone       PullReqSubState = ""
+	PullReqSubStateAutoMerge  PullReqSubState = "auto_merge"
+	PullReqSubStateMergeQueue PullReqSubState = "merge_queue"
+)
+
+var pullReqSubStates = sortEnum([]PullReqSubState{
+	PullReqSubStateNone,
+	PullReqSubStateAutoMerge,
+	PullReqSubStateMergeQueue,
+})
+
 // PullReqSort defines pull request attribute that can be used for sorting.
 type PullReqSort string
 
-func (PullReqSort) Enum() []interface{}                { return toInterfaceSlice(pullReqSorts) }
+func (PullReqSort) Enum() []any                        { return toInterfaceSlice(pullReqSorts) }
 func (s PullReqSort) Sanitize() (PullReqSort, bool)    { return Sanitize(s, GetAllPullReqSorts) }
 func GetAllPullReqSorts() ([]PullReqSort, PullReqSort) { return pullReqSorts, PullReqSortNumber }
 
@@ -66,7 +88,7 @@ var pullReqSorts = sortEnum([]PullReqSort{
 // Essentially, the Type determines the structure of the pull request activity's Payload structure.
 type PullReqActivityType string
 
-func (PullReqActivityType) Enum() []interface{} { return toInterfaceSlice(pullReqActivityTypes) }
+func (PullReqActivityType) Enum() []any { return toInterfaceSlice(pullReqActivityTypes) }
 
 func (t PullReqActivityType) Sanitize() (PullReqActivityType, bool) {
 	return Sanitize(t, GetAllPullReqActivityTypes)
@@ -78,14 +100,27 @@ func GetAllPullReqActivityTypes() ([]PullReqActivityType, PullReqActivityType) {
 
 // PullReqActivityType enumeration.
 const (
-	PullReqActivityTypeComment      PullReqActivityType = "comment"
-	PullReqActivityTypeCodeComment  PullReqActivityType = "code-comment"
-	PullReqActivityTypeTitleChange  PullReqActivityType = "title-change"
-	PullReqActivityTypeStateChange  PullReqActivityType = "state-change"
-	PullReqActivityTypeReviewSubmit PullReqActivityType = "review-submit"
-	PullReqActivityTypeBranchUpdate PullReqActivityType = "branch-update"
-	PullReqActivityTypeBranchDelete PullReqActivityType = "branch-delete"
-	PullReqActivityTypeMerge        PullReqActivityType = "merge"
+	PullReqActivityTypeComment                         PullReqActivityType = "comment"
+	PullReqActivityTypeCodeComment                     PullReqActivityType = "code-comment"
+	PullReqActivityTypeTitleChange                     PullReqActivityType = "title-change"
+	PullReqActivityTypeStateChange                     PullReqActivityType = "state-change"
+	PullReqActivityTypeReviewSubmit                    PullReqActivityType = "review-submit"
+	PullReqActivityTypeReviewerAdd                     PullReqActivityType = "reviewer-add"
+	PullReqActivityTypeUserGroupReviewerAdd            PullReqActivityType = "user-group-reviewer-add"
+	PullReqActivityTypeReviewerDelete                  PullReqActivityType = "reviewer-delete"
+	PullReqActivityTypeUserGroupReviewerDelete         PullReqActivityType = "user-group-reviewer-delete"
+	PullReqActivityTypeBranchUpdate                    PullReqActivityType = "branch-update"
+	PullReqActivityTypeBranchDelete                    PullReqActivityType = "branch-delete"
+	PullReqActivityTypeBranchRestore                   PullReqActivityType = "branch-restore"
+	PullReqActivityTypeTargetBranchChange              PullReqActivityType = "target-branch-change"
+	PullReqActivityTypeMerge                           PullReqActivityType = "merge"
+	PullReqActivityTypeLabelModify                     PullReqActivityType = "label-modify"
+	PullReqActivityTypeNonUniqueMergeBase              PullReqActivityType = "non-unique-merge-base"
+	PullReqActivityTypeAutoMergeUnsupportedMergeMethod PullReqActivityType = "auto-merge-unsupported-merge-method"
+	PullReqActivityTypeAutoMergeDisabledBranchUpdate   PullReqActivityType = "auto-merge-disabled-branch-update"
+	PullReqActivityTypeMergeQueueAdd                   PullReqActivityType = "merge-queue-added"
+	PullReqActivityTypeMergeQueueRemove                PullReqActivityType = "merge-queue-removed"
+	PullReqActivityTypeTargetBranchDeleted             PullReqActivityType = "target-branch-deleted"
 )
 
 var pullReqActivityTypes = sortEnum([]PullReqActivityType{
@@ -94,9 +129,22 @@ var pullReqActivityTypes = sortEnum([]PullReqActivityType{
 	PullReqActivityTypeTitleChange,
 	PullReqActivityTypeStateChange,
 	PullReqActivityTypeReviewSubmit,
+	PullReqActivityTypeReviewerAdd,
+	PullReqActivityTypeUserGroupReviewerAdd,
+	PullReqActivityTypeReviewerDelete,
+	PullReqActivityTypeUserGroupReviewerDelete,
 	PullReqActivityTypeBranchUpdate,
 	PullReqActivityTypeBranchDelete,
+	PullReqActivityTypeBranchRestore,
+	PullReqActivityTypeTargetBranchChange,
 	PullReqActivityTypeMerge,
+	PullReqActivityTypeLabelModify,
+	PullReqActivityTypeNonUniqueMergeBase,
+	PullReqActivityTypeAutoMergeUnsupportedMergeMethod,
+	PullReqActivityTypeAutoMergeDisabledBranchUpdate,
+	PullReqActivityTypeMergeQueueAdd,
+	PullReqActivityTypeMergeQueueRemove,
+	PullReqActivityTypeTargetBranchDeleted,
 })
 
 // PullReqActivityKind defines kind of pull request activity system message.
@@ -104,7 +152,7 @@ var pullReqActivityTypes = sortEnum([]PullReqActivityType{
 // Whether it's generated by the system, it's a user comment or a part of code review.
 type PullReqActivityKind string
 
-func (PullReqActivityKind) Enum() []interface{} { return toInterfaceSlice(pullReqActivityKinds) }
+func (PullReqActivityKind) Enum() []any { return toInterfaceSlice(pullReqActivityKinds) }
 
 func (k PullReqActivityKind) Sanitize() (PullReqActivityKind, bool) {
 	return Sanitize(k, GetAllPullReqActivityKinds)
@@ -130,7 +178,7 @@ var pullReqActivityKinds = sortEnum([]PullReqActivityKind{
 // PullReqCommentStatus defines status of a pull request comment.
 type PullReqCommentStatus string
 
-func (PullReqCommentStatus) Enum() []interface{} { return toInterfaceSlice(pullReqCommentStatuses) }
+func (PullReqCommentStatus) Enum() []any { return toInterfaceSlice(pullReqCommentStatuses) }
 
 func (s PullReqCommentStatus) Sanitize() (PullReqCommentStatus, bool) {
 	return Sanitize(s, GetAllPullReqCommentStatuses)
@@ -154,7 +202,7 @@ var pullReqCommentStatuses = sortEnum([]PullReqCommentStatus{
 // PullReqReviewDecision defines state of a pull request review.
 type PullReqReviewDecision string
 
-func (PullReqReviewDecision) Enum() []interface{} {
+func (PullReqReviewDecision) Enum() []any {
 	return toInterfaceSlice(pullReqReviewDecisions)
 }
 
@@ -184,7 +232,7 @@ var pullReqReviewDecisions = sortEnum([]PullReqReviewDecision{
 // PullReqReviewerType defines type of a pull request reviewer.
 type PullReqReviewerType string
 
-func (PullReqReviewerType) Enum() []interface{} { return toInterfaceSlice(pullReqReviewerTypes) }
+func (PullReqReviewerType) Enum() []any { return toInterfaceSlice(pullReqReviewerTypes) }
 
 func (reviewerType PullReqReviewerType) Sanitize() (PullReqReviewerType, bool) {
 	return Sanitize(reviewerType, GetAllPullReqReviewerTypes)
@@ -199,30 +247,39 @@ const (
 	PullReqReviewerTypeRequested    PullReqReviewerType = "requested"
 	PullReqReviewerTypeAssigned     PullReqReviewerType = "assigned"
 	PullReqReviewerTypeSelfAssigned PullReqReviewerType = "self_assigned"
+
+	// Used when adding reviewers on PR creation based on CODEOWNERS file or rules.
+	PullReqReviewerTypeCodeOwners PullReqReviewerType = "code_owners"
+	PullReqReviewerTypeDefault    PullReqReviewerType = "default"
 )
 
 var pullReqReviewerTypes = sortEnum([]PullReqReviewerType{
 	PullReqReviewerTypeRequested,
 	PullReqReviewerTypeAssigned,
 	PullReqReviewerTypeSelfAssigned,
+
+	PullReqReviewerTypeCodeOwners,
+	PullReqReviewerTypeDefault,
 })
 
 type MergeMethod gitenum.MergeMethod
 
 // MergeMethod enumeration.
 const (
-	MergeMethodMerge  = MergeMethod(gitenum.MergeMethodMerge)
-	MergeMethodSquash = MergeMethod(gitenum.MergeMethodSquash)
-	MergeMethodRebase = MergeMethod(gitenum.MergeMethodRebase)
+	MergeMethodMerge       = MergeMethod(gitenum.MergeMethodMerge)
+	MergeMethodSquash      = MergeMethod(gitenum.MergeMethodSquash)
+	MergeMethodRebase      = MergeMethod(gitenum.MergeMethodRebase)
+	MergeMethodFastForward = MergeMethod(gitenum.MergeMethodFastForward)
 )
 
 var MergeMethods = sortEnum([]MergeMethod{
 	MergeMethodMerge,
 	MergeMethodSquash,
 	MergeMethodRebase,
+	MergeMethodFastForward,
 })
 
-func (MergeMethod) Enum() []interface{} { return toInterfaceSlice(MergeMethods) }
+func (MergeMethod) Enum() []any { return toInterfaceSlice(MergeMethods) }
 func (m MergeMethod) Sanitize() (MergeMethod, bool) {
 	s, ok := gitenum.MergeMethod(m).Sanitize()
 	return MergeMethod(s), ok
@@ -237,4 +294,35 @@ const (
 	MergeCheckStatusConflict MergeCheckStatus = "conflict"
 	// MergeCheckStatusMergeable branch can merged cleanly into the target branch.
 	MergeCheckStatusMergeable MergeCheckStatus = "mergeable"
+)
+
+type PullReqLabelActivityType string
+
+func (PullReqLabelActivityType) Enum() []any { return toInterfaceSlice(LabelActivityTypes) }
+func (t PullReqLabelActivityType) Sanitize() (PullReqLabelActivityType, bool) {
+	return Sanitize(t, GetAllLabelActivityTypes)
+}
+func GetAllLabelActivityTypes() ([]PullReqLabelActivityType, PullReqLabelActivityType) {
+	return LabelActivityTypes, LabelActivityNoop
+}
+
+const (
+	LabelActivityAssign   PullReqLabelActivityType = "assign"
+	LabelActivityUnassign PullReqLabelActivityType = "unassign"
+	LabelActivityReassign PullReqLabelActivityType = "reassign"
+	LabelActivityNoop     PullReqLabelActivityType = "noop"
+)
+
+var LabelActivityTypes = sortEnum([]PullReqLabelActivityType{
+	LabelActivityAssign,
+	LabelActivityUnassign,
+	LabelActivityReassign,
+	LabelActivityNoop,
+})
+
+type PullReqType string
+
+const (
+	PullReqTypeNormal PullReqType = ""
+	PullReqTypeLinked PullReqType = "linked"
 )

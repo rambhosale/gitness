@@ -39,7 +39,9 @@ func TestBranch_MergeVerify(t *testing.T) {
 		{
 			name:   "empty",
 			branch: Branch{},
-			in:     MergeVerifyInput{Actor: user},
+			in: MergeVerifyInput{
+				Actor: user,
+			},
 			expOut: MergeVerifyOutput{
 				DeleteSourceBranch: false,
 				AllowedMethods:     enum.MergeMethods,
@@ -182,10 +184,11 @@ func TestBranch_MergeVerify(t *testing.T) {
 				},
 			},
 			in: MergeVerifyInput{
-				Actor:      user,
-				CodeOwners: &codeowners.Evaluation{},
-				PullReq:    &types.PullReq{},
-				Reviewers:  []*types.PullReqReviewer{},
+				Actor:               user,
+				ResolveUserGroupIDs: mockUserGroupResolver,
+				CodeOwners:          &codeowners.Evaluation{},
+				PullReq:             &types.PullReq{},
+				Reviewers:           []*types.PullReqReviewer{},
 			},
 			expOut: MergeVerifyOutput{
 				DeleteSourceBranch:            true,
@@ -202,6 +205,57 @@ func TestBranch_MergeVerify(t *testing.T) {
 					},
 				},
 			},
+		},
+		{
+			name: "merge-queue-violation",
+			branch: Branch{
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: MergeVerifyInput{
+				Actor:   user,
+				PullReq: &types.PullReq{TargetBranch: "main"},
+			},
+			expOut: MergeVerifyOutput{
+				AllowedMethods:     enum.MergeMethods,
+				RequiresMergeQueue: true,
+			},
+			expVs: []types.RuleViolations{
+				{
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			name: "merge-queue-omit-violations",
+			branch: Branch{
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: MergeVerifyInput{
+				Actor:            user,
+				PullReq:          &types.PullReq{TargetBranch: "main"},
+				OmitMQViolations: true,
+			},
+			expOut: MergeVerifyOutput{
+				AllowedMethods:     enum.MergeMethods,
+				RequiresMergeQueue: true,
+			},
+			expVs: []types.RuleViolations{},
 		},
 		{
 			name: "verify-output-latest",
@@ -227,6 +281,7 @@ func TestBranch_MergeVerify(t *testing.T) {
 			},
 			expOut: MergeVerifyOutput{
 				AllowedMethods: []enum.MergeMethod{
+					enum.MergeMethodFastForward,
 					enum.MergeMethodMerge,
 					enum.MergeMethodRebase,
 					enum.MergeMethodSquash,
@@ -401,7 +456,7 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 			name: "empty",
 			branch: Branch{
 				Bypass:    DefBypass{},
-				Lifecycle: DefLifecycle{},
+				Lifecycle: DefBranchLifecycle{},
 			},
 			in: RefChangeVerifyInput{
 				Actor: user,
@@ -411,8 +466,11 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 		{
 			name: "admin-no-owner",
 			branch: Branch{
-				Bypass:    DefBypass{},
-				Lifecycle: DefLifecycle{DeleteForbidden: true},
+				Bypass: DefBypass{},
+				Lifecycle: DefBranchLifecycle{
+					DefLifecycle: DefLifecycle{
+						DeleteForbidden: true},
+				},
 			},
 			in: RefChangeVerifyInput{
 				Actor:       admin,
@@ -435,8 +493,11 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 		{
 			name: "owner-bypass",
 			branch: Branch{
-				Bypass:    DefBypass{RepoOwners: true},
-				Lifecycle: DefLifecycle{DeleteForbidden: true},
+				Bypass: DefBypass{RepoOwners: true},
+				Lifecycle: DefBranchLifecycle{
+					DefLifecycle: DefLifecycle{
+						DeleteForbidden: true},
+				},
 			},
 			in: RefChangeVerifyInput{
 				Actor:       user,
@@ -459,8 +520,11 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 		{
 			name: "user-no-bypass",
 			branch: Branch{
-				Bypass:    DefBypass{RepoOwners: true},
-				Lifecycle: DefLifecycle{DeleteForbidden: true},
+				Bypass: DefBypass{RepoOwners: true},
+				Lifecycle: DefBranchLifecycle{
+					DefLifecycle: DefLifecycle{
+						DeleteForbidden: true},
+				},
 			},
 			in: RefChangeVerifyInput{
 				Actor:       user,
@@ -476,6 +540,233 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 					Bypassed:   false,
 					Violations: []types.Violation{
 						{Code: codeLifecycleDelete},
+					},
+				},
+			},
+		},
+		{
+			name: "usergroup-bypass",
+			branch: Branch{
+				Bypass: DefBypass{RepoOwners: true},
+				Lifecycle: DefBranchLifecycle{
+					DefLifecycle: DefLifecycle{
+						DeleteForbidden: true},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:              &types.Principal{ID: 43},
+				ResolveUserGroupID: mockUserGroupResolver,
+				AllowBypass:        true,
+				IsRepoOwner:        false,
+				RefAction:          RefActionDelete,
+				RefType:            RefTypeBranch,
+				RefNames:           []string{"abc"},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: true,
+					Bypassed:   true,
+					Violations: []types.Violation{
+						{Code: codeLifecycleDelete},
+					},
+				},
+			},
+		},
+		{
+			name:   "no-merge-queue-update",
+			branch: Branch{},
+			in: RefChangeVerifyInput{
+				Actor:     user,
+				RefAction: RefActionUpdate,
+				RefType:   RefTypeBranch,
+				RefNames:  []string{"main"},
+				Repo:      &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{},
+		},
+		{
+			name: "merge-queue-update-blocked",
+			branch: Branch{
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:     user,
+				RefAction: RefActionUpdate,
+				RefType:   RefTypeBranch,
+				RefNames:  []string{"main"},
+				Repo:      &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: false,
+					Bypassed:   false,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			name: "merge-queue-force-update-blocked",
+			branch: Branch{
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:     user,
+				RefAction: RefActionUpdateForce,
+				RefType:   RefTypeBranch,
+				RefNames:  []string{"main"},
+				Repo:      &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: false,
+					Bypassed:   false,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			name: "merge-queue-delete-blocked",
+			branch: Branch{
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:     user,
+				RefAction: RefActionDelete,
+				RefType:   RefTypeBranch,
+				RefNames:  []string{"main"},
+				Repo:      &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: false,
+					Bypassed:   false,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			// The bypass-marking loop runs after MergeQueueBranchUpdateVerify, so a
+			// merge-queue violation must be marked bypassable/bypassed for an actor
+			// that can bypass. This is what allows updating an MQ-protected branch.
+			name: "merge-queue-update-owner-bypass",
+			branch: Branch{
+				Bypass: DefBypass{RepoOwners: true},
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:       user,
+				AllowBypass: true,
+				IsRepoOwner: true,
+				RefAction:   RefActionUpdate,
+				RefType:     RefTypeBranch,
+				RefNames:    []string{"main"},
+				Repo:        &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: true,
+					Bypassed:   true,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			// Deleting an MQ-protected branch is bypassable by a listed bypass user.
+			name: "merge-queue-delete-user-bypass",
+			branch: Branch{
+				Bypass: DefBypass{UserIDs: []int64{user.ID}},
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:       user,
+				AllowBypass: true,
+				RefAction:   RefActionDelete,
+				RefType:     RefTypeBranch,
+				RefNames:    []string{"main"},
+				Repo:        &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: true,
+					Bypassed:   true,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
+					},
+				},
+			},
+		},
+		{
+			// A bypass-capable actor that did not request a bypass (AllowBypass=false)
+			// leaves the MQ violation bypassable but not bypassed - so it still blocks.
+			name: "merge-queue-update-bypassable-not-bypassed",
+			branch: Branch{
+				Bypass: DefBypass{UserIDs: []int64{user.ID}},
+				PullReq: DefPullReq{
+					MergeQueue: &DefMergeQueue{
+						StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci"}},
+						GroupSize:               5,
+						ChecksConcurrency:       3,
+						MaxCheckDurationSeconds: 600,
+					},
+				},
+			},
+			in: RefChangeVerifyInput{
+				Actor:       user,
+				AllowBypass: false,
+				RefAction:   RefActionUpdate,
+				RefType:     RefTypeBranch,
+				RefNames:    []string{"main"},
+				Repo:        &types.RepositoryCore{ID: 1},
+			},
+			expVs: []types.RuleViolations{
+				{
+					Bypassable: true,
+					Bypassed:   false,
+					Violations: []types.Violation{
+						{Code: codeMergeQueueBranchUpdateVerify},
 					},
 				},
 			},
@@ -523,6 +814,60 @@ func TestBranch_RefChangeVerify(t *testing.T) {
 						t.Errorf("rule result %d, violation %d, code mismatch: want=%s got=%s", i, j, want, got)
 					}
 				}
+			}
+		})
+	}
+}
+
+func mockUserGroupResolver(_ context.Context, _ []int64) ([]int64, error) {
+	return []int64{43}, nil
+}
+
+func TestBranch_SupportsParent(t *testing.T) {
+	mergeQueue := &DefMergeQueue{
+		StatusChecks:            DefStatusChecks{RequireIdentifiers: []string{"ci/build"}},
+		GroupSize:               2,
+		ChecksConcurrency:       2,
+		MaxCheckDurationSeconds: 60,
+	}
+
+	tests := []struct {
+		name    string
+		branch  Branch
+		parent  enum.RuleParent
+		wantErr bool
+	}{
+		{
+			name:    "repo-no-merge-queue",
+			branch:  Branch{},
+			parent:  enum.RuleParentRepo,
+			wantErr: false,
+		},
+		{
+			name:    "repo-with-merge-queue",
+			branch:  Branch{PullReq: DefPullReq{MergeQueue: mergeQueue}},
+			parent:  enum.RuleParentRepo,
+			wantErr: false,
+		},
+		{
+			name:    "space-no-merge-queue",
+			branch:  Branch{},
+			parent:  enum.RuleParentSpace,
+			wantErr: false,
+		},
+		{
+			name:    "space-with-merge-queue",
+			branch:  Branch{PullReq: DefPullReq{MergeQueue: mergeQueue}},
+			parent:  enum.RuleParentSpace,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.branch.SupportsParent(tt.parent)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SupportsParent(%q) error=%v, wantErr=%v", tt.parent, err, tt.wantErr)
 			}
 		})
 	}

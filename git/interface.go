@@ -39,6 +39,11 @@ type Interface interface {
 	GetRef(ctx context.Context, params GetRefParams) (GetRefResponse, error)
 	PathsDetails(ctx context.Context, params PathsDetailsParams) (PathsDetailsOutput, error)
 	Summary(ctx context.Context, params SummaryParams) (SummaryOutput, error)
+	FindLFSPointers(ctx context.Context, params *FindLFSPointersParams) (*FindLFSPointersOutput, error)
+	GetRepoLanguageStats(
+		ctx context.Context,
+		params *GetRepoLanguageStatsParams,
+	) (GetRepoLanguageStatsOutput, error)
 
 	// GetRepositorySize calculates the size of a repo in KiB.
 	GetRepositorySize(ctx context.Context, params *GetRepositorySizeParams) (*GetRepositorySizeOutput, error)
@@ -46,8 +51,16 @@ type Interface interface {
 	// prior to the call. To remove a ref use the zero ref as the NewValue. To require the creation of a new one and
 	// not update of an exiting one, set the zero ref as the OldValue.
 	UpdateRef(ctx context.Context, params UpdateRefParams) error
+	UpdateRefs(ctx context.Context, params UpdateRefsParams) error
 
 	SyncRepository(ctx context.Context, params *SyncRepositoryParams) (*SyncRepositoryOutput, error)
+	SyncRefs(ctx context.Context, params *SyncRefsParams) (*SyncRefsOutput, error)
+	FetchObjects(ctx context.Context, params *FetchObjectsParams) (FetchObjectsOutput, error)
+
+	GetRemoteDefaultBranch(
+		ctx context.Context,
+		params *GetRemoteDefaultBranchParams,
+	) (*GetRemoteDefaultBranchOutput, error)
 
 	MatchFiles(ctx context.Context, params *MatchFilesParams) (*MatchFilesOutput, error)
 
@@ -61,10 +74,15 @@ type Interface interface {
 	CommitFiles(ctx context.Context, params *CommitFilesParams) (CommitFilesResponse, error)
 	MergeBase(ctx context.Context, params MergeBaseParams) (MergeBaseOutput, error)
 	IsAncestor(ctx context.Context, params IsAncestorParams) (IsAncestorOutput, error)
-	FindOversizeFiles(
+
+	/*
+	 * Pre-receive processor
+	 */
+
+	ProcessPreReceiveObjects(
 		ctx context.Context,
-		params *FindOversizeFilesParams,
-	) (*FindOversizeFilesOutput, error)
+		params ProcessPreReceiveObjectsParams,
+	) (ProcessPreReceiveObjectsOutput, error)
 
 	/*
 	 * Git Cli Service
@@ -85,10 +103,14 @@ type Interface interface {
 	GetDiffHunkHeaders(ctx context.Context, params GetDiffHunkHeadersParams) (GetDiffHunkHeadersOutput, error)
 	DiffCut(ctx context.Context, params *DiffCutParams) (DiffCutOutput, error)
 
+	ResolveRevision(ctx context.Context, params ResolveRevisionParams) (ResolveRevisionOutput, error)
+
 	/*
 	 * Merge services
 	 */
 	Merge(ctx context.Context, in *MergeParams) (MergeOutput, error)
+
+	Revert(ctx context.Context, in *RevertParams) (RevertOutput, error)
 
 	/*
 	 * Blame services
@@ -103,4 +125,9 @@ type Interface interface {
 	 */
 	ScanSecrets(ctx context.Context, param *ScanSecretsParams) (*ScanSecretsOutput, error)
 	Archive(ctx context.Context, params ArchiveParams, w io.Writer) error
+
+	/*
+	 * Repository optimizer
+	 */
+	OptimizeRepository(ctx context.Context, params OptimizeRepositoryParams) error
 }

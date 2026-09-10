@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
 	sqlxtypes "github.com/jmoiron/sqlx/types"
 	"github.com/pkg/errors"
@@ -55,8 +57,8 @@ type execution struct {
 	Parent       int64              `db:"execution_parent"`
 	Status       enum.CIStatus      `db:"execution_status"`
 	Error        string             `db:"execution_error"`
-	Event        string             `db:"execution_event"`
-	Action       string             `db:"execution_action"`
+	Event        enum.TriggerEvent  `db:"execution_event"`
+	Action       enum.TriggerAction `db:"execution_action"`
 	Link         string             `db:"execution_link"`
 	Timestamp    int64              `db:"execution_timestamp"`
 	Title        string             `db:"execution_title"`
@@ -82,6 +84,12 @@ type execution struct {
 	Created      int64              `db:"execution_created"`
 	Updated      int64              `db:"execution_updated"`
 	Version      int64              `db:"execution_version"`
+}
+
+type executionPipelineRepoJoin struct {
+	execution
+	PipelineUID sql.NullString `db:"pipeline_uid"`
+	RepoUID     sql.NullString `db:"repo_uid"`
 }
 
 const (
@@ -122,6 +130,17 @@ const (
 		,execution_created
 		,execution_updated
 		,execution_version
+	`
+
+	executionInfoColumns = `
+		execution_number
+		,execution_pipeline_id
+		,execution_status
+		,execution_created_by
+		,execution_trigger
+		,execution_event
+		,execution_started
+		,execution_finished
 	`
 )
 
@@ -334,6 +353,94 @@ func (s *executionStore) List(
 	return mapInternalToExecutionList(dst)
 }
 
+// ListInSpace lists the executions in a given space.
+// It orders them in descending order of execution id.
+func (s *executionStore) ListInSpace(
+	ctx context.Context,
+	spaceID int64,
+	filter types.ListExecutionsFilter,
+) ([]*types.Execution, error) {
+	const executionWithPipelineRepoColumn = executionColumns + `
+	,pipeline_uid
+	,repo_uid`
+
+	stmt := database.Builder.
+		Select(executionWithPipelineRepoColumn).
+		From("executions").
+		InnerJoin("pipelines ON execution_pipeline_id = pipeline_id").
+		InnerJoin("repositories ON execution_repo_id = repo_id").
+		Where("repo_parent_id = ?", spaceID).
+		OrderBy("execution_" + string(filter.Sort) + " " + filter.Order.String())
+
+	stmt = stmt.Limit(database.Limit(filter.Size))
+	stmt = stmt.Offset(database.Offset(filter.Page, filter.Size))
+
+	if filter.Query != "" {
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
+	}
+
+	if filter.PipelineIdentifier != "" {
+		stmt = stmt.Where("pipeline_uid = ?", filter.PipelineIdentifier)
+	}
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	dst := []*executionPipelineRepoJoin{}
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed executing custom list query")
+	}
+
+	return convertExecutionPipelineRepoJoins(dst)
+}
+
+func (s executionStore) ListByPipelineIDs(
+	ctx context.Context,
+	pipelineIDs []int64,
+	maxRows int64,
+) (map[int64][]*types.ExecutionInfo, error) {
+	stmt := database.Builder.
+		Select(executionInfoColumns).
+		FromSelect(
+			database.Builder.
+				Select(executionInfoColumns+`,
+					ROW_NUMBER() OVER (
+						PARTITION BY execution_pipeline_id
+						ORDER BY execution_number DESC
+					) AS row_num
+				`).
+				From("executions").
+				Where(squirrel.Eq{"execution_pipeline_id": pipelineIDs}),
+			"ranked",
+		).
+		Where("row_num <= ?", maxRows)
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+	var dst []*types.ExecutionInfo
+	if err = db.SelectContext(ctx, &dst, sql, args...); err != nil {
+		return nil, database.ProcessSQLErrorf(ctx, err, "Failed to list executions by pipeline IDs")
+	}
+
+	executionInfosMap := make(map[int64][]*types.ExecutionInfo)
+	for _, info := range dst {
+		executionInfosMap[info.PipelineID] = append(
+			executionInfosMap[info.PipelineID],
+			info,
+		)
+	}
+
+	return executionInfosMap, nil
+}
+
 // Count of executions in a pipeline, if pipelineID is 0 then return total number of executions.
 func (s *executionStore) Count(ctx context.Context, pipelineID int64) (int64, error) {
 	stmt := database.Builder.
@@ -342,6 +449,42 @@ func (s *executionStore) Count(ctx context.Context, pipelineID int64) (int64, er
 
 	if pipelineID > 0 {
 		stmt = stmt.Where("execution_pipeline_id = ?", pipelineID)
+	}
+
+	sql, args, err := stmt.ToSql()
+	if err != nil {
+		return 0, errors.Wrap(err, "Failed to convert query to sql")
+	}
+
+	db := dbtx.GetAccessor(ctx, s.db)
+
+	var count int64
+	err = db.QueryRowContext(ctx, sql, args...).Scan(&count)
+	if err != nil {
+		return 0, database.ProcessSQLErrorf(ctx, err, "Failed executing count query")
+	}
+	return count, nil
+}
+
+// CountInSpace counts the number of executions in a given space.
+func (s *executionStore) CountInSpace(
+	ctx context.Context,
+	spaceID int64,
+	filter types.ListExecutionsFilter,
+) (int64, error) {
+	stmt := database.Builder.
+		Select("count(*)").
+		From("executions").
+		InnerJoin("pipelines ON execution_pipeline_id = pipeline_id").
+		InnerJoin("repositories ON execution_repo_id = repo_id").
+		Where("repo_parent_id = ?", spaceID)
+
+	if filter.Query != "" {
+		stmt = stmt.Where(PartialMatch("pipeline_uid", filter.Query))
+	}
+
+	if filter.PipelineIdentifier != "" {
+		stmt = stmt.Where("pipeline_uid = ?", filter.PipelineIdentifier)
 	}
 
 	sql, args, err := stmt.ToSql()
@@ -372,4 +515,26 @@ func (s *executionStore) Delete(ctx context.Context, pipelineID int64, execution
 	}
 
 	return nil
+}
+
+func convertExecutionPipelineRepoJoins(rows []*executionPipelineRepoJoin) ([]*types.Execution, error) {
+	executions := make([]*types.Execution, len(rows))
+	for i, k := range rows {
+		e, err := convertExecutionPipelineRepoJoin(k)
+		if err != nil {
+			return nil, err
+		}
+		executions[i] = e
+	}
+	return executions, nil
+}
+
+func convertExecutionPipelineRepoJoin(join *executionPipelineRepoJoin) (*types.Execution, error) {
+	e, err := mapInternalToExecution(&join.execution)
+	if err != nil {
+		return nil, err
+	}
+	e.RepoUID = join.RepoUID.String
+	e.PipelineUID = join.PipelineUID.String
+	return e, nil
 }

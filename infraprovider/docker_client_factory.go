@@ -20,18 +20,12 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"github.com/harness/gitness/infraprovider/enum"
+	"github.com/harness/gitness/types"
+	"github.com/harness/gitness/types/enum"
 
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/tlsconfig"
 )
-
-type DockerConfig struct {
-	DockerHost       string
-	DockerAPIVersion string
-	DockerCertPath   string
-	DockerTLSVerify  string
-}
 
 type DockerClientFactory struct {
 	config *DockerConfig
@@ -44,33 +38,27 @@ func NewDockerClientFactory(config *DockerConfig) *DockerClientFactory {
 // NewDockerClient returns a new docker client created using the docker config and infra.
 func (d *DockerClientFactory) NewDockerClient(
 	_ context.Context,
-	infra *Infrastructure,
+	infra types.Infrastructure,
 ) (*client.Client, error) {
 	if infra.ProviderType != enum.InfraProviderTypeDocker {
 		return nil, fmt.Errorf("infra provider type %s not supported", infra.ProviderType)
 	}
-	dockerClient, err := d.getClient(infra.Parameters)
+	dockerClient, err := d.getClient(infra.InputParameters)
 	if err != nil {
 		return nil, fmt.Errorf("error creating docker client using infra %+v: %w", infra, err)
 	}
 	return dockerClient, nil
 }
 
-func (d *DockerClientFactory) getClient(_ []Parameter) (*client.Client, error) {
-	var opts []client.Opt
-
-	opts = append(opts, client.WithHost(d.config.DockerHost))
-
-	opts = append(opts, client.WithVersion(d.config.DockerAPIVersion))
-
-	if d.config.DockerCertPath != "" {
-		httpsClient, err := d.getHTTPSClient()
-		if err != nil {
-			return nil, fmt.Errorf("unable to create https client for docker client: %w", err)
-		}
-		opts = append(opts, client.WithHTTPClient(httpsClient))
+func (d *DockerClientFactory) getClient(_ []types.InfraProviderParameter) (*client.Client, error) {
+	overrides, err := d.dockerOpts(d.config)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create docker opts overrides: %w", err)
 	}
-
+	// WithAPIVersionNegotiation enables automatic API version negotiation.
+	// This ensures compatibility with Docker daemons that require newer API versions
+	// (e.g., Docker 29.0+ requires minimum API version 1.44).
+	opts := append([]client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}, overrides...)
 	dockerClient, err := client.NewClientWithOpts(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create docker client: %w", err)
@@ -94,4 +82,24 @@ func (d *DockerClientFactory) getHTTPSClient() (*http.Client, error) {
 		Transport:     &http.Transport{TLSClientConfig: tlsc},
 		CheckRedirect: client.CheckRedirect,
 	}, nil
+}
+
+// dockerOpts returns back the options to be overridden from docker options set
+// in the environment. If values are specified in gitness, they get preference.
+func (d *DockerClientFactory) dockerOpts(config *DockerConfig) ([]client.Opt, error) {
+	var overrides []client.Opt
+	if config.DockerHost != "" {
+		overrides = append(overrides, client.WithHost(config.DockerHost))
+	}
+	if config.DockerAPIVersion != "" {
+		overrides = append(overrides, client.WithVersion(config.DockerAPIVersion))
+	}
+	if config.DockerCertPath != "" {
+		httpsClient, err := d.getHTTPSClient()
+		if err != nil {
+			return nil, fmt.Errorf("unable to create https client for docker client: %w", err)
+		}
+		overrides = append(overrides, client.WithHTTPClient(httpsClient))
+	}
+	return overrides, nil
 }

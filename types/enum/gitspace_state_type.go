@@ -16,17 +16,26 @@ package enum
 
 type GitspaceStateType string
 
-func (GitspaceStateType) Enum() []interface{} {
+func (GitspaceStateType) Enum() []any {
 	return toInterfaceSlice(gitspaceStateTypes)
 }
 
 var gitspaceStateTypes = []GitspaceStateType{
-	GitspaceStateRunning, GitspaceStateStopped, GitspaceStateError, GitspaceStateUninitialized,
+	GitspaceStateRunning,
+	GitspaceStateStopped,
+	GitspaceStateError,
+	GitspaceStateUninitialized,
+	GitspaceStateStarting,
+	GitspaceStateStopping,
+	GitSpaceStateCleaning,
 }
 
 const (
 	GitspaceStateRunning       GitspaceStateType = "running"
 	GitspaceStateStopped       GitspaceStateType = "stopped"
+	GitspaceStateStarting      GitspaceStateType = "starting"
+	GitspaceStateStopping      GitspaceStateType = "stopping"
+	GitSpaceStateCleaning      GitspaceStateType = "cleaning"
 	GitspaceStateError         GitspaceStateType = "error"
 	GitspaceStateUninitialized GitspaceStateType = "uninitialized"
 )

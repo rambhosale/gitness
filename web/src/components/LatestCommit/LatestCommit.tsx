@@ -37,7 +37,7 @@ import { Icon } from '@harnessio/icons'
 import { useMutate } from 'restful-react'
 import type {
   OpenapiCalculateCommitDivergenceRequest,
-  RepoCommitDivergence,
+  TypesCommitDivergence,
   TypesCommit,
   RepoRepositoryOutput
 } from 'services/code'
@@ -45,7 +45,7 @@ import { CommitActions } from 'components/CommitActions/CommitActions'
 import { useAppContext } from 'AppContext'
 import { formatBytes, getErrorMessage } from 'utils/Utils'
 import { useStrings } from 'framework/strings'
-import { makeDiffRefs, type GitInfoProps, type RepositorySummaryData, isRefATag } from 'utils/GitUtils'
+import { makeDiffRefs, type GitInfoProps, type RepositorySummaryData, isRefATag, normalizeGitRef } from 'utils/GitUtils'
 import { PipeSeparator } from 'components/PipeSeparator/PipeSeparator'
 import { TimePopoverWithLocal } from 'utils/timePopoverLocal/TimePopoverWithLocal'
 import css from './LatestCommit.module.scss'
@@ -59,7 +59,7 @@ interface LatestCommitProps extends Pick<GitInfoProps, 'repoMetadata' | 'gitRef'
 }
 
 interface DivergenceInfoProps {
-  commitDivergence: RepoCommitDivergence
+  commitDivergence: TypesCommitDivergence
   metadata: RepoRepositoryOutput
   currentGitRef: string
 }
@@ -75,7 +75,7 @@ export function LatestCommitForFolder({
   const { routes } = useAppContext()
   const { getString } = useStrings()
   const { showError } = useToaster()
-  const [divergence, setDivergence] = useState<RepoCommitDivergence>({})
+  const [divergence, setDivergence] = useState<TypesCommitDivergence>({})
 
   const commitURL = routes.toCODECommit({
     repoPath: repoMetadata.path as string,
@@ -101,7 +101,7 @@ export function LatestCommitForFolder({
   const branchDivergenceRequestBody: OpenapiCalculateCommitDivergenceRequest = useMemo(() => {
     return {
       maxCount: 0,
-      requests: [{ from: gitRef, to: repoMetadata.default_branch }]
+      requests: [{ from: normalizeGitRef(gitRef), to: normalizeGitRef(repoMetadata.default_branch) }]
     }
   }, [repoMetadata, gitRef])
 
@@ -111,7 +111,7 @@ export function LatestCommitForFolder({
     if (isMounted.current && branchDivergenceRequestBody.requests?.length && gitRef !== repoMetadata.default_branch) {
       setDivergence({})
       getBranchDivergence(branchDivergenceRequestBody)
-        .then(([response]: RepoCommitDivergence[]) => {
+        .then(([response]: TypesCommitDivergence[]) => {
           if (isMounted.current) {
             setDivergence(response)
           }

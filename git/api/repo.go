@@ -24,7 +24,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/git/command"
+	"github.com/harness/gitness/git/parser"
+	"github.com/harness/gitness/git/sha"
 
 	"github.com/rs/zerolog/log"
 )
@@ -98,27 +101,28 @@ func (g *Git) SetDefaultBranch(
 	ctx context.Context,
 	repoPath string,
 	defaultBranch string,
-	allowEmpty bool,
+	ignoreBranchExistance bool,
 ) error {
 	if repoPath == "" {
 		return ErrRepositoryPathEmpty
 	}
 
-	// if requested, error out if branch doesn't exist. Otherwise, blindly set it.
-	exist, err := g.IsBranchExist(ctx, repoPath, defaultBranch)
-	if err != nil {
-		log.Ctx(ctx).Err(err).Msgf("failed to set default branch")
-	}
-	if !allowEmpty && !exist {
-		// TODO: ensure this returns not found error to caller
-		return fmt.Errorf("branch '%s' does not exist", defaultBranch)
+	if !ignoreBranchExistance {
+		// best effort try to check for existence - technically someone else could delete it in the meanwhile.
+		exist, err := g.IsBranchExist(ctx, repoPath, defaultBranch)
+		if err != nil {
+			return fmt.Errorf("failed to check if branch exists: %w", err)
+		}
+		if !exist {
+			return errors.NotFoundf("branch %q does not exist", defaultBranch)
+		}
 	}
 
 	// change default branch
 	cmd := command.New("symbolic-ref",
 		command.WithArg("HEAD", gitReferenceNamePrefixBranch+defaultBranch),
 	)
-	err = cmd.Run(ctx, command.WithDir(repoPath))
+	err := cmd.Run(ctx, command.WithDir(repoPath))
 	if err != nil {
 		return processGitErrorf(err, "failed to set new default branch")
 	}
@@ -128,6 +132,26 @@ func (g *Git) SetDefaultBranch(
 
 // GetDefaultBranch gets the default branch of a repo.
 func (g *Git) GetDefaultBranch(
+	ctx context.Context,
+	repoPath string,
+) (string, error) {
+	rawBranchRef, err := g.GetSymbolicRefHeadRaw(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get raw symbolic ref HEAD: %w", err)
+	}
+
+	branchName := strings.TrimPrefix(
+		strings.TrimSpace(
+			rawBranchRef,
+		),
+		BranchPrefix,
+	)
+
+	return branchName, nil
+}
+
+// GetSymbolicRefHeadRaw returns the raw output of the symolic-ref command for HEAD.
+func (g *Git) GetSymbolicRefHeadRaw(
 	ctx context.Context,
 	repoPath string,
 ) (string, error) {
@@ -144,7 +168,7 @@ func (g *Git) GetDefaultBranch(
 		command.WithDir(repoPath),
 		command.WithStdout(output))
 	if err != nil {
-		return "", processGitErrorf(err, "failed to get default branch")
+		return "", processGitErrorf(err, "failed to get value of symbolic ref HEAD from git")
 	}
 
 	return output.String(), nil
@@ -263,6 +287,112 @@ func (g *Git) Sync(
 	return nil
 }
 
+// FetchObjects pull git objects from a different repository.
+// It doesn't update any references.
+func (g *Git) FetchObjects(
+	ctx context.Context,
+	repoPath string,
+	source string,
+	objectSHAs []sha.SHA,
+) error {
+	if repoPath == "" {
+		return ErrRepositoryPathEmpty
+	}
+	cmd := command.New("fetch",
+		command.WithConfig("advice.fetchShowForcedUpdates", "false"),
+		command.WithConfig("credential.helper", ""),
+		command.WithFlag(
+			"--quiet",
+			"--no-auto-gc", // because we're fetching objects that are not referenced
+			"--no-tags",
+			"--no-write-fetch-head",
+			"--no-show-forced-updates",
+		),
+		command.WithArg(source),
+	)
+
+	for _, objectSHA := range objectSHAs {
+		cmd.Add(command.WithArg(objectSHA.String()))
+	}
+
+	err := cmd.Run(ctx, command.WithDir(repoPath))
+	if err != nil {
+		if parts := reNotOurRef.FindStringSubmatch(strings.TrimSpace(err.Error())); parts != nil {
+			return errors.InvalidArgumentf("Unrecognized git object: %s", parts[1])
+		}
+		return processGitErrorf(err, "failed to fetch objects")
+	}
+
+	return nil
+}
+
+// ListRemoteReferences lists references from a remote repository.
+func (g *Git) ListRemoteReferences(
+	ctx context.Context,
+	repoPath string,
+	remote string,
+	refs ...string,
+) (map[string]sha.SHA, error) {
+	if repoPath == "" {
+		return nil, ErrRepositoryPathEmpty
+	}
+
+	cmd := command.New("ls-remote",
+		command.WithFlag("--refs"),
+		command.WithArg(remote),
+		command.WithPostSepArg(refs...),
+	)
+
+	stdout := bytes.NewBuffer(nil)
+
+	if err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(stdout)); err != nil {
+		return nil, fmt.Errorf("failed to list references from remote: %w", err)
+	}
+
+	result, err := parser.ReferenceList(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse references from remote: %w", err)
+	}
+
+	return result, nil
+}
+
+// ListLocalReferences lists references from the local repository.
+func (g *Git) ListLocalReferences(
+	ctx context.Context,
+	repoPath string,
+	refs ...string,
+) (map[string]sha.SHA, error) {
+	if repoPath == "" {
+		return nil, ErrRepositoryPathEmpty
+	}
+
+	cmd := command.New("show-ref",
+		command.WithPostSepArg(refs...),
+	)
+
+	stdout := bytes.NewBuffer(nil)
+
+	if err := cmd.Run(ctx, command.WithDir(repoPath), command.WithStdout(stdout)); err != nil {
+		// git show-ref exits with status 1 (and no stderr) when none of the
+		// requested refs exist locally. That's a valid "no refs found" result,
+		// not a failure - return an empty map so callers can proceed.
+		if cmdErr := command.AsError(err); cmdErr != nil && cmdErr.IsExitCode(1) && len(cmdErr.StdErr) == 0 {
+			return map[string]sha.SHA{}, nil
+		}
+		return nil, fmt.Errorf("failed to list references: %w", err)
+	}
+
+	result, err := parser.ReferenceList(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse references: %w", err)
+	}
+
+	return result, nil
+}
+
+var reNotOurRef = regexp.MustCompile("upload-pack: not our ref ([a-fA-f0-9]+)$")
+
 func (g *Git) AddFiles(
 	ctx context.Context,
 	repoPath string,
@@ -319,7 +449,7 @@ func (g *Git) Commit(
 }
 
 // Push pushs local commits to given remote branch.
-// TODOD: return our own error types and move to above api.Push method
+// TODOD: return our own error types and move to above api.Push method.
 func (g *Git) Push(
 	ctx context.Context,
 	repoPath string,
@@ -425,30 +555,31 @@ func (g *Git) CountObjects(ctx context.Context, repoPath string) (ObjectCount, e
 	return objectCount, nil
 }
 
+//nolint:errcheck
 func parseGitCountObjectsOutput(ctx context.Context, output string) ObjectCount {
 	info := ObjectCount{}
 
 	output = strings.TrimSpace(output)
-	lines := strings.Split(output, "\n")
+	lines := strings.SplitSeq(output, "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		fields := strings.Fields(line)
 
 		switch fields[0] {
 		case "count:":
-			fmt.Sscanf(fields[1], "%d", &info.Count)
+			fmt.Sscanf(fields[1], "%d", &info.Count) //nolint:errcheck
 		case "size:":
-			fmt.Sscanf(fields[1], "%d", &info.Size)
+			fmt.Sscanf(fields[1], "%d", &info.Size) //nolint:errcheck
 		case "in-pack:":
-			fmt.Sscanf(fields[1], "%d", &info.InPack)
+			fmt.Sscanf(fields[1], "%d", &info.InPack) //nolint:errcheck
 		case "packs:":
-			fmt.Sscanf(fields[1], "%d", &info.Packs)
+			fmt.Sscanf(fields[1], "%d", &info.Packs) //nolint:errcheck
 		case "size-pack:":
-			fmt.Sscanf(fields[1], "%d", &info.SizePack)
+			fmt.Sscanf(fields[1], "%d", &info.SizePack) //nolint:errcheck
 		case "prune-packable:":
-			fmt.Sscanf(fields[1], "%d", &info.PrunePackable)
+			fmt.Sscanf(fields[1], "%d", &info.PrunePackable) //nolint:errcheck
 		case "garbage:":
-			fmt.Sscanf(fields[1], "%d", &info.Garbage)
+			fmt.Sscanf(fields[1], "%d", &info.Garbage) //nolint:errcheck
 		case "size-garbage:":
 			fmt.Sscanf(fields[1], "%d", &info.SizeGarbage)
 		default:

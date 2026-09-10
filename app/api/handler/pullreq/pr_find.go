@@ -40,7 +40,57 @@ func HandleFind(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
 			return
 		}
 
-		pr, err := pullreqCtrl.Find(ctx, session, repoRef, pullreqNumber)
+		options, err := request.ParsePullReqMetadataOptions(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		options.IncludeGitStats = true // always backfill PR git stats when fetching one PR.
+
+		pr, err := pullreqCtrl.Find(ctx, session, repoRef, pullreqNumber, options)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		render.JSON(w, http.StatusOK, pr)
+	}
+}
+
+// HandleFindByBranches returns a http.HandlerFunc that finds a pull request from the provided branch pair.
+func HandleFindByBranches(pullreqCtrl *pullreq.Controller) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		session, _ := request.AuthSessionFrom(ctx)
+
+		repoRef, err := request.GetRepoRefFromPath(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		sourceBranch, err := request.GetPullReqSourceBranchFromPath(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		targetBranch, err := request.GetPullReqTargetBranchFromPath(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		options, err := request.ParsePullReqMetadataOptions(r)
+		if err != nil {
+			render.TranslatedUserError(ctx, w, err)
+			return
+		}
+
+		options.IncludeGitStats = true // always backfill PR git stats when fetching one PR.
+
+		pr, err := pullreqCtrl.FindByBranches(ctx, session, repoRef, sourceBranch, targetBranch, options)
 		if err != nil {
 			render.TranslatedUserError(ctx, w, err)
 			return

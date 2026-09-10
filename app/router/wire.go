@@ -23,7 +23,9 @@ import (
 	"github.com/harness/gitness/app/api/controller/execution"
 	"github.com/harness/gitness/app/api/controller/githook"
 	"github.com/harness/gitness/app/api/controller/gitspace"
+	"github.com/harness/gitness/app/api/controller/infraprovider"
 	"github.com/harness/gitness/app/api/controller/keywordsearch"
+	"github.com/harness/gitness/app/api/controller/lfs"
 	"github.com/harness/gitness/app/api/controller/logs"
 	"github.com/harness/gitness/app/api/controller/migrate"
 	"github.com/harness/gitness/app/api/controller/pipeline"
@@ -40,11 +42,15 @@ import (
 	"github.com/harness/gitness/app/api/controller/trigger"
 	"github.com/harness/gitness/app/api/controller/upload"
 	"github.com/harness/gitness/app/api/controller/user"
+	"github.com/harness/gitness/app/api/controller/usergroup"
 	"github.com/harness/gitness/app/api/controller/webhook"
 	"github.com/harness/gitness/app/api/openapi"
 	"github.com/harness/gitness/app/auth/authn"
+	"github.com/harness/gitness/app/services/usage"
 	"github.com/harness/gitness/app/url"
 	"github.com/harness/gitness/git"
+	"github.com/harness/gitness/registry/app/api"
+	"github.com/harness/gitness/registry/app/api/router"
 	"github.com/harness/gitness/types"
 
 	"github.com/google/wire"
@@ -53,20 +59,13 @@ import (
 // WireSet provides a wire set for this package.
 var WireSet = wire.NewSet(
 	ProvideRouter,
-	ProvideGitHandler,
-	ProvideAPIHandler,
-	ProvideWebHandler,
+	api.WireSet,
 )
 
-func ProvideRouter(
-	api APIHandler,
-	git GitHandler,
-	web WebHandler,
-	urlProvider url.Provider,
-) *Router {
+func GetGitRoutingHost(ctx context.Context, urlProvider url.Provider) string {
 	// use url provider as it has the latest data.
-	gitHostname := urlProvider.GetGITHostname()
-	apiHostname := urlProvider.GetAPIHostname()
+	gitHostname := urlProvider.GetGITHostname(ctx)
+	apiHostname := urlProvider.GetAPIHostname(ctx)
 
 	// only use host name to identify git traffic if it differs from api hostname.
 	// TODO: Can we make this even more flexible - aka use the full base urls to route traffic?
@@ -74,23 +73,11 @@ func ProvideRouter(
 	if !strings.EqualFold(gitHostname, apiHostname) {
 		gitRoutingHost = gitHostname
 	}
-
-	return NewRouter(api, git, web, gitRoutingHost)
+	return gitRoutingHost
 }
 
-func ProvideGitHandler(
-	urlProvider url.Provider,
-	authenticator authn.Authenticator,
-	repoCtrl *repo.Controller,
-) GitHandler {
-	return NewGitHandler(
-		urlProvider,
-		authenticator,
-		repoCtrl,
-	)
-}
-
-func ProvideAPIHandler(
+// ProvideRouter provides ordered list of routers.
+func ProvideRouter(
 	appCtx context.Context,
 	config *types.Config,
 	authenticator authn.Authenticator,
@@ -112,20 +99,49 @@ func ProvideAPIHandler(
 	saCtrl *serviceaccount.Controller,
 	userCtrl *user.Controller,
 	principalCtrl principal.Controller,
+	userGroupCtrl *usergroup.Controller,
 	checkCtrl *check.Controller,
 	sysCtrl *system.Controller,
 	blobCtrl *upload.Controller,
 	searchCtrl *keywordsearch.Controller,
+	infraProviderCtrl *infraprovider.Controller,
 	gitspaceCtrl *gitspace.Controller,
 	migrateCtrl *migrate.Controller,
-) APIHandler {
-	return NewAPIHandler(appCtx, config,
+	urlProvider url.Provider,
+	openapi openapi.Service,
+	registryRouter router.AppRouter,
+	usageSender usage.Sender,
+	lfsCtrl *lfs.Controller,
+) *Router {
+	routers := make([]Interface, 4)
+
+	gitRoutingHost := GetGitRoutingHost(appCtx, urlProvider)
+	gitHandler := NewGitHandler(
+		config,
+		urlProvider,
+		authenticator,
+		repoCtrl,
+		usageSender,
+		lfsCtrl,
+	)
+	routers[0] = NewGitRouter(gitHandler, gitRoutingHost)
+	routers[1] = router.NewRegistryRouter(registryRouter)
+
+	apiHandler := NewAPIHandler(
+		appCtx, config,
 		authenticator, repoCtrl, repoSettingsCtrl, executionCtrl, logCtrl, spaceCtrl, pipelineCtrl,
 		secretCtrl, triggerCtrl, connectorCtrl, templateCtrl, pluginCtrl, pullreqCtrl, webhookCtrl,
-		githookCtrl, git, saCtrl, userCtrl, principalCtrl, checkCtrl, sysCtrl, blobCtrl, searchCtrl,
-		migrateCtrl, gitspaceCtrl)
-}
+		githookCtrl, git, saCtrl, userCtrl, principalCtrl, userGroupCtrl, checkCtrl, sysCtrl, blobCtrl, searchCtrl,
+		infraProviderCtrl, migrateCtrl, gitspaceCtrl, usageSender)
+	routers[2] = NewAPIRouter(apiHandler)
 
-func ProvideWebHandler(config *types.Config, openapi openapi.Service) WebHandler {
-	return NewWebHandler(config, openapi)
+	sec := NewSecure(config)
+	webHandler := NewWebHandler(
+		authenticator, openapi, sec,
+		config.PublicResourceCreationEnabled,
+		config.Development.UISourceOverride,
+	)
+	routers[3] = NewWebRouter(webHandler)
+
+	return NewRouter(routers)
 }

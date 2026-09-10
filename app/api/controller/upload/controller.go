@@ -17,7 +17,6 @@ package upload
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -26,8 +25,9 @@ import (
 	"github.com/harness/gitness/app/api/usererror"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
-	"github.com/harness/gitness/app/store"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/blob"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 
@@ -35,7 +35,6 @@ import (
 )
 
 const (
-	MaxFileSize       = 10 << 20 // 10 MB file limit set in Handler
 	fileBucketPathFmt = "uploads/%d/%s"
 	peekBytes         = 512
 )
@@ -46,36 +45,51 @@ var supportedFileTypes = map[string]struct{}{
 }
 
 type Controller struct {
-	authorizer authz.Authorizer
-	repoStore  store.RepoStore
-	blobStore  blob.Store
+	authorizer  authz.Authorizer
+	repoFinder  refcache.RepoFinder
+	blobStore   blob.Store
+	blobMaxSize int64
 }
 
-func NewController(authorizer authz.Authorizer,
-	repoStore store.RepoStore,
+func NewController(
+	authorizer authz.Authorizer,
+	repoFinder refcache.RepoFinder,
 	blobStore blob.Store,
+	config *types.Config,
 ) *Controller {
 	return &Controller{
-		authorizer: authorizer,
-		repoStore:  repoStore,
-		blobStore:  blobStore,
+		authorizer:  authorizer,
+		repoFinder:  repoFinder,
+		blobStore:   blobStore,
+		blobMaxSize: config.BlobStore.MaxFileSize,
 	}
 }
+
+func (c *Controller) GetMaxFileSize() int64 {
+	return c.blobMaxSize
+}
+
+//nolint:unparam
 func (c *Controller) getRepoCheckAccess(ctx context.Context,
 	session *auth.Session,
 	repoRef string,
-	reqPermission enum.Permission,
-) (*types.Repository, error) {
+	permission enum.Permission,
+	allowedRepoStates ...enum.RepoState,
+) (*types.RepositoryCore, error) {
 	if repoRef == "" {
 		return nil, usererror.BadRequest("A valid repository reference must be provided.")
 	}
 
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repo: %w", err)
 	}
 
-	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
+	if err := apiauth.CheckRepoState(ctx, session, repo, permission, allowedRepoStates...); err != nil {
+		return nil, err
+	}
+
+	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, permission); err != nil {
 		return nil, fmt.Errorf("failed to verify authorization: %w", err)
 	}
 

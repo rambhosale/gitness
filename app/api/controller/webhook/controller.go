@@ -19,59 +19,63 @@ import (
 	"fmt"
 
 	apiauth "github.com/harness/gitness/app/api/auth"
-	"github.com/harness/gitness/app/api/usererror"
+	"github.com/harness/gitness/app/api/controller/space"
 	"github.com/harness/gitness/app/auth"
 	"github.com/harness/gitness/app/auth/authz"
+	"github.com/harness/gitness/app/services/refcache"
 	"github.com/harness/gitness/app/services/webhook"
-	"github.com/harness/gitness/app/store"
 	"github.com/harness/gitness/encrypt"
+	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/types"
 	"github.com/harness/gitness/types/enum"
 )
 
 type Controller struct {
-	allowLoopback       bool
-	allowPrivateNetwork bool
-
-	authorizer            authz.Authorizer
-	webhookStore          store.WebhookStore
-	webhookExecutionStore store.WebhookExecutionStore
-	repoStore             store.RepoStore
-	webhookService        *webhook.Service
-	encrypter             encrypt.Encrypter
+	authorizer     authz.Authorizer
+	spaceFinder    refcache.SpaceFinder
+	repoFinder     refcache.RepoFinder
+	webhookService *webhook.Service
+	encrypter      encrypt.Encrypter
+	preprocessor   Preprocessor
 }
 
 func NewController(
-	allowLoopback bool,
-	allowPrivateNetwork bool,
 	authorizer authz.Authorizer,
-	webhookStore store.WebhookStore,
-	webhookExecutionStore store.WebhookExecutionStore,
-	repoStore store.RepoStore,
+	spaceFinder refcache.SpaceFinder,
+	repoFinder refcache.RepoFinder,
 	webhookService *webhook.Service,
 	encrypter encrypt.Encrypter,
+	preprocessor Preprocessor,
 ) *Controller {
 	return &Controller{
-		allowLoopback:         allowLoopback,
-		allowPrivateNetwork:   allowPrivateNetwork,
-		authorizer:            authorizer,
-		webhookStore:          webhookStore,
-		webhookExecutionStore: webhookExecutionStore,
-		repoStore:             repoStore,
-		webhookService:        webhookService,
-		encrypter:             encrypter,
+		authorizer:     authorizer,
+		spaceFinder:    spaceFinder,
+		repoFinder:     repoFinder,
+		webhookService: webhookService,
+		encrypter:      encrypter,
+		preprocessor:   preprocessor,
 	}
 }
 
-func (c *Controller) getRepoCheckAccess(ctx context.Context,
-	session *auth.Session, repoRef string, reqPermission enum.Permission) (*types.Repository, error) {
+//nolint:unparam
+func (c *Controller) getRepoCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	repoRef string,
+	reqPermission enum.Permission,
+	allowedRepoStates ...enum.RepoState,
+) (*types.RepositoryCore, error) {
 	if repoRef == "" {
-		return nil, usererror.BadRequest("A valid repository reference must be provided.")
+		return nil, errors.InvalidArgument("A valid repository reference must be provided.")
 	}
 
-	repo, err := c.repoStore.FindByRef(ctx, repoRef)
+	repo, err := c.repoFinder.FindByRef(ctx, repoRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find repo: %w", err)
+	}
+
+	if err := apiauth.CheckRepoState(ctx, session, repo, reqPermission, allowedRepoStates...); err != nil {
+		return nil, err
 	}
 
 	if err = apiauth.CheckRepo(ctx, c.authorizer, session, repo, reqPermission); err != nil {
@@ -79,4 +83,13 @@ func (c *Controller) getRepoCheckAccess(ctx context.Context,
 	}
 
 	return repo, nil
+}
+
+func (c *Controller) getSpaceCheckAccess(
+	ctx context.Context,
+	session *auth.Session,
+	spaceRef string,
+	permission enum.Permission,
+) (*types.SpaceCore, error) {
+	return space.GetSpaceCheckAuth(ctx, c.spaceFinder, c.authorizer, session, spaceRef, permission)
 }

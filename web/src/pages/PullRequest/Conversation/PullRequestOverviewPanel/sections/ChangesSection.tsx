@@ -24,23 +24,31 @@ import {
   useToggle,
   stringSubstitute
 } from '@harnessio/uicore'
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import cx from 'classnames'
 import { Render } from 'react-jsx-match'
-import { isEmpty } from 'lodash-es'
+import { capitalize, isEmpty } from 'lodash-es'
 import type { IconName } from '@blueprintjs/core'
 import { Icon } from '@harnessio/icons'
-import { CodeOwnerReqDecision, findChangeReqDecisions, findWaitingDecisions } from 'utils/Utils'
+import { CodeOwnerReqDecision } from 'utils/Utils'
 import { CodeOwnerSection } from 'pages/PullRequest/CodeOwners/CodeOwnersOverview'
 import { useStrings } from 'framework/strings'
 import type {
   TypesCodeOwnerEvaluation,
-  TypesCodeOwnerEvaluationEntry,
   TypesPullReq,
-  TypesPullReqReviewer,
-  RepoRepositoryOutput
+  RepoRepositoryOutput,
+  TypesDefaultReviewerApprovalsResponse,
+  PullreqCombinedListResponse,
+  TypesPullReqReviewer
 } from 'services/code'
-import { capitalizeFirstLetter } from 'pages/PullRequest/Checks/ChecksUtils'
+import {
+  defaultReviewerResponseWithDecision,
+  findReviewDecisions,
+  findWaitingDecisions,
+  getUnifiedDefaultReviewersState,
+  PullReqReviewDecision
+} from 'pages/PullRequest/PullRequestUtils'
+import { DefaultReviewersPanel } from 'pages/PullRequest/DefaultReviewers/DefaultReviewersPanel'
 import greyCircle from '../../../../../icons/greyCircle.svg?url'
 import emptyStatus from '../../../../../icons/emptyStatus.svg?url'
 import Success from '../../../../../icons/code-success.svg?url'
@@ -56,9 +64,11 @@ interface ChangesSectionProps {
   atLeastOneReviewerRule: boolean
   reqCodeOwnerApproval: boolean
   minApproval: number
-  reviewers: TypesPullReqReviewer[] | null
+  combinedReviewers: PullreqCombinedListResponse | null
+  defaultReviewersInfoSet: TypesDefaultReviewerApprovalsResponse[]
   minReqLatestApproval: number
   reqCodeOwnerLatestApproval: boolean
+  mergeBlockedRule: boolean
   loadingReviewers: boolean
   refetchReviewers: () => void
   refetchCodeOwners: () => void
@@ -66,16 +76,18 @@ interface ChangesSectionProps {
 
 const ChangesSection = (props: ChangesSectionProps) => {
   const {
-    reviewers: currReviewers,
+    combinedReviewers,
+    defaultReviewersInfoSet,
     minApproval,
     reqCodeOwnerApproval,
     repoMetadata,
     pullReqMetadata,
-    codeOwners: currCodeOwners,
+    codeOwners,
     atLeastOneReviewerRule,
     reqCodeOwnerLatestApproval,
     minReqLatestApproval,
     loadingReviewers,
+    mergeBlockedRule,
     refetchReviewers,
     refetchCodeOwners
   } = props
@@ -88,51 +100,58 @@ const ChangesSection = (props: ChangesSectionProps) => {
   const [status, setStatus] = useState('tick-circle')
   const [isExpanded, toggleExpanded] = useToggle(false)
   const [isNotRequiredFlag, setIsNotRequired] = useState(false)
-  const reviewers = useMemo(() => {
-    refetchCodeOwners()
-    return currReviewers // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currReviewers, refetchReviewers])
 
-  const codeOwners = useMemo(() => {
-    return currCodeOwners // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currCodeOwners, refetchCodeOwners, refetchReviewers])
+  const { evaluation_entries } = codeOwners || {}
+  const { reviewers } = combinedReviewers || {}
 
-  const checkIfOutdatedSha = (reviewedSHA?: string, sourceSHA?: string) =>
-    reviewedSHA !== sourceSHA || reviewedSHA !== sourceSHA ? true : false
-  const codeOwnerChangeReqEntries = findChangeReqDecisions(
-    codeOwners?.evaluation_entries,
-    CodeOwnerReqDecision.CHANGEREQ
-  )
-
-  const codeOwnerApprovalEntries = findChangeReqDecisions(codeOwners?.evaluation_entries, CodeOwnerReqDecision.APPROVED)
+  const checkIfOutdatedSha = (reviewedSHA?: string, sourceSHA?: string) => reviewedSHA !== sourceSHA
+  const codeOwnerChangeReqEntries = findReviewDecisions(evaluation_entries, CodeOwnerReqDecision.CHANGEREQ)
+  const codeOwnerApprovalEntries = findReviewDecisions(evaluation_entries, CodeOwnerReqDecision.APPROVED)
+  const codeOwnerPendingEntries = findWaitingDecisions(pullReqMetadata, reqCodeOwnerLatestApproval, evaluation_entries)
 
   const latestCodeOwnerApprovalArr = codeOwnerApprovalEntries
     ?.map(entry => {
-      // Filter the owner_evaluations for 'changereq' decisions
-      const entryEvaluation = entry?.owner_evaluations.filter(
+      const entryEvaluation = entry?.owner_evaluations?.filter(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (evaluation: any) => !checkIfOutdatedSha(evaluation?.review_sha, pullReqMetadata?.source_sha as string)
       )
-      // If there are any 'changereq' decisions, return the entry along with them
-      if (entryEvaluation && entryEvaluation?.length > 0) {
+      if (!isEmpty(entryEvaluation)) {
         return { entryEvaluation }
       }
     }) // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .filter((entry: any) => entry !== null && entry !== undefined) // Filter out the null entries
 
-  const codeOwnerPendingEntries = findWaitingDecisions(codeOwners?.evaluation_entries)
-  const approvedEvaluations = reviewers?.filter(evaluation => evaluation.review_decision === 'approved')
+  const { approvedEvaluations, changeReqEvaluations } = reviewers?.reduce(
+    (acc, evaluation) => {
+      if (evaluation.review_decision === PullReqReviewDecision.APPROVED) {
+        acc.approvedEvaluations.push(evaluation)
+      } else if (evaluation.review_decision === PullReqReviewDecision.CHANGEREQ) {
+        acc.changeReqEvaluations.push(evaluation)
+      }
+      return acc
+    },
+    { approvedEvaluations: [] as TypesPullReqReviewer[], changeReqEvaluations: [] as TypesPullReqReviewer[] }
+  ) ?? { approvedEvaluations: [], changeReqEvaluations: [] }
+
   const latestApprovalArr = approvedEvaluations?.filter(
     approved => !checkIfOutdatedSha(approved.sha, pullReqMetadata?.source_sha as string)
   )
 
-  const changeReqEvaluations = reviewers?.filter(evaluation => evaluation.review_decision === 'changereq')
   const changeReqReviewer =
     changeReqEvaluations && !isEmpty(changeReqEvaluations)
-      ? capitalizeFirstLetter(
-          changeReqEvaluations[0].reviewer?.display_name || changeReqEvaluations[0].reviewer?.uid || ''
-        )
+      ? capitalize(changeReqEvaluations[0].reviewer?.display_name || changeReqEvaluations[0].reviewer?.uid || '')
       : 'Reviewer'
+  const updatedDefaultApprovalRes = reviewers
+    ? defaultReviewerResponseWithDecision(defaultReviewersInfoSet, reviewers)
+    : defaultReviewersInfoSet
+
+  const {
+    defReviewerApprovalRequiredByRule,
+    defReviewerLatestApprovalRequiredByRule,
+    defReviewerApprovedLatestChanges,
+    defReviewerApprovedChanges
+  } = getUnifiedDefaultReviewersState(updatedDefaultApprovalRes)
+
   const extractInfoForCodeOwnerContent = () => {
     let statusMessage = ''
     let statusColor = 'grey' // Default color for no rules required
@@ -144,29 +163,31 @@ const ChangesSection = (props: ChangesSectionProps) => {
       reqCodeOwnerApproval ||
       minApproval > 0 ||
       reqCodeOwnerLatestApproval ||
-      minReqLatestApproval > 0
+      minReqLatestApproval > 0 ||
+      defReviewerApprovalRequiredByRule ||
+      defReviewerLatestApprovalRequiredByRule ||
+      mergeBlockedRule
     ) {
-      if (codeOwnerChangeReqEntries.length > 0 && (reqCodeOwnerApproval || reqCodeOwnerLatestApproval)) {
+      if (mergeBlockedRule) {
+        title = getString('changesSection.prMergeBlockedTitle')
+        statusColor = Color.RED_700
+        statusIcon = 'warning-icon'
+      } else if (!isEmpty(codeOwnerChangeReqEntries) && (reqCodeOwnerApproval || reqCodeOwnerLatestApproval)) {
         title = getString('changesSection.reqChangeFromCodeOwners')
         statusMessage = getString('changesSection.codeOwnerReqChanges')
         statusColor = Color.RED_700
         statusIcon = 'warning-icon'
-      } else if (changeReqEvaluations && changeReqEvaluations?.length > 0 && reqNoChangeReq) {
+      } else if (!isEmpty(changeReqEvaluations) && reqNoChangeReq) {
         title = getString('requestChanges')
         statusMessage = getString('pr.requestedChanges', { user: changeReqReviewer })
         statusColor = Color.RED_700
         statusIcon = 'warning-icon'
-      } else if (
-        (codeOwnerPendingEntries && codeOwnerPendingEntries?.length > 0 && reqCodeOwnerLatestApproval) ||
-        (!isEmpty(latestCodeOwnerApprovalArr) &&
-          latestCodeOwnerApprovalArr?.length < minReqLatestApproval &&
-          reqCodeOwnerLatestApproval)
-      ) {
+      } else if (!isEmpty(codeOwnerPendingEntries) && reqCodeOwnerLatestApproval) {
         title = getString('changesSection.pendingAppFromCodeOwners')
         statusMessage = getString('changesSection.pendingLatestApprovalCodeOwners')
         statusColor = Color.ORANGE_500
         statusIcon = 'execution-waiting'
-      } else if (codeOwnerPendingEntries && codeOwnerPendingEntries?.length > 0 && reqCodeOwnerApproval) {
+      } else if (!isEmpty(codeOwnerPendingEntries) && reqCodeOwnerApproval) {
         title = getString('changesSection.pendingAppFromCodeOwners')
         statusMessage = getString('changesSection.waitingOnCodeOwner')
         statusColor = Color.ORANGE_500
@@ -176,21 +197,36 @@ const ChangesSection = (props: ChangesSectionProps) => {
         statusMessage = getString('changesSection.latestChangesPendingReqRev')
         statusColor = Color.ORANGE_500
         statusIcon = 'execution-waiting'
+      } else if (defReviewerLatestApprovalRequiredByRule && !defReviewerApprovedLatestChanges) {
+        title = getString('changesSection.approvalPending')
+        statusMessage = stringSubstitute(getString('changesSection.pendingLatestApprovalDefaultReviewers'), {
+          count: approvedEvaluations?.length || '0',
+          total: minApproval
+        }) as string
+        statusColor = Color.ORANGE_500
+        statusIcon = 'execution-waiting'
       } else if (approvedEvaluations && approvedEvaluations?.length < minApproval && minApproval > 0) {
         title = getString('changesSection.approvalPending')
         statusMessage = stringSubstitute(getString('changesSection.waitingOnReviewers'), {
           count: approvedEvaluations?.length || '0',
           total: minApproval
         }) as string
-
         statusColor = Color.ORANGE_500
         statusIcon = 'execution-waiting'
-      } else if (reqCodeOwnerLatestApproval && latestCodeOwnerApprovalArr?.length > 0) {
+      } else if (defReviewerApprovalRequiredByRule && !defReviewerApprovedChanges) {
+        title = getString('changesSection.approvalPending')
+        statusMessage = stringSubstitute(getString('changesSection.waitingOnDefaultReviewers'), {
+          count: approvedEvaluations?.length || '0',
+          total: minApproval
+        }) as string
+        statusColor = Color.ORANGE_500
+        statusIcon = 'execution-waiting'
+      } else if (reqCodeOwnerLatestApproval && !isEmpty(latestCodeOwnerApprovalArr)) {
         title = getString('changesSection.changesApproved')
         statusMessage = getString('changesSection.latestChangesWereAppByCodeOwner')
         statusColor = Color.GREEN_700
         statusIcon = 'tick-circle'
-      } else if (reqCodeOwnerApproval && codeOwnerApprovalEntries?.length > 0) {
+      } else if (reqCodeOwnerApproval && !isEmpty(codeOwnerApprovalEntries)) {
         title = getString('changesSection.changesApproved')
         statusMessage = getString('changesSection.changesWereAppByCodeOwner')
         statusColor = Color.GREEN_700
@@ -205,7 +241,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
         statusMessage = getString('changesSection.changesWereAppByLatestReqRev')
         statusColor = Color.GREEN_700
         statusIcon = 'tick-circle'
-      } else if (approvedEvaluations && approvedEvaluations?.length > 0) {
+      } else if (!isEmpty(approvedEvaluations)) {
         title = getString('changesSection.changesApproved')
         statusMessage = stringSubstitute(getString('changesSection.changesAppByRev')) as string
         statusColor = Color.GREEN_700
@@ -218,16 +254,17 @@ const ChangesSection = (props: ChangesSectionProps) => {
       }
     } else {
       // When no rules are required
-      if (codeOwnerChangeReqEntries && codeOwnerChangeReqEntries?.length > 0) {
+      if (!isEmpty(codeOwnerChangeReqEntries)) {
         title = getString('changesSection.reqChangeFromCodeOwners')
         statusMessage = getString('changesSection.codeOwnerReqChanges')
         statusIcon = 'warning-icon'
         isNotRequired = true
-      } else if (changeReqEvaluations && changeReqEvaluations?.length > 0) {
+      } else if (!isEmpty(changeReqEvaluations)) {
         title = getString('requestChanges')
         statusMessage = getString('pr.requestedChanges', { user: changeReqReviewer })
         statusIcon = 'warning-icon'
-      } else if (approvedEvaluations?.length && approvedEvaluations?.length > 0) {
+        isNotRequired = true
+      } else if (!isEmpty(approvedEvaluations)) {
         title = getString('changesSection.changesApproved')
         statusMessage = stringSubstitute(getString('changesSection.changesAppByRev')) as string
         statusIcon = 'tick-circle'
@@ -249,19 +286,21 @@ const ChangesSection = (props: ChangesSectionProps) => {
     setStatus(curStatus)
     setIsNotRequired(isNotRequired) // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    currReviewers,
-    currCodeOwners,
+    combinedReviewers,
+    codeOwners,
     reqNoChangeReq,
     reqCodeOwnerApproval,
     minApproval,
     reqCodeOwnerLatestApproval,
     minReqLatestApproval,
     refetchReviewers,
-    refetchCodeOwners
+    refetchCodeOwners,
+    mergeBlockedRule,
+    approvedEvaluations
   ])
 
   function renderCodeOwnerStatus() {
-    if (codeOwnerPendingEntries?.length > 0 && reqCodeOwnerLatestApproval) {
+    if (!isEmpty(codeOwnerPendingEntries) && reqCodeOwnerLatestApproval) {
       return (
         <Layout.Horizontal>
           <Container padding={{ left: 'large' }}>
@@ -275,7 +314,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
       )
     }
 
-    if (codeOwnerPendingEntries?.length > 0 && reqCodeOwnerApproval) {
+    if (!isEmpty(codeOwnerPendingEntries) && reqCodeOwnerApproval) {
       return (
         <Layout.Horizontal>
           <Container padding={{ left: 'large' }}>
@@ -289,10 +328,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
       )
     }
 
-    if (
-      (codeOwnerApprovalEntries as TypesCodeOwnerEvaluationEntry[])?.length > 0 &&
-      codeOwnerPendingEntries?.length > 0
-    ) {
+    if (!isEmpty(codeOwnerApprovalEntries) && !isEmpty(codeOwnerPendingEntries)) {
       return (
         <Layout.Horizontal>
           <Container padding={{ left: 'large' }}>
@@ -304,7 +340,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
         </Layout.Horizontal>
       )
     }
-    if (latestCodeOwnerApprovalArr?.length > 0 && reqCodeOwnerLatestApproval) {
+    if (!isEmpty(latestCodeOwnerApprovalArr) && reqCodeOwnerLatestApproval) {
       return (
         <Text
           icon={'tick-circle'}
@@ -319,7 +355,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
         </Text>
       )
     }
-    if (codeOwnerApprovalEntries?.length > 0 && reqCodeOwnerApproval) {
+    if (!isEmpty(codeOwnerApprovalEntries) && reqCodeOwnerApproval) {
       return (
         <Text
           icon={'tick-circle'}
@@ -334,7 +370,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
         </Text>
       )
     }
-    if (codeOwnerApprovalEntries?.length > 0) {
+    if (!isEmpty(codeOwnerApprovalEntries)) {
       if (reqCodeOwnerLatestApproval && latestCodeOwnerApprovalArr.length < minReqLatestApproval) {
         return (
           <Layout.Horizontal>
@@ -374,14 +410,94 @@ const ChangesSection = (props: ChangesSectionProps) => {
       </Layout.Horizontal>
     )
   }
+
+  const renderDefaultReviewersStatus = () => {
+    if (defReviewerLatestApprovalRequiredByRule && !defReviewerApprovedLatestChanges) {
+      return (
+        // Waiting on default reviewers reviews of latest changes
+        <Layout.Horizontal>
+          <Container padding={{ left: 'large' }}>
+            <img alt="emptyStatus" width={16} height={16} src={emptyStatus} />
+          </Container>
+
+          <Text padding={{ left: 'medium' }} className={css.sectionSubheader}>
+            {getString('changesSection.waitingOnLatestDefaultReviewers')}
+          </Text>
+        </Layout.Horizontal>
+      )
+    }
+    if (defReviewerApprovalRequiredByRule && !defReviewerApprovedChanges) {
+      //Changes are pending approval from default reviewers
+      return (
+        <Layout.Horizontal>
+          <Container padding={{ left: 'large' }}>
+            <img alt="emptyStatus" width={16} height={16} src={emptyStatus} />
+          </Container>
+          <Text padding={{ left: 'medium' }} className={css.sectionSubheader}>
+            {getString('changesSection.waitingOnDefaultReviewers')}
+          </Text>
+        </Layout.Horizontal>
+      )
+    }
+
+    if (defReviewerLatestApprovalRequiredByRule && defReviewerApprovedLatestChanges) {
+      // Latest changes were approved by default reviewers
+      return (
+        <Text
+          icon={'tick-circle'}
+          iconProps={{
+            size: 16,
+            color: Color.GREEN_700,
+            padding: { right: 'medium' }
+          }}
+          padding={{ left: 'large' }}
+          className={css.sectionSubheader}>
+          {getString('changesSection.latestChangesWereAppByDefaultReviewers')}
+        </Text>
+      )
+    }
+
+    if (defReviewerApprovalRequiredByRule && defReviewerApprovedChanges) {
+      //Changes were approved by default reviewers
+      return (
+        <Text
+          icon={'tick-circle'}
+          iconProps={{
+            size: 16,
+            color: Color.GREEN_700,
+            padding: { right: 'medium' }
+          }}
+          padding={{ left: 'large' }}
+          className={css.sectionSubheader}>
+          {getString('changesSection.changesWereAppByDefaultReviewers')}
+        </Text>
+      )
+    }
+
+    return (
+      <Text
+        icon={'tick-circle'}
+        iconProps={{
+          size: 16,
+          color: Color.GREEN_700,
+          padding: { right: 'medium' }
+        }}
+        padding={{ left: 'large' }}
+        className={css.sectionSubheader}>
+        {getString('changesSection.defaultReviewersStatus')}
+      </Text>
+    )
+  }
   const viewBtn =
-    minApproval > minReqLatestApproval ||
-    (!isEmpty(approvedEvaluations) && minReqLatestApproval === 0) ||
-    (minApproval > 0 && minReqLatestApproval === undefined) ||
-    minReqLatestApproval > 0 ||
-    !isEmpty(changeReqEvaluations) ||
-    !isEmpty(codeOwners) ||
-    false
+    !mergeBlockedRule &&
+    (minApproval > minReqLatestApproval ||
+      (!isEmpty(approvedEvaluations) && minReqLatestApproval === 0) ||
+      (minApproval > 0 && minReqLatestApproval === undefined) ||
+      minReqLatestApproval > 0 ||
+      !isEmpty(changeReqEvaluations) ||
+      !isEmpty(codeOwners) ||
+      !isEmpty(defaultReviewersInfoSet) ||
+      false)
   return (
     <Render when={!loading && !loadingReviewers && status}>
       <Container className={cx(css.sectionContainer, css.borderContainer)}>
@@ -398,7 +514,7 @@ const ChangesSection = (props: ChangesSectionProps) => {
             )}
             <Layout.Vertical padding={{ left: 'medium' }}>
               <Text
-                padding={{ bottom: 'xsmall' }}
+                padding={contentText ? { bottom: 'xsmall' } : undefined}
                 className={css.sectionTitle}
                 color={
                   headerText === getString('changesSection.noReviewsReq')
@@ -562,10 +678,38 @@ const ChangesSection = (props: ChangesSectionProps) => {
               </Layout.Horizontal>
             </Container>
           )}
-          {!isEmpty(codeOwners) && (
+          {!isEmpty(defaultReviewersInfoSet) &&
+            (defReviewerApprovalRequiredByRule || defReviewerLatestApprovalRequiredByRule) && (
+              <Container className={css.borderContainer} padding={{ left: 'xlarge', right: 'small' }}>
+                <Layout.Horizontal className={css.paddingContainer} flex={{ justifyContent: 'space-between' }}>
+                  {renderDefaultReviewersStatus()}
+                  {(defReviewerApprovalRequiredByRule || defReviewerLatestApprovalRequiredByRule) && (
+                    <Container className={css.changeContainerPadding}>
+                      <Container className={css.requiredContainer}>
+                        <Text className={css.requiredText}>{getString('required')}</Text>
+                      </Container>
+                    </Container>
+                  )}
+                </Layout.Horizontal>
+              </Container>
+            )}
+          {!isEmpty(defaultReviewersInfoSet) && (
+            <Container
+              className={css.codeOwnerContainer}
+              padding={{ top: 'small', bottom: 'small', left: 'xxxlarge', right: 'small' }}>
+              <DefaultReviewersPanel
+                defaultRevApprovalResponse={updatedDefaultApprovalRes.filter(
+                  res => res.minimum_required_count || res.minimum_required_count_latest
+                )} //to only consider response with min default reviewers required (>0)
+                pullReqMetadata={pullReqMetadata}
+                repoMetadata={repoMetadata}
+              />
+            </Container>
+          )}
+          {!isEmpty(codeOwners) && !isEmpty(codeOwners.evaluation_entries) && (
             <Container className={css.borderContainer} padding={{ left: 'xlarge', right: 'small' }}>
               <Layout.Horizontal className={css.paddingContainer} flex={{ justifyContent: 'space-between' }}>
-                {codeOwnerChangeReqEntries && codeOwnerChangeReqEntries?.length > 0 ? (
+                {!isEmpty(codeOwnerChangeReqEntries) ? (
                   <Text
                     className={cx(
                       css.sectionSubheader,
@@ -593,14 +737,19 @@ const ChangesSection = (props: ChangesSectionProps) => {
               </Layout.Horizontal>
             </Container>
           )}
+          {codeOwners && !isEmpty(codeOwners?.evaluation_entries) && (
+            <Container
+              className={css.codeOwnerContainer}
+              padding={{ top: 'small', bottom: 'small', left: 'xxxlarge', right: 'small' }}>
+              <CodeOwnerSection
+                data={codeOwners}
+                pullReqMetadata={pullReqMetadata}
+                repoMetadata={repoMetadata}
+                reqCodeOwnerLatestApproval={reqCodeOwnerLatestApproval}
+              />
+            </Container>
+          )}
         </Container>
-        {codeOwners && !isEmpty(codeOwners?.evaluation_entries) && (
-          <Container
-            className={css.codeOwnerContainer}
-            padding={{ top: 'small', bottom: 'small', left: 'xxxlarge', right: 'small' }}>
-            <CodeOwnerSection data={codeOwners} pullReqMetadata={pullReqMetadata} repoMetadata={repoMetadata} />
-          </Container>
-        )}
       </Render>
     </Render>
   )

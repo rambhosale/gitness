@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	gitevents "github.com/harness/gitness/app/events/git"
+	"github.com/harness/gitness/app/url"
 	"github.com/harness/gitness/errors"
 	"github.com/harness/gitness/events"
 	"github.com/harness/gitness/git"
@@ -44,11 +45,11 @@ func (s *Service) handleEventBranchCreated(ctx context.Context,
 	return s.triggerForEventWithRepo(ctx, enum.WebhookTriggerBranchCreated,
 		event.ID, event.Payload.PrincipalID, event.Payload.RepoID,
 		func(principal *types.Principal, repo *types.Repository) (any, error) {
-			commitInfo, err := s.fetchCommitInfoForEvent(ctx, repo.GitUID, event.Payload.SHA)
+			commitInfo, err := s.fetchCommitInfoForEvent(ctx, repo.GitUID, repo.Path, event.Payload.SHA, s.urlProvider)
 			if err != nil {
 				return nil, err
 			}
-			repoInfo := repositoryInfoFrom(repo, s.urlProvider)
+			repoInfo := repositoryInfoFrom(ctx, repo, s.urlProvider)
 
 			return &ReferencePayload{
 				BaseSegment: BaseSegment{
@@ -83,13 +84,17 @@ func (s *Service) handleEventBranchUpdated(ctx context.Context,
 		event.ID, event.Payload.PrincipalID, event.Payload.RepoID,
 		func(principal *types.Principal, repo *types.Repository) (any, error) {
 			commitsInfo, totalCommits, err := s.fetchCommitsInfoForEvent(ctx, repo.GitUID,
-				event.Payload.OldSHA, event.Payload.NewSHA)
+				repo.Path, event.Payload.OldSHA, event.Payload.NewSHA, s.urlProvider)
 			if err != nil {
 				return nil, err
 			}
 
-			commitInfo := commitsInfo[0]
-			repoInfo := repositoryInfoFrom(repo, s.urlProvider)
+			var commitInfo CommitInfo
+			if len(commitsInfo) > 0 {
+				commitInfo = commitsInfo[0]
+			}
+
+			repoInfo := repositoryInfoFrom(ctx, repo, s.urlProvider)
 
 			return &ReferencePayload{
 				BaseSegment: BaseSegment{
@@ -125,7 +130,7 @@ func (s *Service) handleEventBranchDeleted(ctx context.Context,
 	return s.triggerForEventWithRepo(ctx, enum.WebhookTriggerBranchDeleted,
 		event.ID, event.Payload.PrincipalID, event.Payload.RepoID,
 		func(principal *types.Principal, repo *types.Repository) (any, error) {
-			repoInfo := repositoryInfoFrom(repo, s.urlProvider)
+			repoInfo := repositoryInfoFrom(ctx, repo, s.urlProvider)
 
 			return &ReferencePayload{
 				BaseSegment: BaseSegment{
@@ -151,7 +156,13 @@ func (s *Service) handleEventBranchDeleted(ctx context.Context,
 		})
 }
 
-func (s *Service) fetchCommitInfoForEvent(ctx context.Context, repoUID string, commitSHA string) (CommitInfo, error) {
+func (s *Service) fetchCommitInfoForEvent(
+	ctx context.Context,
+	repoUID string,
+	repoPath string,
+	commitSHA string,
+	urlProvider url.Provider,
+) (CommitInfo, error) {
 	out, err := s.git.GetCommit(ctx, &git.GetCommitParams{
 		ReadParams: git.ReadParams{
 			RepoUID: repoUID,
@@ -169,14 +180,16 @@ func (s *Service) fetchCommitInfoForEvent(ctx context.Context, repoUID string, c
 		return CommitInfo{}, fmt.Errorf("failed to get commit with targetSha '%s': %w", commitSHA, err)
 	}
 
-	return commitInfoFrom(out.Commit), nil
+	return commitInfoFrom(ctx, repoPath, out.Commit, urlProvider), nil
 }
 
 func (s *Service) fetchCommitsInfoForEvent(
 	ctx context.Context,
 	repoUID string,
+	repoPath string,
 	oldSHA string,
 	newSHA string,
+	urlProvider url.Provider,
 ) ([]CommitInfo, int, error) {
 	listCommitsParams := git.ListCommitsParams{
 		ReadParams:   git.ReadParams{RepoUID: repoUID},
@@ -202,5 +215,5 @@ func (s *Service) fetchCommitsInfoForEvent(
 		return nil, 0, fmt.Errorf("no commit found between %s and %s", oldSHA, newSHA)
 	}
 
-	return commitsInfoFrom(listCommitsOutput.Commits), listCommitsOutput.TotalCommits, nil
+	return commitsInfoFrom(ctx, repoPath, listCommitsOutput.Commits, urlProvider), listCommitsOutput.TotalCommits, nil
 }
